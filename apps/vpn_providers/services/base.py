@@ -171,8 +171,11 @@ class BaseVPNProvider(ABC):
     def _log_error(self, operation: str, error: Exception):
         """Log operation error"""
         logger.error(f"VPN Provider Error ({operation}): {error}")
-
-
+    @abstractmethod
+    async def get_token(self) -> str | None:
+        """Login and get token from provider"""
+        pass
+    
 class VPNProviderFactory:
     """Factory for creating VPN provider instances"""
 

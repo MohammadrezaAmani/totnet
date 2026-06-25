@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True, max_retries=3)
-def sync_vpn_users(self, provider_id: int):
+async def sync_vpn_users(self, provider_id: int):
     """Sync users for a specific VPN provider"""
     try:
         provider = VPNProvider.objects.get(id=provider_id)
@@ -84,7 +84,7 @@ def sync_all_vpn_users():
 
 
 @shared_task(bind=True, max_retries=3)
-def check_provider_health(self, provider_id: int):
+async def check_provider_health(self, provider_id: int):
     """Check health of a specific VPN provider"""
     try:
         provider = VPNProvider.objects.get(id=provider_id)
@@ -143,7 +143,7 @@ def check_all_providers_health():
 
 
 @shared_task(bind=True, max_retries=3)
-def collect_provider_stats(self, provider_id: int):
+async def collect_provider_stats(self, provider_id: int):
     """Collect statistics from a VPN provider"""
     try:
         provider = VPNProvider.objects.get(id=provider_id)
