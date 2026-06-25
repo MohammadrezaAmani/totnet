@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -39,7 +40,10 @@ async def main():
 
             if brand_count > 0:
                 logger.info(f"Found {brand_count} active brands, initializing bots...")
+
                 await start_bots()
+
+                logger.info("Bots stopped. Exiting...")
                 break
             else:
                 logger.info(
@@ -48,7 +52,7 @@ async def main():
                 await asyncio.sleep(5)
 
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("Bot stopped by user before starting.")
     except Exception as e:
         logger.error(f"Bot error: {e}")
         sys.exit(1)
@@ -70,6 +74,19 @@ if __name__ == "__main__":
             from apps.bot.dispatcher import create_webhook_app
 
             async def start_webhook():
+                shutdown_event = asyncio.Event()
+
+                def signal_handler(sig, frame):
+                    logger.info("Shutting down webhook server...")
+                    shutdown_event.set()
+
+                loop = asyncio.get_running_loop()
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        loop.add_signal_handler(sig, signal_handler, sig, None)
+                    except NotImplementedError:
+                        signal.signal(sig, signal_handler)
+
                 await start_bots()
                 app = create_webhook_app()
                 runner = web.AppRunner(app)
@@ -77,7 +94,9 @@ if __name__ == "__main__":
                 site = web.TCPSite(runner, "localhost", 8080)
                 await site.start()
                 logger.info("Webhook server started on http://localhost:8080")
-                await asyncio.Event().wait()
+
+                await shutdown_event.wait()
+                await runner.cleanup()
 
             asyncio.run(start_webhook())
         else:
