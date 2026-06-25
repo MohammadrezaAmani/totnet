@@ -7,9 +7,12 @@ import re
 
 from aiogram import types
 from aiogram.filters import Command
+from asgiref.sync import sync_to_async
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
+from apps.brands.models import BrandConfiguration
+from apps.brands.utils import renderer
 from apps.referrals.models import Referral, ReferralLink
 
 from .base import BaseHandler
@@ -31,13 +34,11 @@ class StartHandler(BaseHandler):
         if command and hasattr(command, "args") and command.args:
             referral_code = command.args
 
-        user = await self.get_or_create_user(telegram_user)
+        user, created = await self.get_or_create_user(telegram_user)
 
-        if referral_code and not user.referred_by:
+        if created and referral_code and not user.referred_by:
             await self.process_referral(user, referral_code)
 
-        if not user.full_name or not user.phone_number:
-            await self.show_profile_setup(chat_id, user)
         else:
             await self.show_main_menu(chat_id, user)
 
@@ -57,6 +58,7 @@ class StartHandler(BaseHandler):
             )
 
             user.referred_by = referral_link.user
+            user.referral_count += 1
             await user.asave()
 
             referral_link.click_count = (referral_link.click_count or 0) + 1
@@ -93,34 +95,53 @@ class StartHandler(BaseHandler):
 
         await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
 
+    @sync_to_async
+    def get_config(self):
+        return self.brand.configuration
+
     async def show_main_menu(
         self, chat_id: int, user: User, callback: types.CallbackQuery = None
     ):
-        """Show main menu"""
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        config: BrandConfiguration = await self.get_config()
 
-        subscription_count = await user.subscriptions.filter(
+        subscription_count: int = await user.subscriptions.filter(
             brand=self.brand, status="active"
         ).acount()
 
         wallet_balance = user.wallet_balance
         referral_count = user.referral_count
 
-        welcome_text = f"""
-🏠 منوی اصلی {self.brand.name}
+        context = {
+            "name": user.full_name or user.first_name,
+            "level": user.level,
+            "wallet": self.format_price(wallet_balance, self.brand.currency),
+            "subscriptions": subscription_count,
+            "referrals": referral_count,
+            "brand": self.brand.name,
+        }
 
-👋 سلام {user.full_name or user.first_name}!
+        template = config.welcome_message
 
-📊 وضعیت شما:
-• اشتراک‌های فعال: {subscription_count}
-• موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
-• تعداد معرفی‌ها: {referral_count}
-• سطح: {user.level}
+        if not template:
+            template = """
+    🏠 منوی اصلی {brand}
 
-لطفاً یکی از گزینه‌های زیر را انتخاب کنید:
-        """
+    👋 سلام {name}!
+
+    📊 وضعیت شما:
+    • اشتراک‌های فعال: {subscriptions}
+    • موجودی کیف پول: {wallet}
+    • تعداد معرفی‌ها: {referrals}
+    • سطح: {level}
+
+    لطفاً یکی از گزینه‌های زیر را انتخاب کنید:
+            """
+
+        welcome_text = renderer.render(template, context)
 
         keyboard = await self.get_main_menu_keyboard(user)
+
         if callback:
             await self.edit_message_with_keyboard(
                 callback.message.chat.id,
@@ -128,13 +149,13 @@ class StartHandler(BaseHandler):
                 welcome_text,
                 keyboard,
             )
-            callback.answer()
+            await callback.answer()
         else:
             await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
 
     async def handle_profile_setup_callback(self, callback: types.CallbackQuery):
         """Handle profile setup callback"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         if callback.data == "setup_profile":
             await self.start_profile_setup(callback.message.chat.id, user)
