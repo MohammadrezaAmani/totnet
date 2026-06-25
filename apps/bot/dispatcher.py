@@ -28,6 +28,8 @@ from apps.bot.handlers.subscriptions import SubscriptionHandler
 from apps.bot.handlers.support import SupportHandler
 from apps.bot.handlers.wallet import WalletHandler
 from apps.bot.models import BotState
+from apps.bot.services.broadcaster import BroadcastSubscriber
+from apps.bot.services.telegram_sender import TelegramSender
 from apps.brands.models import Brand
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,8 @@ class MultiBrandDispatcher:
         try:
             bot = Bot(token=brand.bot_token)
             dp = Dispatcher()
-
+            subscriber = BroadcastSubscriber(bot, brand.id)
+            asyncio.create_task(subscriber.start_listening())
             handlers = {
                 "start": StartHandler(bot, brand),
                 "purchase": PurchaseHandler(bot, brand),
@@ -68,11 +71,14 @@ class MultiBrandDispatcher:
                 "help": HelpHandler(bot, brand),
                 "admin": AdminHandler(bot, brand),
                 "admin_hiddify": HiddifyAdminHandler(bot, brand),
+                "telegram_sender": TelegramSender(bot, brand),
+                "subscriber": subscriber,
             }
 
             await self.setup_brand_routes(dp, brand, handlers)
 
             self.brand_bots[brand.slug] = bot
+
             self.brand_dispatchers[brand.slug] = dp
             self.brand_handlers[brand.slug] = handlers
 
@@ -93,12 +99,12 @@ class MultiBrandDispatcher:
         async def help_command(message: Message):
             await handlers["start"].show_main_menu(
                 message.chat.id,
-                await handlers["start"].get_or_create_user(message.from_user),
+                (await handlers["start"].get_or_create_user(message.from_user))[0],
             )
 
         @router.message(F.text)
         async def handle_text_messages(message: Message):
-            user = await handlers["start"].get_or_create_user(message.from_user)
+            user, _ = await handlers["start"].get_or_create_user(message.from_user)
             state = await handlers["start"].get_user_state(user)
 
             if state.current_state == "profile_setup":
@@ -149,7 +155,7 @@ class MultiBrandDispatcher:
         @router.message(F.photo)
         async def handle_photo_messages(message: Message):
             """Handle photo messages (e.g., payment receipts)"""
-            user = await handlers["start"].get_or_create_user(message.from_user)
+            user, _ = await handlers["start"].get_or_create_user(message.from_user)
             state = await handlers["start"].get_user_state(user)
 
             if state.current_state == BotState.StateType.PAYMENT_PROCESS:
@@ -171,7 +177,7 @@ class MultiBrandDispatcher:
             data = callback.data
 
             if data == "main_menu":
-                user = await handlers["start"].get_or_create_user(callback.from_user)
+                user, _ = await handlers["start"].get_or_create_user(callback.from_user)
                 await handlers["start"].show_main_menu(
                     callback.message.chat.id, user, callback
                 )
