@@ -48,7 +48,7 @@ class ReferralsHandler(BaseHandler):
 👥 سیستم معرفی دوستان
 
 🔗 لینک معرفی شما:
-`{referral_url}`
+{referral_url}
 
 📊 آمار معرفی:
 • تعداد کلیک: {referral_link.click_count}
