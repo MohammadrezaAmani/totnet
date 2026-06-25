@@ -6,10 +6,8 @@ from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.forms import ReadOnlyPasswordHashField
-from django.utils import timezone
-from django.utils.html import format_html
 
-from .models import AuditLog, Permission, Role, User, UserProfile, UserSession, UserRole
+from .models import AuditLog, Permission, Role, User, UserProfile, UserRole, UserSession
 
 
 class UserCreationForm(forms.ModelForm):
@@ -91,22 +89,36 @@ class UserSessionInline(admin.TabularInline):
 
     model = UserSession
     extra = 0
-    readonly_fields = ("session_key", "platform", "ip_address", "created_at", "last_activity", "expires_at")
-    fields = ("platform", "ip_address", "is_active", "created_at", "last_activity", "expires_at")
+    readonly_fields = (
+        "session_key",
+        "platform",
+        "ip_address",
+        "created_at",
+        "last_activity",
+        "expires_at",
+    )
+    fields = (
+        "platform",
+        "ip_address",
+        "is_active",
+        "created_at",
+        "last_activity",
+        "expires_at",
+    )
     can_delete = True
 
     def has_add_permission(self, request, obj=None):
         return False
 
 
-class UserRoleInline(admin.TabularInline):
-    """Inline for user roles"""
+# class UserRoleInline(admin.TabularInline):
+#     """Inline for user roles"""
 
-    model = UserRole
-    extra = 0
-    fields = ("role", "brand", "is_active", "assigned_at")
-    readonly_fields = ("assigned_at",)
-    raw_id_fields = ("role", "brand")
+#     model = UserRole
+#     extra = 0
+#     fields = ("role", "brand", "is_active", "assigned_at")
+#     readonly_fields = ("assigned_at",)
+#     raw_id_fields = ("role", "brand")
 
 
 class AuditLogInline(admin.TabularInline):
@@ -114,7 +126,13 @@ class AuditLogInline(admin.TabularInline):
 
     model = AuditLog
     extra = 0
-    readonly_fields = ("action_type", "object_type", "object_id", "description", "timestamp")
+    readonly_fields = (
+        "action_type",
+        "object_type",
+        "object_id",
+        "description",
+        "timestamp",
+    )
     fields = ("action_type", "object_type", "object_id", "description", "timestamp")
     can_delete = False
     max_num = 10
@@ -172,7 +190,10 @@ class UserAdmin(BaseUserAdmin):
                 )
             },
         ),
-        ("Brand & Platform", {"fields": ("brand", "admin_brands", "user_type", "language")}),
+        (
+            "Brand & Platform",
+            {"fields": ("brand", "admin_brands", "user_type", "language")},
+        ),
         (
             "Referral System",
             {"fields": ("referral_code", "referred_by", "referral_count")},
@@ -233,7 +254,7 @@ class UserAdmin(BaseUserAdmin):
         "created_at",
         "updated_at",
     )
-    inlines = [UserProfileInline, UserRoleInline, UserSessionInline, AuditLogInline]
+    inlines = [UserProfileInline, UserSessionInline, AuditLogInline]
 
     actions = [
         "activate_users",
@@ -249,28 +270,36 @@ class UserAdmin(BaseUserAdmin):
     def activate_users(self, request, queryset):
         """Activate selected users"""
         updated = queryset.update(is_active=True)
-        self.message_user(request, f"Successfully activated {updated} users.", messages.SUCCESS)
+        self.message_user(
+            request, f"Successfully activated {updated} users.", messages.SUCCESS
+        )
 
     activate_users.short_description = "Activate selected users"
 
     def deactivate_users(self, request, queryset):
         """Deactivate selected users"""
         updated = queryset.update(is_active=False)
-        self.message_user(request, f"Successfully deactivated {updated} users.", messages.SUCCESS)
+        self.message_user(
+            request, f"Successfully deactivated {updated} users.", messages.SUCCESS
+        )
 
     deactivate_users.short_description = "Deactivate selected users"
 
     def verify_users(self, request, queryset):
         """Verify selected users"""
         updated = queryset.update(is_verified=True)
-        self.message_user(request, f"Successfully verified {updated} users.", messages.SUCCESS)
+        self.message_user(
+            request, f"Successfully verified {updated} users.", messages.SUCCESS
+        )
 
     verify_users.short_description = "Verify selected users"
 
     def unverify_users(self, request, queryset):
         """Unverify selected users"""
         updated = queryset.update(is_verified=False)
-        self.message_user(request, f"Successfully unverified {updated} users.", messages.SUCCESS)
+        self.message_user(
+            request, f"Successfully unverified {updated} users.", messages.SUCCESS
+        )
 
     unverify_users.short_description = "Unverify selected users"
 
@@ -281,14 +310,16 @@ class UserAdmin(BaseUserAdmin):
             user.set_password(None)
             user.save()
             count += 1
-        self.message_user(request, f"Successfully reset passwords for {count} users.", messages.SUCCESS)
+        self.message_user(
+            request,
+            f"Successfully reset passwords for {count} users.",
+            messages.SUCCESS,
+        )
 
     reset_passwords.short_description = "Reset passwords for selected users"
 
     def add_reward_points(self, request, queryset):
         """Add reward points to selected users"""
-        from django.contrib.admin.views.decorators import staff_member_required
-        from django.shortcuts import render
         from django import forms
 
         class PointsForm(forms.Form):
@@ -303,7 +334,9 @@ class UserAdmin(BaseUserAdmin):
                 user.reward_points += points
                 user.save()
                 updated += 1
-            self.message_user(request, f"Added {points} points to {updated} users.", messages.SUCCESS)
+            self.message_user(
+                request, f"Added {points} points to {updated} users.", messages.SUCCESS
+            )
             return
 
         self.message_user(request, "Points added successfully.", messages.SUCCESS)
@@ -313,20 +346,31 @@ class UserAdmin(BaseUserAdmin):
     def clear_wallet(self, request, queryset):
         """Clear wallet balance for selected users"""
         updated = queryset.update(wallet_balance=0)
-        self.message_user(request, f"Cleared wallet for {updated} users.", messages.SUCCESS)
+        self.message_user(
+            request, f"Cleared wallet for {updated} users.", messages.SUCCESS
+        )
 
     clear_wallet.short_description = "Clear wallet balance"
 
     def export_users_csv(self, request, queryset):
         """Export selected users to CSV"""
         import csv
+
         from django.http import HttpResponse
 
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="users_export.csv"'
         writer = csv.writer(response)
         writer.writerow(
-            ["Username", "Telegram ID", "Full Name", "User Type", "Brand", "Wallet Balance", "Created At"]
+            [
+                "Username",
+                "Telegram ID",
+                "Full Name",
+                "User Type",
+                "Brand",
+                "Wallet Balance",
+                "Created At",
+            ]
         )
         for user in queryset:
             writer.writerow(
@@ -415,13 +459,22 @@ class AuditLogAdmin(admin.ModelAdmin):
     def export_logs_csv(self, request, queryset):
         """Export audit logs to CSV"""
         import csv
+
         from django.http import HttpResponse
 
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="audit_logs_export.csv"'
         writer = csv.writer(response)
         writer.writerow(
-            ["User", "Brand", "Action Type", "Object Type", "Object ID", "Description", "Timestamp"]
+            [
+                "User",
+                "Brand",
+                "Action Type",
+                "Object Type",
+                "Object ID",
+                "Description",
+                "Timestamp",
+            ]
         )
         for log in queryset:
             writer.writerow(
