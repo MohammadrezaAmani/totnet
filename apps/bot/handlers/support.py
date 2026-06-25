@@ -21,7 +21,7 @@ class SupportHandler(BaseHandler):
 
     async def show_support_menu(self, callback: types.CallbackQuery):
         """Show main support menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         open_tickets = await SupportTicket.objects.filter(
             customer=user,
@@ -89,7 +89,7 @@ class SupportHandler(BaseHandler):
             await callback.answer()
             return
 
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user, BotState.StateType.SUPPORT_TICKET, {"step": "category"}
         )
@@ -130,7 +130,7 @@ class SupportHandler(BaseHandler):
         self, callback: types.CallbackQuery, category_id: int
     ):
         """Handle category selection for ticket"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             category = await SupportCategory.objects.aget(
@@ -254,7 +254,7 @@ class SupportHandler(BaseHandler):
 
     async def show_my_tickets(self, callback: types.CallbackQuery):
         """Show user's support tickets"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         tickets = []
         async for ticket in SupportTicket.objects.filter(

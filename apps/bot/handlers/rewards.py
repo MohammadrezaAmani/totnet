@@ -28,7 +28,7 @@ class RewardsHandler(BaseHandler):
 
     async def show_rewards(self, callback: types.CallbackQuery):
         """Show rewards and achievements"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         referral_count = await Referral.objects.filter(
             referrer=user, brand=self.brand, status="completed"
@@ -190,7 +190,7 @@ class RewardsHandler(BaseHandler):
             await callback.answer("❌ خطا در بارگذاری جدول")
             return
 
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         text = """
 🏆 جدول امتیازات

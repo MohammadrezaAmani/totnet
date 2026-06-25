@@ -119,7 +119,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
 
     async def show_my_subscriptions(self, callback: types.CallbackQuery):
         """Show user's subscriptions with Hiddify integration"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         subscriptions = []
         async for sub in (
@@ -186,7 +186,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
         self, callback: types.CallbackQuery, sub_id: int
     ):
         """Show detailed subscription information with Hiddify integration"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = (
@@ -248,7 +248,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
 
     async def get_subscription_config(self, callback: types.CallbackQuery, sub_id: int):
         """Get VPN configurations from Hiddify"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = (
@@ -384,7 +384,7 @@ UUID کاربر در پنل یافت نشد.
     ):
         """Show specific config by index (no re-fetch logic, uses cached configs)"""
 
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = await Subscription.objects.filter(
@@ -470,7 +470,7 @@ UUID کاربر در پنل یافت نشد.
 
     async def show_apps_menu(self, callback: types.CallbackQuery, sub_id: int):
         """Show VPN client apps for different platforms"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = await Subscription.objects.filter(
@@ -533,7 +533,7 @@ UUID کاربر در پنل یافت نشد.
         self, callback: types.CallbackQuery, sub_id: int, platform: str
     ):
         """Show recommended apps for a specific platform"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = await Subscription.objects.filter(
@@ -663,7 +663,7 @@ UUID کاربر در پنل یافت نشد.
 
     async def show_mtproxies(self, callback: types.CallbackQuery, sub_id: int):
         """Show MTProxy configurations"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = await Subscription.objects.filter(
@@ -735,7 +735,7 @@ UUID کاربر در پنل یافت نشد.
 
     async def show_usage_statistics(self, callback: types.CallbackQuery, sub_id: int):
         """Show usage statistics from Hiddify"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = (
@@ -831,7 +831,7 @@ UUID کاربر در پنل یافت نشد.
 
     async def get_short_url(self, callback: types.CallbackQuery, sub_id: int):
         """Get short URL for subscription"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = await Subscription.objects.filter(
@@ -930,7 +930,7 @@ UUID کاربر در پنل یافت نشد.
         self, callback: types.CallbackQuery, sub_id: int, config_type: str
     ):
         """Copy config to clipboard (handled by Telegram client)"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = await Subscription.objects.filter(
@@ -973,7 +973,7 @@ UUID کاربر در پنل یافت نشد.
         """Download config file"""
 
         try:
-            user = await self.get_or_create_user(callback.from_user)
+            user, _ = await self.get_or_create_user(callback.from_user)
 
             sub = await Subscription.objects.filter(
                 id=sub_id, user=user, brand=self.brand
@@ -1026,7 +1026,7 @@ UUID کاربر در پنل یافت نشد.
     async def show_qr_code(self, callback: types.CallbackQuery, sub_id: int, idx: int):
         """Show specific config by index (no re-fetch logic, uses cached configs)"""
 
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             sub = await Subscription.objects.filter(
@@ -1092,7 +1092,7 @@ UUID کاربر در پنل یافت نشد.
         """Send config file to user"""
 
         try:
-            user = await self.get_or_create_user(callback.from_user)
+            user, _ = await self.get_or_create_user(callback.from_user)
 
             sub = await Subscription.objects.filter(
                 id=sub_id, user=user, brand=self.brand

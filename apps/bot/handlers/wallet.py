@@ -20,7 +20,7 @@ class WalletHandler(BaseHandler):
 
     async def show_wallet(self, callback: types.CallbackQuery):
         """Show wallet overview"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             wallet = await Wallet.objects.aget(user=user, brand=self.brand)
@@ -83,7 +83,7 @@ class WalletHandler(BaseHandler):
 
     async def show_wallet_history(self, callback: types.CallbackQuery):
         """Show complete wallet transaction history"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             wallet = await Wallet.objects.aget(user=user, brand=self.brand)
@@ -210,7 +210,7 @@ class WalletHandler(BaseHandler):
 
     async def initiate_charge(self, callback: types.CallbackQuery, amount: int):
         """Initiate wallet charge process"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             wallet = await Wallet.objects.aget(user=user, brand=self.brand)
@@ -265,7 +265,7 @@ class WalletHandler(BaseHandler):
 
     async def show_wallet_settings(self, callback: types.CallbackQuery):
         """Show wallet settings"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             wallet = await Wallet.objects.aget(user=user, brand=self.brand)

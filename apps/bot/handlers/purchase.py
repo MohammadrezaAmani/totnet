@@ -34,7 +34,7 @@ class PurchaseHandler(BaseHandler):
 
     async def show_subscription_plans(self, callback: types.CallbackQuery):
         """Show available subscription plans"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user, BotState.StateType.PURCHASE_FLOW, {"step": "plan_selection"}
         )
@@ -92,7 +92,7 @@ class PurchaseHandler(BaseHandler):
 
     async def show_plan_details(self, callback: types.CallbackQuery, plan_id: int):
         """Show detailed plan information"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             plan = await SubscriptionPlan.objects.aget(id=plan_id, brand=self.brand)
@@ -172,7 +172,7 @@ class PurchaseHandler(BaseHandler):
         self, callback: types.CallbackQuery, plan_id: int, purchase_type: str = "self"
     ):
         """Initiate purchase process"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             plan = await SubscriptionPlan.objects.aget(id=plan_id, brand=self.brand)
@@ -219,7 +219,7 @@ class PurchaseHandler(BaseHandler):
 
 لطفاً روش پرداخت خود را انتخاب کنید:
         """
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
@@ -243,7 +243,7 @@ class PurchaseHandler(BaseHandler):
                 ]
             )
 
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         try:
             wallet = await WalletTransaction.objects.filter(
                 wallet__user=user, wallet__brand=self.brand
@@ -277,7 +277,7 @@ class PurchaseHandler(BaseHandler):
         self, callback: types.CallbackQuery, order_id: str
     ):
         """Process wallet payment"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             order = await Order.objects.aget(
@@ -352,7 +352,7 @@ class PurchaseHandler(BaseHandler):
         self, callback: types.CallbackQuery, order_id: str
     ):
         """Show card transfer payment instructions"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             order = await Order.objects.aget(
@@ -541,7 +541,7 @@ class PurchaseHandler(BaseHandler):
         return subscription
 
     async def payment_done(self, callback: types.CallbackQuery, order_id: str):
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             order = await Order.objects.aget(
@@ -611,7 +611,7 @@ class PurchaseHandler(BaseHandler):
     async def payment_not_done(self, callback: types.CallbackQuery, order_id: str):
         """Cancel payment flow"""
 
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             order = await Order.objects.aget(
@@ -658,7 +658,7 @@ class PurchaseHandler(BaseHandler):
         message: types.Message,
         state: BotState,
     ):
-        user = await self.get_or_create_user(message.from_user)
+        user, _ = await self.get_or_create_user(message.from_user)
 
         if state.current_state != BotState.StateType.PAYMENT_PROCESS:
             await message.answer("❌ این پیام در این مرحله قابل قبول نیست.")
@@ -729,11 +729,18 @@ class PurchaseHandler(BaseHandler):
             },
         )
 
-        await message.answer(
+        text = (
             "✅ رسید دریافت شد\n"
             "⏳ پرداخت شما در صف بررسی توسط ادمین قرار گرفت.\n"
             "به محض تأیید، اشتراک شما فعال خواهد شد."
         )
+        keyboard = self.create_keyboard(
+            [
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+            ]
+        )
+
+        await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
         await self._notify_admin_receipt(order, payment, file_id)
 
@@ -742,7 +749,6 @@ class PurchaseHandler(BaseHandler):
         admin_text = (
             f"🧾 رسید جدید\n"
             f"سفارش: {order.order_number}\n"
-            f"کاربر: {order.user.telegram_id}\n"
             f"مبلغ: {self.format_price(order.final_price, order.currency)}\n"
             f"payment_id: {payment.id}"
         )

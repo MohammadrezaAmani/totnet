@@ -22,7 +22,7 @@ class SubscriptionHandler(BaseHandler):
 
     async def show_my_subscriptions(self, callback: types.CallbackQuery):
         """Show user's subscriptions"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         subscriptions = []
         async for sub in (
@@ -111,7 +111,7 @@ class SubscriptionHandler(BaseHandler):
         self, callback: types.CallbackQuery, subscription_id: int
     ):
         """Show detailed subscription information"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             subscription = await Subscription.objects.select_related(
@@ -221,7 +221,7 @@ class SubscriptionHandler(BaseHandler):
         self, callback: types.CallbackQuery, subscription_id: int
     ):
         """Send subscription configuration to user"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             subscription = await Subscription.objects.select_related(
@@ -390,7 +390,7 @@ class SubscriptionHandler(BaseHandler):
         self, callback: types.CallbackQuery, subscription_id: int
     ):
         """Show subscription usage statistics"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             subscription = await Subscription.objects.select_related("plan").aget(
@@ -534,7 +534,7 @@ class SubscriptionHandler(BaseHandler):
 
     async def show_qr_codes(self, callback: types.CallbackQuery, subscription_id: int):
         """Show QR codes for subscription configuration"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             subscription = await Subscription.objects.select_related(
@@ -615,7 +615,7 @@ class SubscriptionHandler(BaseHandler):
         self, callback: types.CallbackQuery, subscription_id: int, config_type: str
     ):
         """Copy configuration to clipboard (simulated)"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             subscription = await Subscription.objects.select_related(
@@ -660,7 +660,7 @@ class SubscriptionHandler(BaseHandler):
         self, callback: types.CallbackQuery, subscription_id: int
     ):
         """Send configuration as a file"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             subscription = await Subscription.objects.select_related(
@@ -739,7 +739,7 @@ class SubscriptionHandler(BaseHandler):
         self, callback: types.CallbackQuery, subscription_id: int, config_type: str
     ):
         """Download configuration file"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             subscription = await Subscription.objects.select_related(

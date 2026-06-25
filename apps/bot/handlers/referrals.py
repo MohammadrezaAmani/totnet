@@ -32,7 +32,7 @@ class ReferralsHandler(BaseHandler):
 
     async def show_referral_menu(self, callback: types.CallbackQuery):
         """Show referral system menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)
@@ -84,7 +84,7 @@ class ReferralsHandler(BaseHandler):
 
     async def show_referral_stats(self, callback: types.CallbackQuery):
         """Show detailed referral statistics"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)
@@ -146,7 +146,7 @@ class ReferralsHandler(BaseHandler):
 
     async def share_referral_link(self, callback: types.CallbackQuery):
         """Share referral link with user"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)
@@ -192,7 +192,7 @@ class ReferralsHandler(BaseHandler):
 
     async def copy_referral_link(self, callback: types.CallbackQuery):
         """Copy referral link to clipboard"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
             referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)

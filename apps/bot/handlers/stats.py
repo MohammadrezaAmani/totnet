@@ -19,7 +19,7 @@ class StatsHandler(BaseHandler):
 
     async def show_statistics(self, callback: types.CallbackQuery):
         """Show user statistics"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         subscription_count = await Subscription.objects.filter(
             user=user, brand=self.brand, status="active"
@@ -70,7 +70,7 @@ class StatsHandler(BaseHandler):
 
     async def show_detailed_stats(self, callback: types.CallbackQuery):
         """Show detailed user statistics"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         subscriptions = []
         async for subscription in Subscription.objects.filter(
@@ -148,7 +148,7 @@ class StatsHandler(BaseHandler):
 
     async def show_subscription_stats(self, callback: types.CallbackQuery):
         """Show statistics for all user subscriptions"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         subscriptions = []
         async for subscription in Subscription.objects.filter(

@@ -63,7 +63,7 @@ class AdminHandler(BaseHandler):
 
     async def show_admin_menu(self, callback: types.CallbackQuery):
         """Show admin main menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         has_access = await self.check_admin_access(user)
         if not has_access:
@@ -158,7 +158,7 @@ class AdminHandler(BaseHandler):
 
     async def show_dashboard(self, callback: types.CallbackQuery):
         """Show admin dashboard with statistics"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -230,7 +230,7 @@ class AdminHandler(BaseHandler):
 
     async def show_users_management(self, callback: types.CallbackQuery):
         """Show user management menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -267,7 +267,7 @@ class AdminHandler(BaseHandler):
 
     async def show_orders_management(self, callback: types.CallbackQuery):
         """Show orders management menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -339,7 +339,7 @@ class AdminHandler(BaseHandler):
 
     async def show_tickets_management(self, callback: types.CallbackQuery):
         """Show support tickets management"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -406,7 +406,7 @@ class AdminHandler(BaseHandler):
 
     async def show_broadcast_menu(self, callback: types.CallbackQuery):
         """Show broadcast (bulk messaging) menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         role = await self.check_admin_role(user)
         if role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
@@ -458,7 +458,7 @@ class AdminHandler(BaseHandler):
 
     async def show_settings(self, callback: types.CallbackQuery):
         """Show brand settings"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         role = await self.check_admin_role(user)
         if role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
@@ -504,7 +504,7 @@ class AdminHandler(BaseHandler):
 
     async def request_search_username(self, callback: types.CallbackQuery):
         """Request admin to enter username for search"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user, BotState.StateType.MAIN_MENU, {"admin_action": "search_user"}
         )

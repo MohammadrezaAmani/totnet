@@ -21,7 +21,7 @@ class ProfileHandler(BaseHandler):
     """Handle user profile operations"""
 
     async def show_my_profile(self, callback: types.CallbackQuery):
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         subscription_count = await Subscription.objects.filter(
             user=user, brand=self.brand, status="active"
@@ -62,7 +62,7 @@ class ProfileHandler(BaseHandler):
         await callback.answer()
 
     async def edit_profile(self, callback: types.CallbackQuery):
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         await self.update_user_state(
             user, BotState.StateType.PROFILE_EDIT, {"step": "menu"}
@@ -87,7 +87,7 @@ class ProfileHandler(BaseHandler):
         await callback.answer()
 
     async def request_field_update(self, callback: types.CallbackQuery, field: str):
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         await self.update_user_state(
             user,

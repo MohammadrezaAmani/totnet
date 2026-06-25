@@ -95,7 +95,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_admin_menu(self, callback: types.CallbackQuery):
         """Show admin main menu with Hiddify integration"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -200,7 +200,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_dashboard(self, callback: types.CallbackQuery):
         """Show admin dashboard with server stats"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -271,7 +271,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_server_status(self, callback: types.CallbackQuery):
         """Show detailed server status from Hiddify"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -347,7 +347,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_panel_admins_menu(self, callback: types.CallbackQuery):
         """Show Hiddify panel admins management"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -392,7 +392,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def list_panel_admins(self, callback: types.CallbackQuery):
         """List all panel admins from Hiddify"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         provider = await self.get_hiddify_provider()
         if not provider:
@@ -455,7 +455,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def start_add_panel_admin(self, callback: types.CallbackQuery):
         """Start process of adding a new panel admin"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         await self.update_user_state(
             user,
@@ -534,7 +534,7 @@ class HiddifyAdminHandler(BaseHandler):
         self, callback: types.CallbackQuery, mode: str
     ):
         """Handle admin mode selection"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         state = await self.get_user_state(user)
 
         if not state.state_data:
@@ -556,7 +556,7 @@ class HiddifyAdminHandler(BaseHandler):
         self, callback: types.CallbackQuery, can_add: bool
     ):
         """Handle can_add_admin selection and create admin"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         state = await self.get_user_state(user)
 
         if not state.state_data or "admin_data" not in state.state_data:
@@ -623,7 +623,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_panel_users_menu(self, callback: types.CallbackQuery):
         """Show panel users management menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -721,7 +721,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def start_add_panel_user(self, callback: types.CallbackQuery):
         """Start process of adding a new panel user"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
 
         await self.update_user_state(
             user,
@@ -790,7 +790,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_orders_management(self, callback: types.CallbackQuery):
         """Show orders management menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -855,7 +855,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_tickets_management(self, callback: types.CallbackQuery):
         """Show support tickets management"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         has_access = await self.check_admin_access(user)
 
         if not has_access:
@@ -918,7 +918,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_broadcast_menu(self, callback: types.CallbackQuery):
         """Show broadcast menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         role = await self.check_admin_role(user)
 
         if role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
@@ -961,7 +961,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def show_settings(self, callback: types.CallbackQuery):
         """Show settings menu"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         role = await self.check_admin_role(user)
 
         if role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
@@ -1001,7 +1001,7 @@ class HiddifyAdminHandler(BaseHandler):
 
     async def request_search_username(self, callback: types.CallbackQuery):
         """Request admin to enter username for search"""
-        user = await self.get_or_create_user(callback.from_user)
+        user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user, BotState.StateType.MAIN_MENU, {"admin_action": "search_user"}
         )

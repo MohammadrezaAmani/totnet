@@ -6,6 +6,7 @@ import logging
 
 from aiogram import Bot, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from django.core.cache import cache
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
@@ -21,8 +22,17 @@ class BaseHandler:
         self.bot = bot
         self.brand = brand
 
-    async def get_or_create_user(self, telegram_user: types.User) -> User:
+    async def get_or_create_user(
+        self, telegram_user: types.User, use_cache: bool = True, cache_ttl: int = 300
+    ) -> User:
         """Get or create user from Telegram user data"""
+        CACHE_KEY: str = f"{self.brand.id}:{telegram_user}"
+        created = False
+
+        if use_cache:
+            cached = cache.get(CACHE_KEY)
+            if cached:
+                return cached, created
         try:
             user = await User.objects.aget(
                 telegram_id=telegram_user.id, brand=self.brand
@@ -37,12 +47,14 @@ class BaseHandler:
                 brand=self.brand,
                 user_type=User.UserType.CUSTOMER,
             )
+            created = True
 
             await BotState.objects.acreate(
                 user=user, brand=self.brand, current_state=BotState.StateType.MAIN_MENU
             )
-
-        return user
+        if use_cache:
+            cache.set(CACHE_KEY, user, timeout=cache_ttl)
+        return user, created
 
     async def get_user_state(self, user: User) -> BotState:
         """Get user's current bot state"""
