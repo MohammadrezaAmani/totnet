@@ -13,6 +13,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.orders.models import Payment
 from apps.subscriptions.models import Subscription
+from utils.message import broadcast_message
 
 from .models import HiddifyAdmin, VPNProvider
 
@@ -75,6 +76,14 @@ def payment_status_changed(sender, instance: Payment, created, **kwargs):
             owner=instance.user,
             status=Subscription.SubscriptionStatus.ACTIVE,
             starts_at=datetime.now(),
+        )
+        broadcast_message(
+            brand_id=instance.brand_id,
+            user_ids=[instance.user.telegram_id],
+            text="واریزی شما برای پلن {} تایید شد.\nاکنون می‌توانید با مراجعه به بخش پلن‌های من کانفیگ‌های ساخته شده استفاده کنید.",
+            buttons_data=[
+                [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
+            ],
         )
 
 
