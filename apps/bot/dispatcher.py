@@ -14,14 +14,16 @@ from aiohttp import web
 from django.conf import settings
 
 from apps.bot.handlers.admin import AdminHandler
+from apps.bot.handlers.admin_hiddify import HiddifyAdminHandler
 from apps.bot.handlers.base import BaseHandler
 from apps.bot.handlers.help import HelpHandler
 from apps.bot.handlers.profile import ProfileHandler
-from apps.bot.handlers.purchase import PurchaseHandler
+from apps.bot.handlers.purchase import PurchaseHandler, PurchaseStep
 from apps.bot.handlers.referrals import ReferralsHandler
 from apps.bot.handlers.rewards import RewardsHandler
 from apps.bot.handlers.start import StartHandler
 from apps.bot.handlers.stats import StatsHandler
+from apps.bot.handlers.subscription_hiddify import SubscriptionHiddifyHandler
 from apps.bot.handlers.subscriptions import SubscriptionHandler
 from apps.bot.handlers.support import SupportHandler
 from apps.bot.handlers.wallet import WalletHandler
@@ -56,6 +58,7 @@ class MultiBrandDispatcher:
                 "start": StartHandler(bot, brand),
                 "purchase": PurchaseHandler(bot, brand),
                 "subscriptions": SubscriptionHandler(bot, brand),
+                "subscription_hiddify": SubscriptionHiddifyHandler(bot, brand),
                 "profile": ProfileHandler(bot, brand),
                 "referrals": ReferralsHandler(bot, brand),
                 "stats": StatsHandler(bot, brand),
@@ -64,6 +67,7 @@ class MultiBrandDispatcher:
                 "rewards": RewardsHandler(bot, brand),
                 "help": HelpHandler(bot, brand),
                 "admin": AdminHandler(bot, brand),
+                "admin_hiddify": HiddifyAdminHandler(bot, brand),
             }
 
             await self.setup_brand_routes(dp, brand, handlers)
@@ -116,16 +120,48 @@ class MultiBrandDispatcher:
                         message, user, state
                     )
             elif state.state_data.get("admin_action"):
-                await handlers["admin"].handle_admin_message(message, user, state)
+                await handlers["admin_hiddify"].handle_admin_message(
+                    message, user, state
+                )
+            elif state.state_data.get("action"):
+                action = state.state_data.get("action")
+                if action in ["add_panel_admin", "add_panel_user"]:
+                    await handlers["admin_hiddify"].handle_admin_message(
+                        message, user, state
+                    )
+                else:
+                    await message.reply(
+                        "لطفاً از منوی زیر استفاده کنید:",
+                        reply_markup=await handlers["start"].get_main_menu_keyboard(
+                            user
+                        ),
+                    )
             else:
                 await message.reply(
                     "لطفاً از منوی زیر استفاده کنید:",
-                    reply_markup=handlers["start"].get_main_menu_keyboard(),
+                    reply_markup=await handlers["start"].get_main_menu_keyboard(user),
                 )
 
         @router.callback_query()
         async def handle_callbacks(callback: CallbackQuery):
             await self.route_callback(callback, handlers)
+
+        @router.message(F.photo)
+        async def handle_photo_messages(message: Message):
+            """Handle photo messages (e.g., payment receipts)"""
+            user = await handlers["start"].get_or_create_user(message.from_user)
+            state = await handlers["start"].get_user_state(user)
+
+            if state.current_state == BotState.StateType.PAYMENT_PROCESS:
+                step = (state.state_data or {}).get("step")
+                if step == PurchaseStep.WAITING_RECEIPT:
+                    await handlers["purchase"].handle_photo_message(message, state)
+                    return
+
+            await message.reply(
+                "❌ در حال حاضر منتظر عکس نیستم.\nلطفاً از منوی زیر استفاده کنید:",
+                reply_markup=await handlers["start"].get_main_menu_keyboard(user),
+            )
 
         dp.include_router(router)
 
@@ -136,7 +172,9 @@ class MultiBrandDispatcher:
 
             if data == "main_menu":
                 user = await handlers["start"].get_or_create_user(callback.from_user)
-                await handlers["start"].show_main_menu(callback.message.chat.id, user)
+                await handlers["start"].show_main_menu(
+                    callback.message.chat.id, user, callback
+                )
 
             elif data == "my_profile":
                 await handlers["profile"].show_my_profile(callback)
@@ -181,10 +219,20 @@ class MultiBrandDispatcher:
             elif data.startswith("buy_for_other_"):
                 plan_id = int(data.split("_")[3])
                 await handlers["purchase"].initiate_purchase(callback, plan_id, "other")
+            elif data.startswith("payment_done_"):
+                parts = data.split("_")
+                if len(parts) >= 2:
+                    order_id = parts[2]
+                    await handlers["purchase"].payment_done(callback, order_id)
+            elif data.startswith("payment_not_done_"):
+                parts = data.split("_")
+                if len(parts) >= 3:
+                    order_id = parts[3]
+                    await handlers["purchase"].payment_not_done(callback, order_id)
             elif data.startswith("payment_"):
                 parts = data.split("_")
                 if len(parts) >= 3:
-                    order_id = parts[2]
+                    order_id = parts[3]
                     await handlers["purchase"].show_card_transfer_payment(
                         callback, order_id
                     )
@@ -192,6 +240,7 @@ class MultiBrandDispatcher:
                 parts = data.split("_")
                 if len(parts) >= 3:
                     order_id = parts[3]
+
                     await handlers["purchase"].show_card_transfer_payment(
                         callback, order_id
                     )
@@ -209,33 +258,35 @@ class MultiBrandDispatcher:
                 await handlers["wallet"].show_wallet_history(callback)
 
             elif data == "my_subscriptions":
-                await handlers["subscriptions"].show_my_subscriptions(callback)
+                await handlers["subscription_hiddify"].show_my_subscriptions(callback)
             elif data.startswith("subscription_details_"):
                 sub_id = int(data.split("_")[2])
-                await handlers["subscriptions"].show_subscription_details(
+                await handlers["subscription_hiddify"].show_subscription_details(
                     callback, sub_id
                 )
             elif data.startswith("get_config_"):
                 sub_id = int(data.split("_")[2])
-                await handlers["subscriptions"].get_subscription_config(
+                await handlers["subscription_hiddify"].get_subscription_config(
                     callback, sub_id
                 )
             elif data.startswith("usage_stats_"):
                 sub_id = int(data.split("_")[2])
-                await handlers["subscriptions"].show_usage_statistics(callback, sub_id)
+                await handlers["subscription_hiddify"].show_usage_statistics(
+                    callback, sub_id
+                )
             elif data.startswith("renew_"):
                 sub_id = int(data.split("_")[1])
-                await handlers["subscriptions"].show_subscription_details(
+                await handlers["subscription_hiddify"].show_subscription_details(
                     callback, sub_id
                 )
             elif data.startswith("upgrade_"):
                 sub_id = int(data.split("_")[1])
-                await handlers["subscriptions"].show_subscription_details(
+                await handlers["subscription_hiddify"].show_subscription_details(
                     callback, sub_id
                 )
             elif data.startswith("transfer_"):
                 sub_id = int(data.split("_")[1])
-                await handlers["subscriptions"].show_subscription_details(
+                await handlers["subscription_hiddify"].show_subscription_details(
                     callback, sub_id
                 )
             elif data.startswith("copy_config_"):
@@ -244,7 +295,7 @@ class MultiBrandDispatcher:
                     try:
                         config_type = parts[2].rsplit("_", 1)[0]
                         sub_id = int(parts[2].rsplit("_", 1)[1])
-                        await handlers["subscriptions"].copy_config(
+                        await handlers["subscription_hiddify"].copy_config(
                             callback, sub_id, config_type
                         )
                     except ValueError, IndexError:
@@ -256,7 +307,7 @@ class MultiBrandDispatcher:
                     try:
                         config_type = parts[1]
                         sub_id = int(parts[2])
-                        await handlers["subscriptions"].download_config(
+                        await handlers["subscription_hiddify"].download_config(
                             callback, sub_id, config_type
                         )
                     except ValueError, IndexError:
@@ -267,7 +318,9 @@ class MultiBrandDispatcher:
                 if len(parts) >= 2:
                     try:
                         sub_id = int(parts[2])
-                        await handlers["subscriptions"].show_qr_codes(callback, sub_id)
+                        await handlers["subscription_hiddify"].show_qr_codes(
+                            callback, sub_id
+                        )
                     except ValueError, IndexError:
                         logger.error(f"Error parsing qr_codes callback: {data}")
                         await callback.answer("❌ خطا در پردازش درخواست")
@@ -276,12 +329,85 @@ class MultiBrandDispatcher:
                 if len(parts) >= 2:
                     try:
                         sub_id = int(parts[2])
-                        await handlers["subscriptions"].send_config_file(
+                        await handlers["subscription_hiddify"].send_config_file(
                             callback, sub_id
                         )
                     except ValueError, IndexError:
                         logger.error(f"Error parsing config_file callback: {data}")
                         await callback.answer("❌ خطا در پردازش درخواست")
+
+            elif data.startswith("get_apps_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_apps_menu(callback, sub_id)
+            elif data.startswith("apps_android_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_apps_by_platform(
+                    callback, sub_id, "android"
+                )
+            elif data.startswith("apps_ios_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_apps_by_platform(
+                    callback, sub_id, "ios"
+                )
+            elif data.startswith("apps_windows_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_apps_by_platform(
+                    callback, sub_id, "windows"
+                )
+            elif data.startswith("apps_linux_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_apps_by_platform(
+                    callback, sub_id, "linux"
+                )
+            elif data.startswith("apps_mac_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_apps_by_platform(
+                    callback, sub_id, "mac"
+                )
+            elif data.startswith("apps_all_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_apps_by_platform(
+                    callback, sub_id, "all"
+                )
+
+            elif data.startswith("show_config_"):
+                sub_id = int(data.split("_")[2])
+                idx = int(data.split("_")[3])
+                await handlers["subscription_hiddify"].show_config_by_protocol(
+                    callback, sub_id, idx
+                )
+            elif data.startswith("copy_vless_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].copy_config(
+                    callback, sub_id, "vless"
+                )
+            elif data.startswith("copy_vmess_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].copy_config(
+                    callback, sub_id, "vmess"
+                )
+            elif data.startswith("copy_trojan_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].copy_config(
+                    callback, sub_id, "trojan"
+                )
+            elif data.startswith("copy_sub_link_"):
+                sub_id = int(data.split("_")[3])
+                await callback.answer("📋 لینک اشتراک کپی شد!")
+            elif data.startswith("qr_"):
+                sub_id = int(data.split("_")[1])
+                idx = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].show_qr_code(
+                    callback, sub_id, idx
+                )
+
+            elif data.startswith("mtproxies_"):
+                sub_id = int(data.split("_")[1])
+                await handlers["subscription_hiddify"].show_mtproxies(callback, sub_id)
+
+            elif data.startswith("short_url_"):
+                sub_id = int(data.split("_")[2])
+                await handlers["subscription_hiddify"].get_short_url(callback, sub_id)
 
             elif data == "wallet":
                 await self.show_wallet(callback, handlers["start"])
@@ -339,27 +465,66 @@ class MultiBrandDispatcher:
                 await handlers["help"].show_privacy(callback)
 
             elif data == "admin":
-                await handlers["admin"].show_admin_menu(callback)
+                await handlers["admin_hiddify"].show_admin_menu(callback)
             elif data == "admin_dashboard":
-                await handlers["admin"].show_dashboard(callback)
+                await handlers["admin_hiddify"].show_dashboard(callback)
             elif data == "admin_users":
-                await handlers["admin"].show_users_management(callback)
+                await handlers["admin_hiddify"].show_users_management(callback)
             elif data == "admin_orders":
-                await handlers["admin"].show_orders_management(callback)
+                await handlers["admin_hiddify"].show_orders_management(callback)
             elif data == "admin_tickets":
-                await handlers["admin"].show_tickets_management(callback)
+                await handlers["admin_hiddify"].show_tickets_management(callback)
             elif data == "admin_broadcast":
-                await handlers["admin"].show_broadcast_menu(callback)
+                await handlers["admin_hiddify"].show_broadcast_menu(callback)
             elif data == "admin_settings":
-                await handlers["admin"].show_settings(callback)
+                await handlers["admin_hiddify"].show_settings(callback)
             elif data == "admin_search_user":
-                await handlers["admin"].request_search_username(callback)
+                await handlers["admin_hiddify"].request_search_username(callback)
             elif data == "admin_stats":
-                await handlers["admin"].show_dashboard(callback)
+                await handlers["admin_hiddify"].show_dashboard(callback)
             elif data == "admin_ticket_stats":
-                await handlers["admin"].show_tickets_management(callback)
+                await handlers["admin_hiddify"].show_tickets_management(callback)
+
+            elif data == "admin_panel_admins":
+                await handlers["admin_hiddify"].show_panel_admins_menu(callback)
+            elif data == "admin_list_panel_admins":
+                await handlers["admin_hiddify"].list_panel_admins(callback)
+            elif data == "admin_add_panel_admin":
+                await handlers["admin_hiddify"].start_add_panel_admin(callback)
+            elif data == "admin_search_panel_admin":
+                await callback.answer("🔍 جستجوی ادمین پنل")
+            elif data == "admin_sync_panel_admins":
+                await callback.answer("🔄 همگام‌سازی ادمین‌ها انجام شد")
+            elif data.startswith("admin_mode_"):
+                mode = data.replace("admin_mode_", "")
+                await handlers["admin_hiddify"].handle_panel_admin_mode_selection(
+                    callback, mode
+                )
+            elif data.startswith("admin_can_add_"):
+                can_add = data == "admin_can_add_yes"
+                await handlers["admin_hiddify"].handle_panel_admin_can_add(
+                    callback, can_add
+                )
+
+            elif data == "admin_panel_users":
+                await handlers["admin_hiddify"].show_panel_users_menu(callback)
+            elif data == "admin_list_panel_users":
+                await handlers["admin_hiddify"].list_panel_users(callback)
+            elif data == "admin_add_panel_user":
+                await handlers["admin_hiddify"].start_add_panel_user(callback)
+            elif data == "admin_search_panel_user":
+                await callback.answer("🔍 جستجوی کاربر پنل")
+            elif data == "admin_update_usage":
+                await handlers["admin_hiddify"].update_user_usage(callback)
+
+            elif data == "admin_server_status":
+                await handlers["admin_hiddify"].show_server_status(callback)
+            elif data == "admin_panel_settings":
+                await callback.answer("⚙️ تنظیمات پنل VPN")
 
             elif data in ["payment_methods_back", "back_to_plans"]:
+                await handlers["purchase"].show_subscription_plans(callback)
+            elif data in ["payment_methods_"]:
                 await handlers["purchase"].show_subscription_plans(callback)
 
             else:

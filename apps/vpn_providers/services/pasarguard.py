@@ -27,11 +27,6 @@ from apps.vpn_providers.services.base import (
 logger = logging.getLogger(__name__)
 
 
-
-
-
-
-
 class BackendType(Enum):
     XRAY = 0
     WIREGUARD = 1
@@ -61,23 +56,27 @@ class DataLimitResetStrategy(Enum):
     MONTHLY = "monthly"
 
 
-
-
-
 @dataclass
 class ProxySettings:
     """Protocol-specific proxy credentials for a user."""
 
-    vmess: Optional[Dict[str, Any]] = None        
-    vless: Optional[Dict[str, Any]] = None        
-    trojan: Optional[Dict[str, Any]] = None       
-    shadowsocks: Optional[Dict[str, Any]] = None  
-    wireguard: Optional[Dict[str, Any]] = None    
-    hysteria: Optional[Dict[str, Any]] = None     
+    vmess: Optional[Dict[str, Any]] = None
+    vless: Optional[Dict[str, Any]] = None
+    trojan: Optional[Dict[str, Any]] = None
+    shadowsocks: Optional[Dict[str, Any]] = None
+    wireguard: Optional[Dict[str, Any]] = None
+    hysteria: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {}
-        for proto in ("vmess", "vless", "trojan", "shadowsocks", "wireguard", "hysteria"):
+        for proto in (
+            "vmess",
+            "vless",
+            "trojan",
+            "shadowsocks",
+            "wireguard",
+            "hysteria",
+        ):
             val = getattr(self, proto)
             if val is not None:
                 result[proto] = val
@@ -93,9 +92,6 @@ class ProxySettings:
             wireguard=data.get("wireguard"),
             hysteria=data.get("hysteria"),
         )
-
-
-
 
 
 @dataclass
@@ -136,8 +132,11 @@ class PasarGuardUser:
         if self.proxy_settings:
             result["proxy_settings"] = self.proxy_settings.to_dict()
         for opt_key in (
-            "expire", "note", "on_hold_expire_duration",
-            "on_hold_timeout", "auto_delete_in_days",
+            "expire",
+            "note",
+            "on_hold_expire_duration",
+            "on_hold_timeout",
+            "auto_delete_in_days",
         ):
             val = getattr(self, opt_key)
             if val is not None:
@@ -172,9 +171,6 @@ class PasarGuardUser:
             subscription_url=data.get("subscription_url"),
             admin=data.get("admin"),
         )
-
-
-
 
 
 @dataclass
@@ -233,9 +229,6 @@ class UserTemplate:
         )
 
 
-
-
-
 @dataclass
 class SystemUserStats:
     """System-wide user statistics from the Panel API."""
@@ -265,9 +258,6 @@ class SystemUserStats:
         )
 
 
-
-
-
 @dataclass
 class BulkCreateResult:
     """Result of bulk user creation from a template."""
@@ -281,9 +271,6 @@ class BulkCreateResult:
             subscription_urls=data.get("subscription_urls", []),
             created=data.get("created", 0),
         )
-
-
-
 
 
 @dataclass
@@ -362,11 +349,6 @@ class OnlineUser:
         )
 
 
-
-
-
-
-
 class PasarGuardProvider(BaseVPNProvider):
     """
     PasarGuard VPN Provider – supports Panel API *and* Node API.
@@ -375,22 +357,16 @@ class PasarGuardProvider(BaseVPNProvider):
     Node API   (root)    → Protobuf-style JSON, ``API_KEY`` auth
     """
 
-    
-
     def __init__(self, base_url: str, api_key: str, **kwargs):
         super().__init__(base_url, api_key, **kwargs)
         self.client: Optional[httpx.AsyncClient] = None
         self.token: Optional[str] = None
         self.config = kwargs
 
-        
         self.username: Optional[str] = kwargs.get("username")
         self.password: Optional[str] = kwargs.get("password")
 
-        
         self.node_api_key: str = kwargs.get("node_api_key", api_key or "")
-
-    
 
     def _panel_headers(self, form: bool = False) -> Dict[str, str]:
         headers: Dict[str, str] = {
@@ -408,7 +384,7 @@ class PasarGuardProvider(BaseVPNProvider):
             "Accept": "*/*",
             "Content-Type": "application/x-protobuf",
         }
-        if self.node_api_key:                      
+        if self.node_api_key:
             headers["Authorization"] = f"Bearer {self.node_api_key}"
         return headers
 
@@ -419,8 +395,6 @@ class PasarGuardProvider(BaseVPNProvider):
                 verify=False,
             )
         return self.client
-
-    
 
     async def _panel_request(
         self,
@@ -434,9 +408,7 @@ class PasarGuardProvider(BaseVPNProvider):
         """Hit a Panel API endpoint: ``{base_url}/api{endpoint}``"""
         url = f"{self.base_url}/api{endpoint}"
         headers = self._panel_headers(form=form)
-        return await self._do_request(
-            url, method, headers, data, params, form, stream
-        )
+        return await self._do_request(url, method, headers, data, params, form, stream)
 
     async def _node_request(
         self,
@@ -499,16 +471,12 @@ class PasarGuardProvider(BaseVPNProvider):
                 except Exception:
                     return resp.text
             else:
-                logger.error(
-                    f"PasarGuard API Error [{resp.status_code}]: {resp.text}"
-                )
+                logger.error(f"PasarGuard API Error [{resp.status_code}]: {resp.text}")
                 return None
 
         except Exception as e:
             self._log_error(f"{method} {url}", e)
             return None
-
-    
 
     async def authenticate(self) -> Optional[str]:
         """Authenticate against the Panel API and store the JWT token.
@@ -537,8 +505,6 @@ class PasarGuardProvider(BaseVPNProvider):
     async def get_token(self) -> Optional[str]:
         """Backward-compatible alias for :meth:`authenticate`."""
         return await self.authenticate()
-
-    
 
     async def test_connection(self) -> bool:
         """Test connectivity to the PasarGuard Node."""
@@ -595,7 +561,7 @@ class PasarGuardProvider(BaseVPNProvider):
                 "keep_alive": keep_alive,
                 "exclude_inbounds": exclude_inbounds or [],
             }
-            
+
             if not config or config == "{}":
                 payload["config"] = self.config.get("xray_config", "{}")
             if keep_alive == 60 and "keep_alive" in self.config:
@@ -617,8 +583,6 @@ class PasarGuardProvider(BaseVPNProvider):
         except Exception as e:
             self._log_error("stop_backend", e)
             return False
-
-    
 
     async def list_users(
         self,
@@ -658,9 +622,7 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("get_user", e)
             return None
 
-    async def find_user_by_username(
-        self, username: str
-    ) -> Optional[PasarGuardUser]:
+    async def find_user_by_username(self, username: str) -> Optional[PasarGuardUser]:
         """Search for a user by username across all pages."""
         try:
             offset = 0
@@ -692,9 +654,7 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("create_user", e)
             return False
 
-    async def create_panel_user(
-        self, user: PasarGuardUser
-    ) -> Optional[PasarGuardUser]:
+    async def create_panel_user(self, user: PasarGuardUser) -> Optional[PasarGuardUser]:
         """Create a full Panel user and return the created object."""
         try:
             result = await self._panel_request("POST", "/user", user.to_dict())
@@ -727,10 +687,8 @@ class PasarGuardProvider(BaseVPNProvider):
     async def delete_user(self, user_id_or_email) -> bool:
         """Delete a user.  ``DELETE /api/user/{id}``"""
         try:
-            result = await self._panel_request(
-                "DELETE", f"/user/{user_id_or_email}"
-            )
-            
+            result = await self._panel_request("DELETE", f"/user/{user_id_or_email}")
+
             return result is not None or result == ""
         except Exception as e:
             self._log_error("delete_user", e)
@@ -763,9 +721,7 @@ class PasarGuardProvider(BaseVPNProvider):
     async def reset_user_traffic(self, user_id: int) -> Optional[PasarGuardUser]:
         """Reset a user's traffic counters.  ``POST /api/user/{id}/reset``"""
         try:
-            result = await self._panel_request(
-                "POST", f"/user/{user_id}/reset"
-            )
+            result = await self._panel_request("POST", f"/user/{user_id}/reset")
             if result:
                 return PasarGuardUser.from_dict(result)
             return None
@@ -773,22 +729,16 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("reset_user_traffic", e)
             return None
 
-    async def revoke_user_subscription(
-        self, user_id: int
-    ) -> Optional[PasarGuardUser]:
+    async def revoke_user_subscription(self, user_id: int) -> Optional[PasarGuardUser]:
         """Revoke the current sub and generate fresh links.  ``POST /api/user/{id}/revoke_sub``"""
         try:
-            result = await self._panel_request(
-                "POST", f"/user/{user_id}/revoke_sub"
-            )
+            result = await self._panel_request("POST", f"/user/{user_id}/revoke_sub")
             if result:
                 return PasarGuardUser.from_dict(result)
             return None
         except Exception as e:
             self._log_error("revoke_user_subscription", e)
             return None
-
-    
 
     async def bulk_create_users_from_template(
         self,
@@ -828,8 +778,6 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("bulk_create_users_from_template", e)
             return None
 
-    
-
     async def list_user_templates(self) -> Optional[List[UserTemplate]]:
         """List all user templates.  ``GET /api/user_templates``"""
         try:
@@ -841,14 +789,10 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("list_user_templates", e)
             return None
 
-    async def get_user_template(
-        self, template_id: int
-    ) -> Optional[UserTemplate]:
+    async def get_user_template(self, template_id: int) -> Optional[UserTemplate]:
         """Get a single template.  ``GET /api/user_template/{id}``"""
         try:
-            result = await self._panel_request(
-                "GET", f"/user_template/{template_id}"
-            )
+            result = await self._panel_request("GET", f"/user_template/{template_id}")
             if result:
                 return UserTemplate.from_dict(result)
             return None
@@ -897,11 +841,7 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("delete_user_template", e)
             return False
 
-    
-
-    async def get_user_subscription_links(
-        self, user_id: int
-    ) -> Optional[List[str]]:
+    async def get_user_subscription_links(self, user_id: int) -> Optional[List[str]]:
         """Get raw subscription protocol links.  ``GET /api/user/{id}/subscription/links``
 
         The response is plain text with one URI per line (e.g. ``vless://…``).
@@ -914,9 +854,7 @@ class PasarGuardProvider(BaseVPNProvider):
                 return None
             if isinstance(result, str):
                 return [
-                    line.strip()
-                    for line in result.strip().splitlines()
-                    if line.strip()
+                    line.strip() for line in result.strip().splitlines() if line.strip()
                 ]
             if isinstance(result, list):
                 return result
@@ -959,8 +897,6 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("get_user_config", e)
             return None
 
-    
-
     async def get_system_user_stats(self) -> Optional[SystemUserStats]:
         """System-wide user statistics.  ``GET /api/system/users``"""
         try:
@@ -971,8 +907,6 @@ class PasarGuardProvider(BaseVPNProvider):
         except Exception as e:
             self._log_error("get_system_user_stats", e)
             return None
-
-    
 
     async def get_user_stats(
         self, email: str, reset: bool = False
@@ -1023,9 +957,7 @@ class PasarGuardProvider(BaseVPNProvider):
         """Outbound latency.  ``GET /stats/latency``"""
         try:
             params = {"name": outbound_name}
-            result = await self._node_request(
-                "GET", "/stats/latency", params=params
-            )
+            result = await self._node_request("GET", "/stats/latency", params=params)
             if result:
                 if isinstance(result, list):
                     return [LatencyInfo.from_dict(l) for l in result]
@@ -1044,9 +976,7 @@ class PasarGuardProvider(BaseVPNProvider):
             )
             if result and "users" in result:
                 return [
-                    u.get("name", "")
-                    for u in result["users"]
-                    if u.get("online", False)
+                    u.get("name", "") for u in result["users"] if u.get("online", False)
                 ]
             return []
         except Exception as e:
@@ -1083,8 +1013,6 @@ class PasarGuardProvider(BaseVPNProvider):
             self._log_error("get_system_stats", e)
             return None
 
-    
-
     async def sync_user(self, user: VPNUser) -> bool:
         """Sync one user to the backend.  ``PUT /user/sync``"""
         try:
@@ -1098,9 +1026,7 @@ class PasarGuardProvider(BaseVPNProvider):
     async def sync_users(self, users: List[VPNUser]) -> bool:
         """Sync all users (replaces full set).  ``PUT /users/sync``"""
         try:
-            payload = {
-                "users": [self._node_user_payload(u) for u in users]
-            }
+            payload = {"users": [self._node_user_payload(u) for u in users]}
             result = await self._node_request("PUT", "/users/sync", payload)
             return result is not None
         except Exception as e:
@@ -1115,9 +1041,7 @@ class PasarGuardProvider(BaseVPNProvider):
         Each chunk is a ``UsersChunk`` with *index* and *last* flag.
         """
         try:
-            total_chunks = max(
-                1, (len(users) + chunk_size - 1) // chunk_size
-            )
+            total_chunks = max(1, (len(users) + chunk_size - 1) // chunk_size)
             for i in range(0, len(users), chunk_size):
                 chunk = users[i : i + chunk_size]
                 idx = i // chunk_size
@@ -1128,21 +1052,15 @@ class PasarGuardProvider(BaseVPNProvider):
                     "index": idx,
                     "last": is_last,
                 }
-                result = await self._node_request(
-                    "PUT", "/users/sync/chunked", payload
-                )
+                result = await self._node_request("PUT", "/users/sync/chunked", payload)
                 if not result:
-                    logger.error(
-                        f"Chunk {idx}/{total_chunks} sync failed"
-                    )
+                    logger.error(f"Chunk {idx}/{total_chunks} sync failed")
                     return False
                 await asyncio.sleep(0.1)
             return True
         except Exception as e:
             self._log_error("sync_users_chunked", e)
             return False
-
-    
 
     async def stream_logs(self, callback=None) -> None:
         """Stream backend logs.  ``GET /logs`` (Server-Sent Events)"""
@@ -1156,8 +1074,6 @@ class PasarGuardProvider(BaseVPNProvider):
                         logger.info(f"PasarGuard Log: {line}")
         except Exception as e:
             self._log_error("stream_logs", e)
-
-    
 
     def _node_user_payload(self, user: VPNUser) -> Dict[str, Any]:
         """Format a :class:`VPNUser` for the **Node** API."""
@@ -1192,8 +1108,6 @@ class PasarGuardProvider(BaseVPNProvider):
             payload["inbounds"] = user.inbounds
         return payload
 
-    
-
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         if self.client:
@@ -1201,15 +1115,7 @@ class PasarGuardProvider(BaseVPNProvider):
             self.client = None
 
 
-
-
-
-
 VPNProviderFactory.register("pasarguard", PasarGuardProvider)
-
-
-
-
 
 
 if __name__ == "__main__":
@@ -1222,13 +1128,11 @@ if __name__ == "__main__":
             password="DR@hmad12345",
         )
 
-        
         token = await provider.authenticate()
         print(f"✓ Token acquired: {token is not None}\n")
         if not token:
             return
 
-        
         sys_stats = await provider.get_system_user_stats()
         if sys_stats:
             print("📊 System Stats:")
@@ -1238,20 +1142,15 @@ if __name__ == "__main__":
             print(f"   Disabled    : {sys_stats.disabled_users}")
             print(f"   Expired     : {sys_stats.expired_users}")
             print(f"   Limited     : {sys_stats.limited_users}")
-            print(
-                f"   In BW       : {sys_stats.incoming_bandwidth / 1e9:.2f} GB"
-            )
-            print(
-                f"   Out BW      : {sys_stats.outgoing_bandwidth / 1e9:.2f} GB\n"
-            )
+            print(f"   In BW       : {sys_stats.incoming_bandwidth / 1e9:.2f} GB")
+            print(f"   Out BW      : {sys_stats.outgoing_bandwidth / 1e9:.2f} GB\n")
 
-        
         users = await provider.list_users(limit=5)
         if users:
             print(f"👥 Users (showing 5 / {users.get('total', '?')}):")
             for u in users.get("users", []):
                 pg = PasarGuardUser.from_dict(u)
-                traffic_gb = pg.used_traffic / (1024 ** 3)
+                traffic_gb = pg.used_traffic / (1024**3)
                 print(
                     f"   [{pg.id}] {pg.username:<18} "
                     f"status={pg.status:<9} "
@@ -1259,7 +1158,6 @@ if __name__ == "__main__":
                 )
             print()
 
-        
         templates = await provider.list_user_templates()
         if templates:
             print("📋 User Templates:")
@@ -1271,7 +1169,6 @@ if __name__ == "__main__":
                 )
             print()
 
-        
         if templates:
             result = await provider.bulk_create_users_from_template(
                 user_template_id=templates[0].id,
@@ -1285,19 +1182,16 @@ if __name__ == "__main__":
                     print(f"   Sub URL: {url}")
             print()
 
-        
         if users and users.get("users"):
             first_id = users["users"][0]["id"]
             links = await provider.get_user_subscription_links(first_id)
             if links:
                 print(f"🔗 Subscription links for user #{first_id}:")
                 for link in links:
-                    
                     display = link[:80] + "…" if len(link) > 80 else link
                     print(f"   {display}")
             print()
 
-        
         info = await provider.get_base_info()
         if info:
             print("🖥  Node Info:")

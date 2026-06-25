@@ -29,6 +29,11 @@ class VPNProvider(models.Model):
 
     base_url = models.URLField()
     api_key = models.CharField(max_length=500)
+    public_api_key = models.CharField(max_length=500, null=True, blank=True)
+
+    proxy_path = models.CharField(max_length=100, default="", blank=True)
+
+    default_admin_uuid = models.CharField(max_length=100, null=True, blank=True)
 
     configuration = models.JSONField(default=dict, blank=True)
 
@@ -66,6 +71,74 @@ class VPNProvider(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.get_provider_type_display()})"
+
+
+class HiddifyAdmin(models.Model):
+    """Hiddify Panel Admin - synced from the panel"""
+
+    class AdminMode(models.TextChoices):
+        SUPER_ADMIN = "super_admin", "Super Admin"
+        ADMIN = "admin", "Admin"
+        AGENT = "agent", "Agent"
+
+    class Language(models.TextChoices):
+        EN = "en", "English"
+        FA = "fa", "Persian"
+        RU = "ru", "Russian"
+        PT = "pt", "Portuguese"
+        ZH = "zh", "Chinese"
+        MY = "my", "Malay"
+
+    provider = models.ForeignKey(
+        VPNProvider, on_delete=models.CASCADE, related_name="hiddify_admins"
+    )
+
+    uuid = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=200)
+    mode = models.CharField(
+        max_length=20, choices=AdminMode.choices, default=AdminMode.ADMIN
+    )
+    lang = models.CharField(max_length=5, choices=Language.choices, default=Language.FA)
+
+    telegram_id = models.BigIntegerField(null=True, blank=True)
+    comment = models.TextField(null=True, blank=True)
+
+    can_add_admin = models.BooleanField(default=False)
+    max_users = models.PositiveIntegerField(null=True, blank=True)
+    max_active_users = models.PositiveIntegerField(null=True, blank=True)
+
+    parent_admin = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sub_admins",
+    )
+
+    # Link to local User if exists
+    local_user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hiddify_admin_profiles",
+    )
+
+    is_synced = models.BooleanField(default=False)
+    last_sync = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "hiddify_admins"
+        indexes = [
+            models.Index(fields=["provider", "mode"]),
+            models.Index(fields=["telegram_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_mode_display()})"
 
 
 class VPNServer(models.Model):

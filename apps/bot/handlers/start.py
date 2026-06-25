@@ -93,7 +93,9 @@ class StartHandler(BaseHandler):
 
         await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
 
-    async def show_main_menu(self, chat_id: int, user: User):
+    async def show_main_menu(
+        self, chat_id: int, user: User, callback: types.CallbackQuery = None
+    ):
         """Show main menu"""
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
@@ -119,8 +121,16 @@ class StartHandler(BaseHandler):
         """
 
         keyboard = await self.get_main_menu_keyboard(user)
-
-        await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
+        if callback:
+            await self.edit_message_with_keyboard(
+                callback.message.chat.id,
+                callback.message.message_id,
+                welcome_text,
+                keyboard,
+            )
+            callback.answer()
+        else:
+            await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
 
     async def handle_profile_setup_callback(self, callback: types.CallbackQuery):
         """Handle profile setup callback"""

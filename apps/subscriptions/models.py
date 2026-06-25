@@ -109,7 +109,7 @@ class Subscription(models.Model):
         on_delete=models.CASCADE,
         related_name="subscriptions",
     )
-    vpn_user_email = models.CharField(max_length=255)
+    vpn_user_email = models.CharField(max_length=255, null=True, blank=True)
 
     owner = models.ForeignKey(
         "accounts.User", on_delete=models.CASCADE, related_name="owned_subscriptions"

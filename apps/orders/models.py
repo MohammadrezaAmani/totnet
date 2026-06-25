@@ -171,6 +171,7 @@ class Payment(models.Model):
     expires_at = models.DateTimeField(null=True, blank=True)
 
     notes = models.TextField(null=True, blank=True)
+    receipt_file = models.TextField(null=True, blank=True)
 
     class Meta:
         db_table = "payments"

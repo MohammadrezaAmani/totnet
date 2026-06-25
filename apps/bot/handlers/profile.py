@@ -4,6 +4,7 @@ Handles user profile management and statistics
 """
 
 import logging
+import re
 
 from aiogram import types
 
@@ -20,7 +21,6 @@ class ProfileHandler(BaseHandler):
     """Handle user profile operations"""
 
     async def show_my_profile(self, callback: types.CallbackQuery):
-        """Show user profile"""
         user = await self.get_or_create_user(callback.from_user)
 
         subscription_count = await Subscription.objects.filter(
@@ -58,24 +58,14 @@ class ProfileHandler(BaseHandler):
             ]
         )
 
-        try:
-            await self.edit_message_with_keyboard(
-                callback.message.chat.id, callback.message.message_id, text, keyboard
-            )
-        except Exception as e:
-            logger.warning(f"Could not edit profile message: {e}")
-            await self.send_message_with_keyboard(
-                callback.message.chat.id, text, keyboard
-            )
-
+        await self._render(callback, text, keyboard)
         await callback.answer()
 
     async def edit_profile(self, callback: types.CallbackQuery):
-        """Show profile edit menu"""
         user = await self.get_or_create_user(callback.from_user)
+
         await self.update_user_state(
-            user,
-            BotState.StateType.PROFILE_EDIT,
+            user, BotState.StateType.PROFILE_EDIT, {"step": "menu"}
         )
 
         text = """
@@ -93,23 +83,16 @@ class ProfileHandler(BaseHandler):
             ]
         )
 
-        try:
-            await self.edit_message_with_keyboard(
-                callback.message.chat.id, callback.message.message_id, text, keyboard
-            )
-        except Exception as e:
-            logger.warning(f"Could not edit message: {e}")
-            await self.send_message_with_keyboard(
-                callback.message.chat.id, text, keyboard
-            )
-
+        await self._render(callback, text, keyboard)
         await callback.answer()
 
     async def request_field_update(self, callback: types.CallbackQuery, field: str):
-        """Request user to update a specific profile field"""
         user = await self.get_or_create_user(callback.from_user)
+
         await self.update_user_state(
-            user, BotState.StateType.PROFILE_EDIT, {"field": field}
+            user,
+            BotState.StateType.PROFILE_EDIT,
+            {"field": field, "step": "waiting_input"},
         )
 
         field_names = {
@@ -121,58 +104,74 @@ class ProfileHandler(BaseHandler):
         text = f"""
 ✏️ تغییر {field_names.get(field, field)}
 
-لطفاً مقدار جدید را وارد کنید:
+مقدار جدید را ارسال کنید:
         """
 
         keyboard = self.get_back_keyboard("edit_profile")
 
-        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await self._render(callback, text, keyboard)
         await callback.answer()
 
     async def handle_profile_field_message(
         self, message: types.Message, user: User, state: BotState
     ):
-        """Handle profile field update messages"""
         field = state.state_data.get("field")
         value = message.text.strip()
 
+        error = None
+
         if field == "full_name":
             if len(value) < 2:
-                await message.reply("❌ نام باید حداقل 2 کاراکتر باشد.")
-                return
-            user.full_name = value
-            await user.asave()
-            await message.reply("✅ نام با موفقیت تحدیث شد.")
+                error = "نام باید حداقل 2 کاراکتر باشد."
+            else:
+                user.full_name = value
 
         elif field == "phone":
-            import re
-
             if not re.match(r"^(\+98|0)?9\d{9}$", value):
-                await message.reply(
-                    "❌ شماره تلفن معتبر نیست. لطفاً شماره موبایل ایرانی وارد کنید."
-                )
-                return
-            user.phone_number = value
-            await user.asave()
-            await message.reply("✅ شماره تلفن با موفقیت تحدیث شد.")
+                error = "شماره تلفن معتبر نیست."
+            else:
+                user.phone_number = value
 
         elif field == "email":
-            import re
-
             if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", value):
-                await message.reply("❌ ایمیل معتبر نیست.")
-                return
-            user.email = value
-            await user.asave()
-            await message.reply("✅ ایمیل با موفقیت تحدیث شد.")
+                error = "ایمیل معتبر نیست."
+            else:
+                user.email = value
+
+        if error:
+            await self.update_user_state(
+                user, BotState.StateType.PROFILE_EDIT, state.state_data
+            )
+
+            await self._render_message(
+                message, f"❌ {error}", self.get_back_keyboard("edit_profile")
+            )
+            return
+
+        await user.asave()
 
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
-        text = """
-✅ پروفایل شما با موفقیت به‌روزرسانی شد!
+        await self._render_message(
+            message,
+            "✅ تغییر با موفقیت اعمال شد\n\nمنوی اصلی:",
+            await self.get_main_menu_keyboard(),
+        )
 
-منوی اصلی:
-        """
+    async def _render(self, callback, text, keyboard):
+        """Always edit single bot message"""
+        try:
+            await self.edit_message_with_keyboard(
+                callback.message.chat.id, callback.message.message_id, text, keyboard
+            )
+        except Exception:
+            await self.send_message_with_keyboard(
+                callback.message.chat.id, text, keyboard
+            )
 
-        keyboard = self.get_main_menu_keyboard()
-        await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+    async def _render_message(self, message, text, keyboard):
+        """Replace user message context with single bot message"""
+        try:
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+        except Exception as e:
+            logger.warning(f"render_message failed: {e}")

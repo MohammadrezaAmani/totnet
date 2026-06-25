@@ -17,7 +17,7 @@ class User(AbstractUser):
         SUPPORT_AGENT = "support_agent", "Support Agent"
         CUSTOMER = "customer", "Customer"
 
-    telegram_id = models.BigIntegerField(unique=True, null=True, blank=True)
+    telegram_id = models.BigIntegerField(null=True, blank=True)
     phone_number = models.CharField(max_length=20, null=True, blank=True)
     full_name = models.CharField(max_length=255, null=True, blank=True)
     user_type = models.CharField(

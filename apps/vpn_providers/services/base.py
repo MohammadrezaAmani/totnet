@@ -19,7 +19,7 @@ class VPNUser:
     email: str
     proxies: Dict[str, Any]
     inbounds: List[str]
-    traffic_limit: Optional[int] = None  # bytes
+    traffic_limit: Optional[int] = None
     expire_time: Optional[datetime] = None
     enable: bool = True
 
@@ -28,9 +28,9 @@ class VPNUser:
 class VPNStats:
     """VPN Statistics data structure"""
 
-    upload: int  # bytes
-    download: int  # bytes
-    total: int  # bytes
+    upload: int
+    download: int
+    total: int
     online: bool = False
 
 
@@ -49,16 +49,19 @@ class VPNConfig:
     """VPN Configuration data structure"""
 
     subscription_url: str
-    configs: Dict[str, str]  # Protocol -> Config URL
+    configs: Dict[str, str]
     qr_codes: List[str]
 
 
 class BaseVPNProvider(ABC):
     """Base class for all VPN provider integrations"""
 
-    def __init__(self, base_url: str, api_key: str, **kwargs):
+    def __init__(
+        self, base_url: str, api_key: str, public_api_key: str | None = None, **kwargs
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.public_api_key = public_api_key
         self.config = kwargs
         self.session_timeout = kwargs.get("timeout", 30)
 
@@ -171,11 +174,13 @@ class BaseVPNProvider(ABC):
     def _log_error(self, operation: str, error: Exception):
         """Log operation error"""
         logger.error(f"VPN Provider Error ({operation}): {error}")
+
     @abstractmethod
     async def get_token(self) -> str | None:
         """Login and get token from provider"""
         pass
-    
+
+
 class VPNProviderFactory:
     """Factory for creating VPN provider instances"""
 
