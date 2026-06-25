@@ -7,6 +7,8 @@ import uuid
 
 from django.db import models
 
+from apps.accounts.models import User
+
 
 class Order(models.Model):
     """Main order model for subscription purchases"""
@@ -125,9 +127,7 @@ class Payment(models.Model):
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="payments"
     )
-    user = models.ForeignKey(
-        "accounts.User", on_delete=models.CASCADE, related_name="payments"
-    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="payments")
 
     payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices)
     status = models.CharField(
