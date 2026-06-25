@@ -643,7 +643,7 @@ class HiddifyProvider(BaseVPNProvider):
         """Get server status and stats"""
         result = await self._request("GET", "/api/v2/admin/server_status/")
         if result:
-            return ServerStatus.from_dict(result)
+            return result
         return None
 
     async def get_all_configs(self) -> Optional[Dict[str, Any]]:

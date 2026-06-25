@@ -105,10 +105,11 @@ class UserAdmin(BaseUserAdmin):
                     "avatar",
                     "bio",
                     "birth_date",
+                    
                 )
             },
         ),
-        ("Brand & Platform", {"fields": ("brand", "user_type", "language")}),
+        ("Brand & Platform", {"fields": ("brand", "admin_brands", "user_type", "language")}),
         (
             "Referral System",
             {"fields": ("referral_code", "referred_by", "referral_count")},

@@ -227,7 +227,7 @@ class HiddifyAdminHandler(BaseHandler):
                 logger.error(f"Error getting server status: {e}")
             finally:
                 await provider.close()
-
+                
         text = f"""
 📊 داشبورد مدیریت
 
@@ -239,13 +239,13 @@ class HiddifyAdminHandler(BaseHandler):
 """
 
         if server_status:
-            stats = server_status.stats
+            stats = server_status.get("stats")
             text += f"""
 🖥️ وضعیت سرور:
-• کاربران آنلاین: {stats.get("online_users", "نامشخص")}
-• استفاده CPU: {stats.get("cpu_usage", "نامشخص")}%
-• استفاده RAM: {stats.get("memory_usage", "نامشخص")}%
-• کاربران فعال: {stats.get("active_users", "نامشخص")}
+• کاربران آنلاین: {server_status.get("usage_history", {}).get("m5", {}).get("online", "نامشخص")}
+• استفاده CPU: {stats.get("system", {}).get("cpu_percent", "نامشخص")} / 100
+• استفاده RAM: {stats.get("system", {}).get("ram_used", "نامشخص")} / {stats.get("system", {}).get("ram_total", "نامشخص")}
+• کاربران فعال: {server_status.get("usage_history", {}).get("total", {}).get("online", "نامشخص")}
 """
 
         text += "\nچه کاری می\u200cخواهید انجام دهید؟"
@@ -270,11 +270,10 @@ class HiddifyAdminHandler(BaseHandler):
         await callback.answer()
 
     async def show_server_status(self, callback: types.CallbackQuery):
-        """Show detailed server status from Hiddify"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        has_access = await self.check_admin_access(user)
+        """Show detailed server status from Hiddify (clean UI)"""
 
-        if not has_access:
+        user, _ = await self.get_or_create_user(callback.from_user)
+        if not await self.check_admin_access(user):
             await callback.answer("❌ دسترسی ندارید")
             return
 
@@ -292,53 +291,73 @@ class HiddifyAdminHandler(BaseHandler):
             status = await provider.get_server_status()
             panel_info = await provider.get_panel_info()
 
+            system = (status or {}).get("stats", {}).get("system", {}) if status else {}
+            usage = (status or {}).get("usage_history", {}) if status else {}
+
+            def mb(x):
+                return round(float(x), 2) if x is not None else 0
+
+            def gb(x):
+                return round(float(x) / 1024, 2) if x else 0
+
             text = f"""
-🖥️ وضعیت سرور Hiddify
+    🖥️ <b>Hiddify Server Status</b>
 
-📌 نسخه پنل: {panel_info.get("version", "نامشخص") if panel_info else "نامشخص"}
+    ━━━━━━━━━━━━━━
+    📌 Panel
+    • Version: <code>{panel_info.get("version", "N/A") if panel_info else "N/A"}</code>
 
-📊 آمار سیستم:
-"""
-            if status:
-                stats = status.stats
-                text += f"""
-• کاربران آنلاین: {stats.get("online_users", 0)}
-• کاربران فعال: {stats.get("active_users", 0)}
-• کاربران غیرفعال: {stats.get("disabled_users", 0)}
-• کاربران منقضی شده: {stats.get("expired_users", 0)}
-• کاربران محدود: {stats.get("limited_users", 0)}
+    ━━━━━━━━━━━━━━
+    💻 System
+    • CPU Cores: {system.get("num_cpus", "N/A")}
+    • Load (1m / 5m / 15m): {system.get("load_avg_1min", 0):.2f} / {system.get("load_avg_5min", 0):.2f} / {system.get("load_avg_15min", 0):.2f}
 
-💾 منابع:
-• CPU: {stats.get("cpu_usage", 0)}%
-• RAM: {stats.get("memory_usage", 0)}%
-• دیسک: {stats.get("disk_usage", 0)}%
+    ━━━━━━━━━━━━━━
+    🧠 Memory
+    • Used: {mb(system.get("ram_used"))} GB
+    • Total: {mb(system.get("ram_total"))} GB
 
-📡 ترافیک:
-• آپلود: {self._format_bytes(stats.get("incoming_bandwidth", 0))}
-• دانلود: {self._format_bytes(stats.get("outgoing_bandwidth", 0))}
-"""
-            else:
-                text += "❌ اطلاعات وضعیت سرور دریافت نشد."
+    ━━━━━━━━━━━━━━
+    💾 Disk
+    • Used: {mb(system.get("disk_used"))} GB
+    • Total: {mb(system.get("disk_total"))} GB
+
+    ━━━━━━━━━━━━━━
+    🌐 Network
+    • Sent: {system.get("bytes_sent_cumulative", 0)} bytes
+    • Received: {system.get("bytes_recv_cumulative", 0)} bytes
+    • Connections: {system.get("total_connections", 0)}
+    • Unique IPs: {system.get("total_unique_ips", 0)}
+
+    ━━━━━━━━━━━━━━
+    📊 Usage
+    • Today: {usage.get("today", {}).get("usage", 0)}
+    • 24h Online: {usage.get("h24", {}).get("online", 0)}
+    • Total Users: {usage.get("total", {}).get("users", 0)}
+    """
 
             keyboard = self.create_keyboard(
                 [
-                    [{"text": "🔄 بروزرسانی", "callback_data": "admin_server_status"}],
+                    [{"text": "🔄 Refresh", "callback_data": "admin_server_status"}],
                     [
                         {
-                            "text": "⚙️ تنظیمات پنل",
+                            "text": "⚙️ Panel Settings",
                             "callback_data": "admin_panel_settings",
                         }
                     ],
-                    [{"text": "🔙 بازگشت", "callback_data": "admin"}],
+                    [{"text": "🔙 Back", "callback_data": "admin"}],
                 ]
             )
 
         except Exception as e:
-            text = f"❌ خطا در دریافت وضعیت سرور: {e}"
+            text = f"❌ Error fetching server status:\n<code>{e}</code>"
             keyboard = self.get_back_keyboard("admin")
 
         finally:
-            await provider.close()
+            try:
+                await provider.close()
+            except:
+                pass
 
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
