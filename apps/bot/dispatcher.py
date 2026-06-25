@@ -111,12 +111,14 @@ class MultiBrandDispatcher:
                 await handlers["start"].handle_profile_setup_message(
                     message, user, state
                 )
+
             elif state.current_state == BotState.StateType.PROFILE_EDIT:
                 await handlers["profile"].handle_profile_field_message(
                     message, user, state
                 )
+
             elif state.current_state == BotState.StateType.SUPPORT_TICKET:
-                step = state.state_data.get("step")
+                step = (state.state_data or {}).get("step")
                 if step == "subject":
                     await handlers["support"].handle_ticket_subject(
                         message, user, state
@@ -125,23 +127,25 @@ class MultiBrandDispatcher:
                     await handlers["support"].handle_ticket_description(
                         message, user, state
                     )
-            elif state.state_data.get("admin_action"):
+
+            elif state.state_data and state.state_data.get("action") in (
+                "add_panel_admin",
+                "add_panel_user",
+                "edit_panel_user",
+                "search_panel_user",
+            ):
                 await handlers["admin_hiddify"].handle_admin_message(
                     message, user, state
                 )
-            elif state.state_data.get("action"):
-                action = state.state_data.get("action")
-                if action in ["add_panel_admin", "add_panel_user"]:
-                    await handlers["admin_hiddify"].handle_admin_message(
-                        message, user, state
-                    )
-                else:
-                    await message.reply(
-                        "لطفاً از منوی زیر استفاده کنید:",
-                        reply_markup=await handlers["start"].get_main_menu_keyboard(
-                            user
-                        ),
-                    )
+
+            elif (
+                state.state_data
+                and state.state_data.get("admin_action") == "search_user"
+            ):
+                await handlers["admin_hiddify"].handle_admin_message(
+                    message, user, state
+                )
+
             else:
                 await message.reply(
                     "لطفاً از منوی زیر استفاده کنید:",
@@ -470,6 +474,155 @@ class MultiBrandDispatcher:
             elif data == "privacy":
                 await handlers["help"].show_privacy(callback)
 
+            elif data == "admin_list_panel_users":
+                await handlers["admin_hiddify"].list_panel_users(callback)
+
+            elif data.startswith("admin_users_page_"):
+                try:
+                    page = int(data.rsplit("_", 1)[1])
+                    await handlers["admin_hiddify"].show_user_list_page(callback, page)
+                except ValueError, IndexError:
+                    await callback.answer("❌ صفحه نامعتبر")
+
+            elif data.startswith("admin_view_panel_user_"):
+                user_uuid = data[len("admin_view_panel_user_") :]
+                await handlers["admin_hiddify"].view_panel_user_details(
+                    callback, user_uuid
+                )
+
+            elif data.startswith("admin_edit_panel_user_"):
+                user_uuid = data[len("admin_edit_panel_user_") :]
+                await handlers["admin_hiddify"].start_edit_panel_user(
+                    callback, user_uuid
+                )
+
+            elif data.startswith("admin_euf_"):
+                rest = data[len("admin_euf_") :]
+                user_uuid = rest.rsplit("_", 1)[0]
+                field = rest.rsplit("_", 1)[1]
+                await handlers["admin_hiddify"].start_edit_user_field(
+                    callback, user_uuid, field
+                )
+
+            elif data.startswith("admin_eum_"):
+                rest = data[len("admin_eum_") :]
+                user_uuid = rest.rsplit("_", 1)[0]
+                mode = rest.rsplit("_", 1)[1]
+                await handlers["admin_hiddify"].apply_user_mode_change(
+                    callback, user_uuid, mode
+                )
+
+            elif data.startswith("admin_toggle_user_"):
+                user_uuid = data[len("admin_toggle_user_") :]
+                await handlers["admin_hiddify"].toggle_panel_user_status(
+                    callback, user_uuid
+                )
+
+            elif data.startswith("admin_delete_panel_user_"):
+                user_uuid = data[len("admin_delete_panel_user_") :]
+                await handlers["admin_hiddify"].delete_panel_user(callback, user_uuid)
+
+            elif data.startswith("admin_cdu_"):
+                user_uuid = data[len("admin_cdu_") :]
+                await handlers["admin_hiddify"].confirm_delete_user(callback, user_uuid)
+
+            elif data.startswith("admin_reset_user_"):
+                user_uuid = data[len("admin_reset_user_") :]
+                await handlers["admin_hiddify"].reset_user_usage(callback, user_uuid)
+
+            elif data.startswith("admin_cru_"):
+                user_uuid = data[len("admin_cru_") :]
+                await handlers["admin_hiddify"].confirm_reset_usage(callback, user_uuid)
+
+            elif data == "admin_search_panel_user":
+                await handlers["admin_hiddify"].start_search_panel_user(callback)
+
+            elif data == "admin_add_panel_user":
+                await handlers["admin_hiddify"].start_add_panel_user(callback)
+
+            elif data == "admin_update_usage":
+                await handlers["admin_hiddify"].update_user_usage(callback)
+
+            elif data.startswith("avu_"):
+                user_uuid = data[4:]
+                await handlers["admin_hiddify"].view_panel_user_details(
+                    callback, user_uuid
+                )
+
+            elif data.startswith("aeu_"):
+                user_uuid = data[4:]
+                await handlers["admin_hiddify"].start_edit_panel_user(
+                    callback, user_uuid
+                )
+
+            elif data.startswith("aup_"):
+                try:
+                    page = int(data[4:])
+                    await handlers["admin_hiddify"].show_user_list_page(callback, page)
+                except ValueError:
+                    await callback.answer("❌ صفحه نامعتبر")
+
+            elif data == "admin_noop":
+                await callback.answer()
+
+            elif data.startswith("admin_toggle_user_"):
+                user_uuid = data[len("admin_toggle_user_") :]
+                await handlers["admin_hiddify"].toggle_panel_user_status(
+                    callback, user_uuid
+                )
+
+            elif data.startswith("admin_reset_user_"):
+                user_uuid = data[len("admin_reset_user_") :]
+                await handlers["admin_hiddify"].reset_user_usage(callback, user_uuid)
+
+            elif data.startswith("admin_cru_"):
+                user_uuid = data[len("admin_cru_") :]
+                await handlers["admin_hiddify"].confirm_reset_usage(callback, user_uuid)
+
+            elif data.startswith("admin_delete_panel_user_"):
+                user_uuid = data[len("admin_delete_panel_user_") :]
+                await handlers["admin_hiddify"].delete_panel_user(callback, user_uuid)
+
+            elif data.startswith("admin_cdu_"):
+                user_uuid = data[len("admin_cdu_") :]
+                await handlers["admin_hiddify"].confirm_delete_user(callback, user_uuid)
+
+            elif data.startswith("admin_euf_"):
+                rest = data[len("admin_euf_") :]
+
+                last_us = rest.rfind("_")
+                user_uuid = rest[:last_us]
+                field = rest[last_us + 1 :]
+                await handlers["admin_hiddify"].start_edit_user_field(
+                    callback, user_uuid, field
+                )
+
+            elif data.startswith("admin_eum_"):
+                rest = data[len("admin_eum_") :]
+                last_us = rest.rfind("_")
+                user_uuid = rest[:last_us]
+                mode = rest[last_us + 1 :]
+                await handlers["admin_hiddify"].apply_user_mode_change(
+                    callback, user_uuid, mode
+                )
+
+            elif data == "admin_list_panel_users":
+                await handlers["admin_hiddify"].list_panel_users(callback)
+
+            elif data == "admin_add_panel_user":
+                await handlers["admin_hiddify"].start_add_panel_user(callback)
+
+            elif data == "admin_search_panel_user":
+                await handlers["admin_hiddify"].start_search_panel_user(callback)
+
+            elif data == "admin_update_usage":
+                await handlers["admin_hiddify"].update_user_usage(callback)
+
+            elif data == "admin_panel_users":
+                await handlers["admin_hiddify"].show_panel_users_menu(callback)
+
+            elif data == "admin_panel_users":
+                await handlers["admin_hiddify"].show_panel_users_menu(callback)
             elif data == "admin":
                 await handlers["admin_hiddify"].show_admin_menu(callback)
             elif data == "admin_dashboard":
@@ -503,10 +656,14 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].sync_panel_admins(callback)
             elif data.startswith("admin_view_panel_admin_"):
                 admin_uuid = data.replace("admin_view_panel_admin_", "")
-                await handlers["admin_hiddify"].view_panel_admin_details(callback, admin_uuid)
+                await handlers["admin_hiddify"].view_panel_admin_details(
+                    callback, admin_uuid
+                )
             elif data.startswith("admin_edit_panel_admin_"):
                 admin_uuid = data.replace("admin_edit_panel_admin_", "")
-                await handlers["admin_hiddify"].start_edit_panel_admin(callback, admin_uuid)
+                await handlers["admin_hiddify"].start_edit_panel_admin(
+                    callback, admin_uuid
+                )
             elif data.startswith("admin_delete_panel_admin_"):
                 admin_uuid = data.replace("admin_delete_panel_admin_", "")
                 await handlers["admin_hiddify"].delete_panel_admin(callback, admin_uuid)
@@ -538,18 +695,23 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].show_panel_settings(callback)
             elif data.startswith("admin_view_panel_user_"):
                 user_uuid = data.replace("admin_view_panel_user_", "")
-                await handlers["admin_hiddify"].view_panel_user_details(callback, user_uuid)
+                await handlers["admin_hiddify"].view_panel_user_details(
+                    callback, user_uuid
+                )
             elif data.startswith("admin_edit_panel_user_"):
                 user_uuid = data.replace("admin_edit_panel_user_", "")
-                await handlers["admin_hiddify"].start_edit_panel_user(callback, user_uuid)
+                await handlers["admin_hiddify"].start_edit_panel_user(
+                    callback, user_uuid
+                )
             elif data.startswith("admin_toggle_user_"):
                 user_uuid = data.replace("admin_toggle_user_", "")
-                await handlers["admin_hiddify"].toggle_panel_user_status(callback, user_uuid)
+                await handlers["admin_hiddify"].toggle_panel_user_status(
+                    callback, user_uuid
+                )
             elif data.startswith("admin_delete_panel_user_"):
                 user_uuid = data.replace("admin_delete_panel_user_", "")
                 await handlers["admin_hiddify"].delete_panel_user(callback, user_uuid)
 
-            # Order management callbacks
             elif data == "admin_pending_orders":
                 await handlers["admin_hiddify"].show_pending_orders(callback)
             elif data == "admin_completed_orders":
@@ -566,7 +728,6 @@ class MultiBrandDispatcher:
                 order_id = int(data.replace("admin_confirm_order_", ""))
                 await handlers["admin_hiddify"].confirm_order(callback, order_id)
 
-            # Ticket management callbacks
             elif data == "admin_open_tickets":
                 await handlers["admin_hiddify"].show_open_tickets(callback)
             elif data == "admin_in_progress_tickets":
@@ -586,7 +747,6 @@ class MultiBrandDispatcher:
                 ticket_id = int(data.replace("admin_reopen_ticket_", ""))
                 await handlers["admin_hiddify"].reopen_ticket(callback, ticket_id)
 
-            # Broadcast callbacks
             elif data == "admin_broadcast_all":
                 await handlers["admin_hiddify"].start_broadcast(callback, "all")
             elif data == "admin_broadcast_active":
@@ -600,7 +760,6 @@ class MultiBrandDispatcher:
             elif data == "admin_cancel_broadcast":
                 await handlers["admin_hiddify"].cancel_broadcast(callback)
 
-            # Settings callbacks
             elif data == "admin_edit_brand_info":
                 await handlers["admin_hiddify"].show_brand_settings(callback)
             elif data == "admin_payment_settings":
