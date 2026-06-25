@@ -60,21 +60,17 @@ class SubscriptionHiddifyHandler(BaseHandler):
         self, user: User, subscription: Subscription = None
     ) -> Optional[str]:
         """Get user's secret UUID from their active subscription"""
-        print(user.id, subscription.id)
         try:
             if subscription:
                 secret_uuid = subscription.connection_configs.get("secret_uuid")
-                print({"secret_uuid": secret_uuid}, flush=True)
                 if secret_uuid:
                     return secret_uuid
 
                 hiddify_uuid = subscription.connection_configs.get("hiddify_uuid")
-                print({"hiddify_uuid": hiddify_uuid}, flush=True)
                 if hiddify_uuid:
                     return hiddify_uuid
 
                 provider = await self.get_hiddify_provider()
-                print({"provider": hiddify_uuid}, flush=True)
 
                 if provider:
                     try:
