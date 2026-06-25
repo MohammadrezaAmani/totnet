@@ -498,9 +498,18 @@ class MultiBrandDispatcher:
             elif data == "admin_add_panel_admin":
                 await handlers["admin_hiddify"].start_add_panel_admin(callback)
             elif data == "admin_search_panel_admin":
-                await callback.answer("🔍 جستجوی ادمین پنل")
+                await handlers["admin_hiddify"].start_search_panel_admin(callback)
             elif data == "admin_sync_panel_admins":
-                await callback.answer("🔄 همگام‌سازی ادمین‌ها انجام شد")
+                await handlers["admin_hiddify"].sync_panel_admins(callback)
+            elif data.startswith("admin_view_panel_admin_"):
+                admin_uuid = data.replace("admin_view_panel_admin_", "")
+                await handlers["admin_hiddify"].view_panel_admin_details(callback, admin_uuid)
+            elif data.startswith("admin_edit_panel_admin_"):
+                admin_uuid = data.replace("admin_edit_panel_admin_", "")
+                await handlers["admin_hiddify"].start_edit_panel_admin(callback, admin_uuid)
+            elif data.startswith("admin_delete_panel_admin_"):
+                admin_uuid = data.replace("admin_delete_panel_admin_", "")
+                await handlers["admin_hiddify"].delete_panel_admin(callback, admin_uuid)
             elif data.startswith("admin_mode_"):
                 mode = data.replace("admin_mode_", "")
                 await handlers["admin_hiddify"].handle_panel_admin_mode_selection(
@@ -526,7 +535,78 @@ class MultiBrandDispatcher:
             elif data == "admin_server_status":
                 await handlers["admin_hiddify"].show_server_status(callback)
             elif data == "admin_panel_settings":
-                await callback.answer("⚙️ تنظیمات پنل VPN")
+                await handlers["admin_hiddify"].show_panel_settings(callback)
+            elif data.startswith("admin_view_panel_user_"):
+                user_uuid = data.replace("admin_view_panel_user_", "")
+                await handlers["admin_hiddify"].view_panel_user_details(callback, user_uuid)
+            elif data.startswith("admin_edit_panel_user_"):
+                user_uuid = data.replace("admin_edit_panel_user_", "")
+                await handlers["admin_hiddify"].start_edit_panel_user(callback, user_uuid)
+            elif data.startswith("admin_toggle_user_"):
+                user_uuid = data.replace("admin_toggle_user_", "")
+                await handlers["admin_hiddify"].toggle_panel_user_status(callback, user_uuid)
+            elif data.startswith("admin_delete_panel_user_"):
+                user_uuid = data.replace("admin_delete_panel_user_", "")
+                await handlers["admin_hiddify"].delete_panel_user(callback, user_uuid)
+
+            # Order management callbacks
+            elif data == "admin_pending_orders":
+                await handlers["admin_hiddify"].show_pending_orders(callback)
+            elif data == "admin_completed_orders":
+                await handlers["admin_hiddify"].show_completed_orders(callback)
+            elif data == "admin_failed_orders":
+                await handlers["admin_hiddify"].show_failed_orders(callback)
+            elif data.startswith("admin_view_order_"):
+                order_id = int(data.replace("admin_view_order_", ""))
+                await handlers["admin_hiddify"].view_order_details(callback, order_id)
+            elif data.startswith("admin_cancel_order_"):
+                order_id = int(data.replace("admin_cancel_order_", ""))
+                await handlers["admin_hiddify"].cancel_order(callback, order_id)
+            elif data.startswith("admin_confirm_order_"):
+                order_id = int(data.replace("admin_confirm_order_", ""))
+                await handlers["admin_hiddify"].confirm_order(callback, order_id)
+
+            # Ticket management callbacks
+            elif data == "admin_open_tickets":
+                await handlers["admin_hiddify"].show_open_tickets(callback)
+            elif data == "admin_in_progress_tickets":
+                await handlers["admin_hiddify"].show_in_progress_tickets(callback)
+            elif data == "admin_resolved_tickets":
+                await handlers["admin_hiddify"].show_resolved_tickets(callback)
+            elif data.startswith("admin_view_ticket_"):
+                ticket_id = int(data.replace("admin_view_ticket_", ""))
+                await handlers["admin_hiddify"].view_ticket_details(callback, ticket_id)
+            elif data.startswith("admin_assign_ticket_"):
+                ticket_id = int(data.replace("admin_assign_ticket_", ""))
+                await handlers["admin_hiddify"].assign_ticket(callback, ticket_id)
+            elif data.startswith("admin_close_ticket_"):
+                ticket_id = int(data.replace("admin_close_ticket_", ""))
+                await handlers["admin_hiddify"].close_ticket(callback, ticket_id)
+            elif data.startswith("admin_reopen_ticket_"):
+                ticket_id = int(data.replace("admin_reopen_ticket_", ""))
+                await handlers["admin_hiddify"].reopen_ticket(callback, ticket_id)
+
+            # Broadcast callbacks
+            elif data == "admin_broadcast_all":
+                await handlers["admin_hiddify"].start_broadcast(callback, "all")
+            elif data == "admin_broadcast_active":
+                await handlers["admin_hiddify"].start_broadcast(callback, "active")
+            elif data == "admin_broadcast_inactive":
+                await handlers["admin_hiddify"].start_broadcast(callback, "inactive")
+            elif data == "admin_broadcast_premium":
+                await handlers["admin_hiddify"].start_broadcast(callback, "premium")
+            elif data == "admin_confirm_broadcast":
+                await handlers["admin_hiddify"].confirm_broadcast(callback)
+            elif data == "admin_cancel_broadcast":
+                await handlers["admin_hiddify"].cancel_broadcast(callback)
+
+            # Settings callbacks
+            elif data == "admin_edit_brand_info":
+                await handlers["admin_hiddify"].show_brand_settings(callback)
+            elif data == "admin_payment_settings":
+                await handlers["admin_hiddify"].show_payment_settings(callback)
+            elif data == "admin_bot_settings":
+                await handlers["admin_hiddify"].show_bot_settings(callback)
 
             elif data in ["payment_methods_back", "back_to_plans"]:
                 await handlers["purchase"].show_subscription_plans(callback)
