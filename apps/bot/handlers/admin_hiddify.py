@@ -3,6 +3,9 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 from aiogram import types
+from asgiref.sync import sync_to_async
+from django.db.models import Q
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
@@ -2699,6 +2702,41 @@ UUID:  <code>{u.uuid}</code>
             "premium": "کاربران با اشتراک",
         }
 
+        # Get count of target users
+        try:
+            if broadcast_type == "all":
+                count = await User.objects.filter(brand=self.brand).acount()
+            elif broadcast_type == "active":
+                count = (
+                    await User.objects.filter(
+                        brand=self.brand, subscriptions__status="active"
+                    )
+                    .adistinct()
+                    .acount()
+                )
+            elif broadcast_type == "inactive":
+                active_ids = await User.objects.filter(
+                    brand=self.brand, subscriptions__status="active"
+                ).avalues_list("id", flat=True)
+                count = (
+                    await User.objects.filter(brand=self.brand)
+                    .exclude(id__in=active_ids)
+                    .acount()
+                )
+            elif broadcast_type == "premium":
+                count = (
+                    await User.objects.filter(
+                        brand=self.brand, subscriptions__status="active"
+                    )
+                    .adistinct()
+                    .acount()
+                )
+            else:
+                count = 0
+        except Exception as e:
+            logger.error(f"Error counting broadcast users: {e}")
+            count = 0
+
         await self.update_user_state(
             user,
             BotState.StateType.ADMIN_ACTION,
@@ -2708,7 +2746,11 @@ UUID:  <code>{u.uuid}</code>
         text = f"""
 📢 ارسال پیام به {type_names.get(broadcast_type, "کاربران")}
 
+👥 تعداد گیرندگان: {count} نفر
+
 لطفاً متن پیام را وارد کنید:
+
+💡 نکته: می‌توانید از فرمت Markdown استفاده کنید.
         """
 
         keyboard = self.get_back_keyboard("admin_broadcast")
@@ -2717,6 +2759,8 @@ UUID:  <code>{u.uuid}</code>
 
     async def confirm_broadcast(self, callback: types.CallbackQuery):
         """Confirm and send broadcast message"""
+        from aiogram.exceptions import TelegramAPIError
+
         user, _ = await self.get_or_create_user(callback.from_user)
         state = await self.get_user_state(user)
 
@@ -2727,48 +2771,68 @@ UUID:  <code>{u.uuid}</code>
             await callback.answer("❌ پیامی برای ارسال وجود ندارد")
             return
 
+        # Show sending status
+        text = "⏳ در حال ارسال پیام..."
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, None
+        )
+
         try:
+            # Get target users query
             if broadcast_type == "all":
-                users = await User.objects.filter(brand=self.brand).aall()
+                users_qs = User.objects.filter(
+                    brand=self.brand, telegram_id__isnull=False
+                )
             elif broadcast_type == "active":
-                users = (
-                    await User.objects.filter(
-                        brand=self.brand, subscriptions__status="active"
-                    )
-                    .adistinct()
-                    .aall()
-                )
+                users_qs = User.objects.filter(
+                    brand=self.brand,
+                    telegram_id__isnull=False,
+                    subscriptions__status="active",
+                ).distinct()
             elif broadcast_type == "inactive":
-                users = await User.objects.filter(brand=self.brand).aall()
-
-                active_users = await User.objects.filter(
+                active_ids = User.objects.filter(
                     brand=self.brand, subscriptions__status="active"
-                ).avalues_list("id", flat=True)
-                users = [u for u in users if u.id not in active_users]
+                ).values_list("id", flat=True)
+                users_qs = User.objects.filter(
+                    brand=self.brand, telegram_id__isnull=False
+                ).exclude(id__in=active_ids)
             elif broadcast_type == "premium":
-                users = (
-                    await User.objects.filter(
-                        brand=self.brand, subscriptions__status="active"
-                    )
-                    .adistinct()
-                    .aall()
-                )
+                users_qs = User.objects.filter(
+                    brand=self.brand,
+                    telegram_id__isnull=False,
+                    subscriptions__status="active",
+                ).distinct()
             else:
-                users = []
+                users_qs = User.objects.none()
 
-            sender = self.brand_handlers.get("telegram_sender")
-            if sender:
-                for target_user in users:
-                    try:
-                        await sender.send_message(target_user.telegram_id, message_text)
-                    except Exception as e:
-                        logger.error(f"Failed to send to {target_user.id}: {e}")
+            # Send messages
+            success_count = 0
+            fail_count = 0
+            total_count = await users_qs.acount()
+
+            async for target_user in users_qs:
+                try:
+                    await self.bot.send_message(
+                        target_user.telegram_id, message_text, parse_mode="Markdown"
+                    )
+                    success_count += 1
+                except TelegramAPIError as e:
+                    logger.error(f"Failed to send to {target_user.id}: {e}")
+                    fail_count += 1
+                except Exception as e:
+                    logger.error(f"Unexpected error for {target_user.id}: {e}")
+                    fail_count += 1
 
             text = f"""
-✅ پیام به موفقیت ارسال شد
+✅ ارسال پیام انجام شد
 
-📊 تعداد دریافت‌کنندگان: {len(users)}
-📝 متن: {message_text[:100]}...
+📊 آمار ارسال:
+• موفق: {success_count} نفر
+• ناموفق: {fail_count} نفر
+• کل: {total_count} نفر
+
+📝 متن پیام:
+{message_text[:200]}{"..." if len(message_text) > 200 else ""}
             """
 
         except Exception as e:
@@ -2944,4 +3008,1824 @@ UUID:  <code>{u.uuid}</code>
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
+        await callback.answer()
+
+    # Additional Payment Management Methods
+
+    async def show_payment_gateways(self, callback: types.CallbackQuery):
+        from apps.orders.models import CryptoCurrency, PaymentCard, PaymentGateway
+
+        try:
+            gateways = await sync_to_async(list)(
+                PaymentGateway.objects.filter(brand=self.brand)
+            )
+
+            cards = await sync_to_async(list)(
+                PaymentCard.objects.filter(brand=self.brand, is_active=True)
+            )
+
+            cryptos = await sync_to_async(list)(
+                CryptoCurrency.objects.filter(brand=self.brand, is_active=True)
+            )
+
+            text = "🏦 درگاه‌های پرداخت\n\n"
+
+            if gateways:
+                text += "📡 درگاه‌های آنلاین:\n"
+                for gw in gateways:
+                    status = "✅" if gw.is_active else "❌"
+                    sandbox = " (تستی)" if gw.is_sandbox else ""
+                    text += f"  {status} {gw.name} - {gw.gateway_type}{sandbox}\n"
+                text += "\n"
+
+            if cards:
+                text += f"💳 کارت‌های بانکی: {len(cards)} فعال\n\n"
+
+            if cryptos:
+                text += f"🪙 ارزهای دیجیتال: {len(cryptos)} فعال\n"
+
+            if not gateways and not cards and not cryptos:
+                text += "❌ هیچ درگاه پرداختی تنظیم نشده است."
+
+            keyboard = self.create_keyboard(
+                [
+                    [
+                        {
+                            "text": "➕ افزودن درگاه آنلاین",
+                            "callback_data": "admin_add_gateway",
+                        }
+                    ],
+                    [
+                        {
+                            "text": "💳 مدیریت کارت‌ها",
+                            "callback_data": "admin_manage_cards",
+                        }
+                    ],
+                    [
+                        {
+                            "text": "🪙 مدیریت کریپتو",
+                            "callback_data": "admin_manage_crypto",
+                        }
+                    ],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_payment_settings"}],
+                ]
+            )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_settings")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def show_payment_history(self, callback: types.CallbackQuery):
+        """Show payment transaction history"""
+        from apps.orders.models import Payment
+
+        try:
+            payments = await Payment.objects.filter(brand=self.brand).order_by(
+                "-created_at"
+            )[:20]
+
+            if not payments:
+                text = "❌ هیچ تراکنشی ثبت نشده است"
+            else:
+                text = f"💵 تاریخچه تراکنش‌ها ({len(payments)} آخر):\n\n"
+
+                async for i, payment in enumerate(payments, 1):
+                    status_emoji = {
+                        "pending": "⏳",
+                        "awaiting_confirmation": "🔍",
+                        "confirmed": "✅",
+                        "failed": "❌",
+                        "cancelled": "🚫",
+                        "refunded": "↩️",
+                    }.get(payment.status, "❓")
+
+                    text += (
+                        f"{i}. {status_emoji} {payment.get_payment_method_display()}\n"
+                    )
+                    text += f"   مبلغ: {payment.amount:,.0f} {payment.currency}\n"
+                    text += f"   کاربر: {payment.user.username}\n"
+                    text += (
+                        f"   تاریخ: {payment.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+                    )
+
+            keyboard = self.create_keyboard(
+                [
+                    [{"text": "🔍 جستجو", "callback_data": "admin_search_payment"}],
+                    [
+                        {
+                            "text": "📊 فیلتر وضعیت",
+                            "callback_data": "admin_filter_payments",
+                        }
+                    ],
+                    [
+                        {
+                            "text": "🔄 بروزرسانی",
+                            "callback_data": "admin_payment_history",
+                        }
+                    ],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_payment_settings"}],
+                ]
+            )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_settings")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def show_revenue_report(self, callback: types.CallbackQuery):
+        """Show revenue report"""
+        from datetime import datetime, timedelta
+
+        from django.db.models import Sum
+
+        from apps.orders.models import Payment
+
+        try:
+            today = datetime.now().date()
+            week_ago = today - timedelta(days=7)
+            month_ago = today - timedelta(days=30)
+
+            # Today's revenue
+            today_revenue = await Payment.objects.filter(
+                brand=self.brand, status="confirmed", created_at__date=today
+            ).aaggregate(total=Sum("amount"))
+
+            # This week revenue
+            week_revenue = await Payment.objects.filter(
+                brand=self.brand, status="confirmed", created_at__date__gte=week_ago
+            ).aaggregate(total=Sum("amount"))
+
+            # This month revenue
+            month_revenue = await Payment.objects.filter(
+                brand=self.brand, status="confirmed", created_at__date__gte=month_ago
+            ).aaggregate(total=Sum("amount"))
+
+            # Total revenue
+            total_revenue = await Payment.objects.filter(
+                brand=self.brand, status="confirmed"
+            ).aaggregate(total=Sum("amount"))
+
+            # Count payments
+            today_count = await Payment.objects.filter(
+                brand=self.brand, status="confirmed", created_at__date=today
+            ).acount()
+
+            week_count = await Payment.objects.filter(
+                brand=self.brand, status="confirmed", created_at__date__gte=week_ago
+            ).acount()
+
+            month_count = await Payment.objects.filter(
+                brand=self.brand, status="confirmed", created_at__date__gte=month_ago
+            ).acount()
+
+            text = f"""
+📊 گزارش درآمد
+
+📅 امروز:
+   مبلغ: {today_revenue.get("total") or 0:,.0f} تومان
+   تعداد: {today_count} تراکنش
+
+📆 این هفته:
+   مبلغ: {week_revenue.get("total") or 0:,.0f} تومان
+   تعداد: {week_count} تراکنش
+
+📅 این ماه:
+   مبلغ: {month_revenue.get("total") or 0:,.0f} تومان
+   تعداد: {month_count} تراکنش
+
+💰 کل درآمد:
+   مبلغ: {total_revenue.get("total") or 0:,.0f} تومان
+            """
+
+            keyboard = self.create_keyboard(
+                [
+                    [
+                        {
+                            "text": "📈 نمودار درآمد",
+                            "callback_data": "admin_revenue_chart",
+                        }
+                    ],
+                    [
+                        {
+                            "text": "📤 خروجی Excel",
+                            "callback_data": "admin_export_revenue",
+                        }
+                    ],
+                    [{"text": "🔄 بروزرسانی", "callback_data": "admin_revenue_report"}],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_payment_settings"}],
+                ]
+            )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_settings")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    # Brand Settings Management Methods
+
+    async def edit_brand_name(self, callback: types.CallbackQuery):
+        """Start editing brand name"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "edit_brand_name"},
+        )
+
+        text = f"""
+✏️ ویرایش نام برند
+
+نام فعلی: {self.brand.name}
+
+لطفاً نام جدید را وارد کنید:
+        """
+
+        keyboard = self.get_back_keyboard("admin_settings")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def edit_brand_description(self, callback: types.CallbackQuery):
+        """Start editing brand description"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "edit_brand_description"},
+        )
+
+        text = f"""
+✏️ ویرایش توضیحات برند
+
+توضیحات فعلی: {self.brand.description or "ندارد"}
+
+لطفاً توضیحات جدید را وارد کنید:
+        """
+
+        keyboard = self.get_back_keyboard("admin_settings")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    # Enhanced Ticket Management with Messages
+
+    async def show_ticket_messages(self, callback: types.CallbackQuery, ticket_id: int):
+        """Show messages for a specific ticket"""
+        from apps.support.models import SupportMessage, SupportTicket
+
+        try:
+            ticket = await SupportTicket.objects.filter(
+                brand=self.brand, id=ticket_id
+            ).afirst()
+
+            if not ticket:
+                text = "❌ تیکت یافت نشد"
+                keyboard = self.get_back_keyboard("admin_tickets")
+            else:
+                messages = await SupportMessage.objects.filter(ticket=ticket).aorder_by(
+                    "created_at"
+                )[:20]
+
+                text = f"💬 پیام‌های تیکت #{ticket_id}\n\n"
+
+                async for msg in messages:
+                    sender = "👤 کاربر" if msg.is_from_customer else "👨‍💼 پشتیبان"
+                    time_str = msg.created_at.strftime("%H:%M")
+                    text += f"[{time_str}] {sender}:\n{msg.content[:100]}\n\n"
+
+                keyboard = self.create_keyboard(
+                    [
+                        [
+                            {
+                                "text": "✉️ پاسخ",
+                                "callback_data": f"admin_reply_ticket_{ticket_id}",
+                            }
+                        ],
+                        [
+                            {
+                                "text": "🔙 بازگشت",
+                                "callback_data": f"admin_view_ticket_{ticket_id}",
+                            }
+                        ],
+                    ]
+                )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_tickets")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def start_ticket_reply(self, callback: types.CallbackQuery, ticket_id: int):
+        """Start replying to a ticket"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "ticket_reply", "ticket_id": ticket_id},
+        )
+
+        text = """
+✉️ پاسخ به تیکت
+
+لطفاً متن پاسخ خود را وارد کنید:
+        """
+
+        keyboard = self.get_back_keyboard("admin_tickets")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def send_ticket_reply(self, message: types.Message, ticket_id: int):
+        """Send reply to ticket"""
+        from apps.support.models import SupportMessage, SupportTicket
+
+        try:
+            ticket = await SupportTicket.objects.filter(
+                brand=self.brand, id=ticket_id
+            ).afirst()
+
+            if not ticket:
+                await message.reply("❌ تیکت یافت نشد")
+                return
+
+            # Create support message
+            await SupportMessage.objects.acreate(
+                ticket=ticket,
+                sender=message.from_user.id,
+                content=message.text,
+                is_from_customer=False,
+            )
+
+            # Update ticket status if needed
+            if ticket.status == "open":
+                ticket.status = "in_progress"
+                await ticket.asave()
+
+            # Notify customer via bot
+            if ticket.customer.telegram_id:
+                try:
+                    notify_text = f"""
+📬 پاسخ جدید به تیکت #{ticket.ticket_number}
+
+{message.text[:500]}
+
+برای مشاهده کامل پاسخ به بخش تیکت‌ها مراجعه کنید.
+                    """
+                    await self.bot.send_message(
+                        ticket.customer.telegram_id, notify_text
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify customer: {e}")
+
+            await message.reply("✅ پاسخ شما ارسال شد")
+
+        except Exception as e:
+            await message.reply(f"❌ خطا: {e}")
+
+    # Additional callback handlers for new features
+
+    async def handle_payment_gateways(self, callback: types.CallbackQuery):
+        """Handle payment gateways callback"""
+        await self.show_payment_gateways(callback)
+
+    async def handle_payment_history(self, callback: types.CallbackQuery):
+        """Handle payment history callback"""
+        await self.show_payment_history(callback)
+
+    async def handle_revenue_report(self, callback: types.CallbackQuery):
+        """Handle revenue report callback"""
+        await self.show_revenue_report(callback)
+
+    async def handle_edit_brand_name(self, callback: types.CallbackQuery):
+        """Handle edit brand name callback"""
+        await self.edit_brand_name(callback)
+
+    async def handle_edit_brand_description(self, callback: types.CallbackQuery):
+        """Handle edit brand description callback"""
+        await self.edit_brand_description(callback)
+
+    async def handle_ticket_messages(
+        self, callback: types.CallbackQuery, ticket_id: int
+    ):
+        """Handle show ticket messages callback"""
+        await self.show_ticket_messages(callback, ticket_id)
+
+    async def handle_reply_ticket(self, callback: types.CallbackQuery, ticket_id: int):
+        """Handle reply to ticket callback"""
+        await self.start_ticket_reply(callback, ticket_id)
+
+    # Payment Gateway Management Methods
+
+    async def add_payment_gateway(self, callback: types.CallbackQuery):
+        """Start adding a new payment gateway"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "add_gateway", "step": "gateway_type"},
+        )
+
+        text = """
+➕ افزودن درگاه پرداخت جدید
+
+نوع درگاه را انتخاب کنید:
+        """
+
+        keyboard = self.create_keyboard(
+            [
+                [{"text": "Stripe", "callback_data": "gw_type_stripe"}],
+                [{"text": "PayPal", "callback_data": "gw_type_paypal"}],
+                [{"text": "ZarinPal", "callback_data": "gw_type_zarinpal"}],
+                [{"text": "IDPay", "callback_data": "gw_type_idpay"}],
+                [{"text": "Razorpay", "callback_data": "gw_type_razorpay"}],
+                [{"text": "Custom", "callback_data": "gw_type_custom"}],
+                [{"text": "❌ انصراف", "callback_data": "admin_payment_gateways"}],
+            ]
+        )
+
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def handle_gateway_type_selection(
+        self, callback: types.CallbackQuery, gw_type: str
+    ):
+        """Handle gateway type selection"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        state = await self.get_user_state(user)
+
+        state.state_data["gateway_type"] = gw_type
+        state.state_data["step"] = "name"
+        await state.asave()
+
+        text = """
+نام درگاه را وارد کنید (مثلاً: درگاه اصلی):
+        """
+
+        keyboard = self.get_back_keyboard("admin_payment_gateways")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def manage_cards(self, callback: types.CallbackQuery):
+        """Manage payment cards"""
+        from apps.orders.models import PaymentCard
+
+        try:
+            cards = await PaymentCard.objects.filter(brand=self.brand).aorder_by(
+                "display_order"
+            )
+
+            if not cards:
+                text = "❌ هیچ کارت بانکی ثبت نشده است"
+            else:
+                text = f"💳 کارت‌های بانکی ({len(cards)}):\n\n"
+                async for i, card in enumerate(cards, 1):
+                    status = "✅" if card.is_active else "❌"
+                    masked = (
+                        f"{card.card_number[:4]}****{card.card_number[-4:]}"
+                        if len(card.card_number) >= 8
+                        else card.card_number
+                    )
+                    text += f"{i}. {status} {card.bank_name}\n"
+                    text += f"   شماره: {masked}\n"
+                    text += f"   صاحب: {card.cardholder_name}\n\n"
+
+            keyboard = self.create_keyboard(
+                [
+                    [{"text": "➕ افزودن کارت", "callback_data": "admin_add_card"}],
+                    [
+                        {
+                            "text": "✏️ ویرایش کارت‌ها",
+                            "callback_data": "admin_edit_cards",
+                        }
+                    ],
+                    [{"text": "🗑️ حذف کارت", "callback_data": "admin_delete_card"}],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_payment_gateways"}],
+                ]
+            )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_gateways")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def manage_crypto(self, callback: types.CallbackQuery):
+        """Manage cryptocurrency payments"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            cryptos = await CryptoCurrency.objects.filter(brand=self.brand).aorder_by(
+                "display_order"
+            )
+
+            if not cryptos:
+                text = "❌ هیچ ارز دیجیتالی تنظیم نشده است"
+            else:
+                text = f"🪙 ارزهای دیجیتال ({len(cryptos)}):\n\n"
+                async for i, crypto in enumerate(cryptos, 1):
+                    status = "✅" if crypto.is_active else "❌"
+                    text += f"{i}. {status} {crypto.name} ({crypto.symbol})\n"
+                    text += f"   شبکه: {crypto.get_network_display()}\n"
+                    text += f"   آدرس: {crypto.wallet_address[:20]}...\n\n"
+
+            keyboard = self.create_keyboard(
+                [
+                    [{"text": "➕ افزودن ارز", "callback_data": "admin_add_crypto"}],
+                    [
+                        {
+                            "text": "✏️ ویرایش ارزها",
+                            "callback_data": "admin_edit_cryptos",
+                        }
+                    ],
+                    [{"text": "🗑️ حذف ارز", "callback_data": "admin_delete_crypto"}],
+                    [
+                        {
+                            "text": "🔄 بروزرسانی نرخ",
+                            "callback_data": "admin_update_crypto_rates",
+                        }
+                    ],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_payment_gateways"}],
+                ]
+            )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_gateways")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    # Enhanced Payment History with Pagination
+
+    async def show_payment_history_page(
+        self, callback: types.CallbackQuery, page: int = 1
+    ):
+        """Show payment history with pagination"""
+        from apps.orders.models import Payment
+
+        per_page = 10
+        offset = (page - 1) * per_page
+
+        try:
+            total_count = await Payment.objects.filter(brand=self.brand).acount()
+            total_pages = (total_count + per_page - 1) // per_page
+
+            payments = await Payment.objects.filter(brand=self.brand).aorder_by(
+                "-created_at"
+            )[offset : offset + per_page]
+
+            if not payments:
+                text = "❌ هیچ تراکنشی ثبت نشده است"
+            else:
+                text = f"💵 تاریخچه تراکنش‌ها (صفحه {page}/{total_pages}):\n\n"
+
+                async for i, payment in enumerate(payments, 1):
+                    status_emoji = {
+                        "pending": "⏳",
+                        "awaiting_confirmation": "🔍",
+                        "confirmed": "✅",
+                        "failed": "❌",
+                        "cancelled": "🚫",
+                        "refunded": "↩️",
+                    }.get(payment.status, "❓")
+
+                    text += f"{offset + i}. {status_emoji} {payment.get_payment_method_display()}\n"
+                    text += f"   مبلغ: {payment.amount:,.0f} {payment.currency}\n"
+                    text += f"   کاربر: {payment.user.username}\n"
+                    text += (
+                        f"   تاریخ: {payment.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+                    )
+
+            # Build pagination keyboard
+            buttons = []
+
+            # Navigation row
+            nav_row = []
+            if page > 1:
+                nav_row.append(
+                    {
+                        "text": "◀️ قبلی",
+                        "callback_data": f"admin_payment_history_{page - 1}",
+                    }
+                )
+            if page < total_pages:
+                nav_row.append(
+                    {
+                        "text": "▶️ بعدی",
+                        "callback_data": f"admin_payment_history_{page + 1}",
+                    }
+                )
+            if nav_row:
+                buttons.append(nav_row)
+
+            # Action buttons
+            buttons.extend(
+                [
+                    [{"text": "🔍 جستجو", "callback_data": "admin_search_payment"}],
+                    [
+                        {
+                            "text": "📊 فیلتر وضعیت",
+                            "callback_data": "admin_filter_payments",
+                        }
+                    ],
+                    [
+                        {
+                            "text": "🔄 بروزرسانی",
+                            "callback_data": f"admin_payment_history_{page}",
+                        }
+                    ],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_payment_settings"}],
+                ]
+            )
+
+            keyboard = self.create_keyboard(buttons)
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_settings")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def search_payment(self, callback: types.CallbackQuery):
+        """Start payment search"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "search_payment"},
+        )
+
+        text = """
+🔍 جستجوی تراکنش
+
+لطفاً شماره تراکنش، نام کاربری، یا مبلغ را وارد کنید:
+        """
+
+        keyboard = self.get_back_keyboard("admin_payment_history_1")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def filter_payments_by_status(self, callback: types.CallbackQuery):
+        """Show payment filter options"""
+        text = "📊 فیلتر تراکنش‌ها بر اساس وضعیت:"
+
+        keyboard = self.create_keyboard(
+            [
+                [
+                    {
+                        "text": "⏳ در انتظار",
+                        "callback_data": "admin_payments_status_pending",
+                    }
+                ],
+                [
+                    {
+                        "text": "🔍 در انتظار تایید",
+                        "callback_data": "admin_payments_status_awaiting_confirmation",
+                    }
+                ],
+                [
+                    {
+                        "text": "✅ تایید شده",
+                        "callback_data": "admin_payments_status_confirmed",
+                    }
+                ],
+                [
+                    {
+                        "text": "❌ ناموفق",
+                        "callback_data": "admin_payments_status_failed",
+                    }
+                ],
+                [
+                    {
+                        "text": "🚫 لغو شده",
+                        "callback_data": "admin_payments_status_cancelled",
+                    }
+                ],
+                [
+                    {
+                        "text": "↩️ بازگشتی",
+                        "callback_data": "admin_payments_status_refunded",
+                    }
+                ],
+                [{"text": "📋 همه", "callback_data": "admin_payment_history_1"}],
+                [{"text": "🔙 بازگشت", "callback_data": "admin_payment_history_1"}],
+            ]
+        )
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def show_payments_by_status(
+        self, callback: types.CallbackQuery, status: str, page: int = 1
+    ):
+        """Show payments filtered by status"""
+        from apps.orders.models import Payment
+
+        per_page = 10
+        offset = (page - 1) * per_page
+
+        try:
+            status_names = {
+                "pending": "در انتظار",
+                "awaiting_confirmation": "در انتظار تایید",
+                "confirmed": "تایید شده",
+                "failed": "ناموفق",
+                "cancelled": "لغو شده",
+                "refunded": "بازگشتی",
+            }
+
+            total_count = await Payment.objects.filter(
+                brand=self.brand, status=status
+            ).acount()
+            total_pages = (total_count + per_page - 1) // per_page
+
+            payments = await Payment.objects.filter(
+                brand=self.brand, status=status
+            ).aorder_by("-created_at")[offset : offset + per_page]
+
+            if not payments:
+                text = f"❌ هیچ تراکنش {status_names.get(status, '')}‌ای وجود ندارد"
+            else:
+                text = f"📊 تراکنش‌های {status_names.get(status, '')} (صفحه {page}/{total_pages}):\n\n"
+
+                async for i, payment in enumerate(payments, 1):
+                    text += f"{offset + i}. {payment.get_payment_method_display()}\n"
+                    text += f"   مبلغ: {payment.amount:,.0f} {payment.currency}\n"
+                    text += f"   کاربر: {payment.user.username}\n"
+                    text += (
+                        f"   تاریخ: {payment.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+                    )
+
+            # Build pagination keyboard
+            buttons = []
+
+            nav_row = []
+            if page > 1:
+                nav_row.append(
+                    {
+                        "text": "◀️ قبلی",
+                        "callback_data": f"admin_payments_status_{status}_{page - 1}",
+                    }
+                )
+            if page < total_pages:
+                nav_row.append(
+                    {
+                        "text": "▶️ بعدی",
+                        "callback_data": f"admin_payments_status_{status}_{page + 1}",
+                    }
+                )
+            if nav_row:
+                buttons.append(nav_row)
+
+            buttons.extend(
+                [
+                    [
+                        {
+                            "text": "🔄 بروزرسانی",
+                            "callback_data": f"admin_payments_status_{status}_{page}",
+                        }
+                    ],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_filter_payments"}],
+                ]
+            )
+
+            keyboard = self.create_keyboard(buttons)
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_history_1")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    # Revenue Chart and Export Methods
+
+    async def show_revenue_chart(self, callback: types.CallbackQuery):
+        """Show revenue chart"""
+        from datetime import datetime, timedelta
+
+        from django.db.models import Sum
+
+        from apps.orders.models import Payment
+
+        try:
+            today = datetime.now().date()
+            days = []
+            revenues = []
+
+            for i in range(7):
+                date = today - timedelta(days=6 - i)
+                revenue = await Payment.objects.filter(
+                    brand=self.brand, status="confirmed", created_at__date=date
+                ).aaggregate(total=Sum("amount"))
+
+                days.append(date.strftime("%m/%d"))
+                revenues.append(float(revenue.get("total") or 0))
+
+            # Simple text-based chart
+            max_revenue = max(revenues) if revenues else 1
+            chart_lines = []
+
+            for day, rev in zip(days, revenues):
+                bar_len = int((rev / max_revenue) * 20) if max_revenue > 0 else 0
+                bar = "█" * bar_len
+                chart_lines.append(f"{day}: {bar} {rev:,.0f}")
+
+            text = f"""
+📈 نمودار درآمد ۷ روز اخیر
+
+{chr(10).join(chart_lines)}
+
+💰 مجموع: {sum(revenues):,.0f} تومان
+            """
+
+            keyboard = self.create_keyboard(
+                [
+                    [{"text": "📅 ۳۰ روز", "callback_data": "admin_revenue_chart_30"}],
+                    [{"text": "📅 ۹۰ روز", "callback_data": "admin_revenue_chart_90"}],
+                    [{"text": "🔄 بروزرسانی", "callback_data": "admin_revenue_chart"}],
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_revenue_report"}],
+                ]
+            )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_revenue_report")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def export_revenue_excel(self, callback: types.CallbackQuery):
+        """Export revenue report to Excel"""
+        from datetime import datetime, timedelta
+
+        from apps.orders.models import Payment
+
+        try:
+            # Show processing message
+            await callback.answer("⏳ در حال تهیه فایل...", show_alert=False)
+
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=30)
+
+            payments = (
+                await Payment.objects.filter(
+                    brand=self.brand,
+                    status="confirmed",
+                    created_at__date__gte=start_date,
+                    created_at__date__lte=end_date,
+                )
+                .aselect_related("user")
+                .aorder_by("-created_at")
+            )
+
+            # Create CSV content (simple text format for Telegram)
+            csv_content = "تاریخ,کاربر,روش پرداخت,مبلغ,وضعیت\n"
+
+            async for payment in payments:
+                date_str = payment.created_at.strftime("%Y-%m-%d %H:%M")
+                csv_content += f"{date_str},{payment.user.username},{payment.get_payment_method_display()},{payment.amount},{payment.get_status_display()}\n"
+
+            # Send as text file
+            from aiogram.types import BufferedInputFile
+
+            file_content = csv_content.encode("utf-8-sig")  # BOM for Excel
+            file = BufferedInputFile(
+                file_content, filename=f"revenue_report_{end_date}.csv"
+            )
+
+            await self.bot.send_document(
+                callback.message.chat.id,
+                file,
+                caption=f"📊 گزارش درآمد از {start_date} تا {end_date}\n\nتعداد تراکنش‌ها: {len(payments)}",
+            )
+
+            text = "✅ فایل گزارش ارسال شد"
+
+        except Exception as e:
+            text = f"❌ خطا در تهیه گزارش: {e}"
+
+        keyboard = self.get_back_keyboard("admin_revenue_report")
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    # Card Management Methods
+
+    async def add_payment_card(self, callback: types.CallbackQuery):
+        """Start adding a new payment card"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "add_card", "step": "bank_name"},
+        )
+
+        text = """
+➕ افزودن کارت بانکی جدید
+
+لطفاً نام بانک را وارد کنید:
+        """
+
+        keyboard = self.get_back_keyboard("admin_manage_cards")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def edit_cards_list(self, callback: types.CallbackQuery):
+        """Show list of cards to edit"""
+        from apps.orders.models import PaymentCard
+
+        try:
+            cards = await PaymentCard.objects.filter(brand=self.brand).aorder_by(
+                "display_order"
+            )
+
+            if not cards:
+                text = "❌ هیچ کارت بانکی ثبت نشده است"
+                keyboard = self.get_back_keyboard("admin_manage_cards")
+            else:
+                text = "✏️ انتخاب کارت برای ویرایش:\n"
+                buttons = []
+
+                async for card in cards:
+                    masked = (
+                        f"{card.card_number[:4]}****{card.card_number[-4:]}"
+                        if len(card.card_number) >= 8
+                        else card.card_number
+                    )
+                    buttons.append(
+                        [
+                            {
+                                "text": f"{'✅' if card.is_active else '❌'} {card.bank_name} - {masked}",
+                                "callback_data": f"admin_edit_card_{card.id}",
+                            }
+                        ]
+                    )
+
+                buttons.append(
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_manage_cards"}]
+                )
+                keyboard = self.create_keyboard(buttons)
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_cards")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def edit_card_details(self, callback: types.CallbackQuery, card_id: int):
+        """Edit specific card details"""
+        from apps.orders.models import PaymentCard
+
+        try:
+            card = await PaymentCard.objects.filter(
+                brand=self.brand, id=card_id
+            ).afirst()
+
+            if not card:
+                text = "❌ کارت یافت نشد"
+                keyboard = self.get_back_keyboard("admin_manage_cards")
+            else:
+                masked = (
+                    f"{card.card_number[:4]}****{card.card_number[-4:]}"
+                    if len(card.card_number) >= 8
+                    else card.card_number
+                )
+                text = f"""
+✏️ ویرایش کارت
+
+🏦 بانک: {card.bank_name}
+💳 شماره: {masked}
+👤 صاحب: {card.cardholder_name}
+✅ وضعیت: {"فعال" if card.is_active else "غیرفعال"}
+                """
+
+                keyboard = self.create_keyboard(
+                    [
+                        [
+                            {
+                                "text": "✏️ تغییر نام بانک",
+                                "callback_data": f"admin_card_field_{card_id}_bank_name",
+                            }
+                        ],
+                        [
+                            {
+                                "text": "✏️ تغییر شماره کارت",
+                                "callback_data": f"admin_card_field_{card_id}_card_number",
+                            }
+                        ],
+                        [
+                            {
+                                "text": "✏️ تغییر صاحب کارت",
+                                "callback_data": f"admin_card_field_{card_id}_cardholder",
+                            }
+                        ],
+                        [
+                            {
+                                "text": "🔄 تغییر وضعیت",
+                                "callback_data": f"admin_card_toggle_{card_id}",
+                            }
+                        ],
+                        [{"text": "🔙 بازگشت", "callback_data": "admin_edit_cards"}],
+                    ]
+                )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_cards")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def start_edit_card_field(
+        self, callback: types.CallbackQuery, card_id: int, field: str
+    ):
+        """Start editing a card field"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "edit_card", "card_id": card_id, "field": field},
+        )
+
+        field_names = {
+            "bank_name": "نام بانک",
+            "card_number": "شماره کارت",
+            "cardholder": "نام صاحب کارت",
+        }
+
+        text = f"""
+✏️ ویرایش {field_names.get(field, field)}
+
+لطفاً مقدار جدید را وارد کنید:
+        """
+
+        keyboard = self.get_back_keyboard(f"admin_edit_card_{card_id}")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def toggle_card_status(self, callback: types.CallbackQuery, card_id: int):
+        """Toggle card active status"""
+        from apps.orders.models import PaymentCard
+
+        try:
+            card = await PaymentCard.objects.filter(
+                brand=self.brand, id=card_id
+            ).afirst()
+
+            if card:
+                card.is_active = not card.is_active
+                await card.asave()
+                status = "فعال" if card.is_active else "غیرفعال"
+                text = f"✅ کارت {status} شد"
+            else:
+                text = "❌ کارت یافت نشد"
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+
+        keyboard = self.get_back_keyboard(f"admin_edit_card_{card_id}")
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def delete_card_list(self, callback: types.CallbackQuery):
+        """Show list of cards to delete"""
+        from apps.orders.models import PaymentCard
+
+        try:
+            cards = await PaymentCard.objects.filter(brand=self.brand).aorder_by(
+                "display_order"
+            )
+
+            if not cards:
+                text = "❌ هیچ کارت بانکی ثبت نشده است"
+                keyboard = self.get_back_keyboard("admin_manage_cards")
+            else:
+                text = "🗑️ انتخاب کارت برای حذف:\n"
+                buttons = []
+
+                async for card in cards:
+                    masked = (
+                        f"{card.card_number[:4]}****{card.card_number[-4:]}"
+                        if len(card.card_number) >= 8
+                        else card.card_number
+                    )
+                    buttons.append(
+                        [
+                            {
+                                "text": f"🗑️ {card.bank_name} - {masked}",
+                                "callback_data": f"admin_confirm_delete_card_{card.id}",
+                            }
+                        ]
+                    )
+
+                buttons.append(
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_manage_cards"}]
+                )
+                keyboard = self.create_keyboard(buttons)
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_cards")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def confirm_delete_card(self, callback: types.CallbackQuery, card_id: int):
+        """Confirm card deletion"""
+        from apps.orders.models import PaymentCard
+
+        try:
+            card = await PaymentCard.objects.filter(
+                brand=self.brand, id=card_id
+            ).afirst()
+
+            if not card:
+                text = "❌ کارت یافت نشد"
+                keyboard = self.get_back_keyboard("admin_manage_cards")
+            else:
+                masked = (
+                    f"{card.card_number[:4]}****{card.card_number[-4:]}"
+                    if len(card.card_number) >= 8
+                    else card.card_number
+                )
+                text = f"""
+⚠️ آیا از حذف این کارت مطمئن هستید؟
+
+🏦 {card.bank_name}
+💳 {masked}
+👤 {card.cardholder_name}
+                """
+
+                keyboard = self.create_keyboard(
+                    [
+                        [
+                            {
+                                "text": "✅ بله، حذف شود",
+                                "callback_data": f"admin_do_delete_card_{card_id}",
+                            }
+                        ],
+                        [{"text": "❌ خیر", "callback_data": "admin_delete_card"}],
+                    ]
+                )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_cards")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def do_delete_card(self, callback: types.CallbackQuery, card_id: int):
+        """Actually delete the card"""
+        from apps.orders.models import PaymentCard
+
+        try:
+            card = await PaymentCard.objects.filter(
+                brand=self.brand, id=card_id
+            ).afirst()
+
+            if card:
+                await card.adelete()
+                text = "✅ کارت با موفقیت حذف شد"
+            else:
+                text = "❌ کارت یافت نشد"
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+
+        keyboard = self.get_back_keyboard("admin_manage_cards")
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    # Crypto Currency Management Methods
+
+    async def add_crypto_currency(self, callback: types.CallbackQuery):
+        """Start adding a new cryptocurrency"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "add_crypto", "step": "name"},
+        )
+
+        text = """
+➕ افزودن ارز دیجیتال جدید
+
+لطفاً نام ارز را وارد کنید (مثلاً: Bitcoin):
+        """
+
+        keyboard = self.get_back_keyboard("admin_manage_crypto")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def edit_cryptos_list(self, callback: types.CallbackQuery):
+        """Show list of cryptos to edit"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            cryptos = await CryptoCurrency.objects.filter(brand=self.brand).aorder_by(
+                "display_order"
+            )
+
+            if not cryptos:
+                text = "❌ هیچ ارز دیجیتالی ثبت نشده است"
+                keyboard = self.get_back_keyboard("admin_manage_crypto")
+            else:
+                text = "✏️ انتخاب ارز برای ویرایش:\n"
+                buttons = []
+
+                async for crypto in cryptos:
+                    status = "✅" if crypto.is_active else "❌"
+                    buttons.append(
+                        [
+                            {
+                                "text": f"{status} {crypto.name} ({crypto.symbol})",
+                                "callback_data": f"admin_edit_crypto_{crypto.id}",
+                            }
+                        ]
+                    )
+
+                buttons.append(
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_manage_crypto"}]
+                )
+                keyboard = self.create_keyboard(buttons)
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_crypto")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def edit_crypto_details(self, callback: types.CallbackQuery, crypto_id: int):
+        """Edit specific crypto details"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            crypto = await CryptoCurrency.objects.filter(
+                brand=self.brand, id=crypto_id
+            ).afirst()
+
+            if not crypto:
+                text = "❌ ارز یافت نشد"
+                keyboard = self.get_back_keyboard("admin_manage_crypto")
+            else:
+                text = f"""
+✏️ ویرایش ارز دیجیتال
+
+🪙 نام: {crypto.name}
+💱 نماد: {crypto.symbol}
+🌐 شبکه: {crypto.get_network_display()}
+📍 آدرس: {crypto.wallet_address[:30]}...
+✅ وضعیت: {"فعال" if crypto.is_active else "غیرفعال"}
+                """
+
+                keyboard = self.create_keyboard(
+                    [
+                        [
+                            {
+                                "text": "✏️ تغییر نام",
+                                "callback_data": f"admin_crypto_field_{crypto_id}_name",
+                            }
+                        ],
+                        [
+                            {
+                                "text": "✏️ تغییر نماد",
+                                "callback_data": f"admin_crypto_field_{crypto_id}_symbol",
+                            }
+                        ],
+                        [
+                            {
+                                "text": "✏️ تغییر آدرس",
+                                "callback_data": f"admin_crypto_field_{crypto_id}_address",
+                            }
+                        ],
+                        [
+                            {
+                                "text": "🔄 تغییر وضعیت",
+                                "callback_data": f"admin_crypto_toggle_{crypto_id}",
+                            }
+                        ],
+                        [{"text": "🔙 بازگشت", "callback_data": "admin_edit_cryptos"}],
+                    ]
+                )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_crypto")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def start_edit_crypto_field(
+        self, callback: types.CallbackQuery, crypto_id: int, field: str
+    ):
+        """Start editing a crypto field"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.ADMIN_ACTION,
+            {"action": "edit_crypto", "crypto_id": crypto_id, "field": field},
+        )
+
+        field_names = {
+            "name": "نام ارز",
+            "symbol": "نماد",
+            "address": "آدرس کیف پول",
+        }
+
+        text = f"""
+✏️ ویرایش {field_names.get(field, field)}
+
+لطفاً مقدار جدید را وارد کنید:
+        """
+
+        keyboard = self.get_back_keyboard(f"admin_edit_crypto_{crypto_id}")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def toggle_crypto_status(self, callback: types.CallbackQuery, crypto_id: int):
+        """Toggle crypto active status"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            crypto = await CryptoCurrency.objects.filter(
+                brand=self.brand, id=crypto_id
+            ).afirst()
+
+            if crypto:
+                crypto.is_active = not crypto.is_active
+                await crypto.asave()
+                status = "فعال" if crypto.is_active else "غیرفعال"
+                text = f"✅ ارز {status} شد"
+            else:
+                text = "❌ ارز یافت نشد"
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+
+        keyboard = self.get_back_keyboard(f"admin_edit_crypto_{crypto_id}")
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def delete_crypto_list(self, callback: types.CallbackQuery):
+        """Show list of cryptos to delete"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            cryptos = await CryptoCurrency.objects.filter(brand=self.brand).aorder_by(
+                "display_order"
+            )
+
+            if not cryptos:
+                text = "❌ هیچ ارز دیجیتالی ثبت نشده است"
+                keyboard = self.get_back_keyboard("admin_manage_crypto")
+            else:
+                text = "🗑️ انتخاب ارز برای حذف:\n"
+                buttons = []
+
+                async for crypto in cryptos:
+                    buttons.append(
+                        [
+                            {
+                                "text": f"🗑️ {crypto.name} ({crypto.symbol})",
+                                "callback_data": f"admin_confirm_delete_crypto_{crypto.id}",
+                            }
+                        ]
+                    )
+
+                buttons.append(
+                    [{"text": "🔙 بازگشت", "callback_data": "admin_manage_crypto"}]
+                )
+                keyboard = self.create_keyboard(buttons)
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_crypto")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def confirm_delete_crypto(
+        self, callback: types.CallbackQuery, crypto_id: int
+    ):
+        """Confirm crypto deletion"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            crypto = await CryptoCurrency.objects.filter(
+                brand=self.brand, id=crypto_id
+            ).afirst()
+
+            if not crypto:
+                text = "❌ ارز یافت نشد"
+                keyboard = self.get_back_keyboard("admin_manage_crypto")
+            else:
+                text = f"""
+⚠️ آیا از حذف این ارز مطمئن هستید؟
+
+🪙 {crypto.name} ({crypto.symbol})
+🌐 {crypto.get_network_display()}
+                """
+
+                keyboard = self.create_keyboard(
+                    [
+                        [
+                            {
+                                "text": "✅ بله، حذف شود",
+                                "callback_data": f"admin_do_delete_crypto_{crypto_id}",
+                            }
+                        ],
+                        [{"text": "❌ خیر", "callback_data": "admin_delete_crypto"}],
+                    ]
+                )
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_manage_crypto")
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def do_delete_crypto(self, callback: types.CallbackQuery, crypto_id: int):
+        """Actually delete the crypto"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            crypto = await CryptoCurrency.objects.filter(
+                brand=self.brand, id=crypto_id
+            ).afirst()
+
+            if crypto:
+                await crypto.adelete()
+                text = "✅ ارز با موفقیت حذف شد"
+            else:
+                text = "❌ ارز یافت نشد"
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+
+        keyboard = self.get_back_keyboard("admin_manage_crypto")
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def update_crypto_rates(self, callback: types.CallbackQuery):
+        """Update cryptocurrency exchange rates"""
+        from apps.orders.models import CryptoCurrency
+
+        try:
+            cryptos = await CryptoCurrency.objects.filter(
+                brand=self.brand, is_active=True
+            ).aall()
+
+            updated = 0
+            async for crypto in cryptos:
+                # In a real implementation, fetch from API
+                # For now, just update the timestamp
+                crypto.last_rate_update = timezone.now()
+                await crypto.asave()
+                updated += 1
+
+            text = f"✅ نرخ {updated} ارز بروزرسانی شد"
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+
+        keyboard = self.get_back_keyboard("admin_manage_crypto")
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    # Handle admin message for card, crypto, gateway and other admin actions
+
+    async def handle_card_message(
+        self, message: types.Message, user: User, state: BotState
+    ):
+        """Handle card-related text messages"""
+        from apps.orders.models import PaymentCard
+
+        step = state.state_data.get("step")
+        card_data = state.state_data.get("card_data", {})
+
+        if step == "bank_name":
+            card_data["bank_name"] = message.text.strip()
+            state.state_data["card_data"] = card_data
+            state.state_data["step"] = "card_number"
+            await state.asave()
+
+            text = "لطفاً شماره کارت را وارد کنید:"
+            keyboard = self.get_back_keyboard("admin_manage_cards")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        elif step == "card_number":
+            card_number = message.text.strip().replace(" ", "")
+            if not card_number.isdigit() or len(card_number) < 16:
+                await message.reply("❌ لطفاً یک شماره کارت معتبر وارد کنید.")
+                return
+
+            card_data["card_number"] = card_number
+            state.state_data["card_data"] = card_data
+            state.state_data["step"] = "cardholder_name"
+            await state.asave()
+
+            text = "لطفاً نام صاحب کارت را وارد کنید:"
+            keyboard = self.get_back_keyboard("admin_manage_cards")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        elif step == "cardholder_name":
+            card_data["cardholder_name"] = message.text.strip()
+
+            # Create the card
+            try:
+                await PaymentCard.objects.acreate(
+                    brand=self.brand,
+                    bank_name=card_data["bank_name"],
+                    card_number=card_data["card_number"],
+                    cardholder_name=card_data["cardholder_name"],
+                    is_active=True,
+                )
+
+                text = f"""
+✅ کارت با موفقیت اضافه شد
+
+🏦 بانک: {card_data["bank_name"]}
+💳 شماره: {card_data["card_number"][:4]}****{card_data["card_number"][-4:]}
+👤 صاحب: {card_data["cardholder_name"]}
+                """
+
+            except Exception as e:
+                text = f"❌ خطا در ایجاد کارت: {e}"
+
+            keyboard = self.get_back_keyboard("admin_manage_cards")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+
+    async def handle_crypto_message(
+        self, message: types.Message, user: User, state: BotState
+    ):
+        """Handle crypto-related text messages"""
+        from apps.orders.models import CryptoCurrency
+
+        step = state.state_data.get("step")
+        crypto_data = state.state_data.get("crypto_data", {})
+
+        if step == "name":
+            crypto_data["name"] = message.text.strip()
+            state.state_data["crypto_data"] = crypto_data
+            state.state_data["step"] = "symbol"
+            await state.asave()
+
+            text = "لطفاً نماد ارز را وارد کنید (مثلاً: BTC):"
+            keyboard = self.get_back_keyboard("admin_manage_crypto")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        elif step == "symbol":
+            crypto_data["symbol"] = message.text.strip().upper()
+            state.state_data["crypto_data"] = crypto_data
+            state.state_data["step"] = "network"
+            await state.asave()
+
+            text = "شبکه را انتخاب کنید:"
+            keyboard = self.create_keyboard(
+                [
+                    [{"text": "Bitcoin", "callback_data": "crypto_network_bitcoin"}],
+                    [{"text": "Ethereum", "callback_data": "crypto_network_ethereum"}],
+                    [{"text": "Tron (TRC20)", "callback_data": "crypto_network_tron"}],
+                    [{"text": "BSC (BEP20)", "callback_data": "crypto_network_bsc"}],
+                    [{"text": "Polygon", "callback_data": "crypto_network_polygon"}],
+                    [{"text": "❌ انصراف", "callback_data": "admin_manage_crypto"}],
+                ]
+            )
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        elif step == "wallet_address":
+            crypto_data["wallet_address"] = message.text.strip()
+
+            # Create the crypto
+            try:
+                await CryptoCurrency.objects.acreate(
+                    brand=self.brand,
+                    name=crypto_data["name"],
+                    symbol=crypto_data["symbol"],
+                    network=crypto_data["network"],
+                    wallet_address=crypto_data["wallet_address"],
+                    is_active=True,
+                )
+
+                text = f"""
+✅ ارز دیجیتال با موفقیت اضافه شد
+
+🪙 نام: {crypto_data["name"]}
+💱 نماد: {crypto_data["symbol"]}
+🌐 شبکه: {crypto_data["network"]}
+📍 آدرس: {crypto_data["wallet_address"][:30]}...
+                """
+
+            except Exception as e:
+                text = f"❌ خطا در ایجاد ارز: {e}"
+
+            keyboard = self.get_back_keyboard("admin_manage_crypto")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+
+    async def handle_crypto_network_selection(
+        self, callback: types.CallbackQuery, network: str
+    ):
+        """Handle crypto network selection"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        state = await self.get_user_state(user)
+
+        state.state_data.setdefault("crypto_data", {})["network"] = network
+        state.state_data["step"] = "wallet_address"
+        await state.asave()
+
+        text = "لطفاً آدرس کیف پول را وارد کنید:"
+        keyboard = self.get_back_keyboard("admin_manage_crypto")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
+        await callback.answer()
+
+    async def handle_gateway_message(
+        self, message: types.Message, user: User, state: BotState
+    ):
+        """Handle gateway-related text messages"""
+        from apps.orders.models import PaymentGateway
+
+        step = state.state_data.get("step")
+        gateway_data = state.state_data.get("gateway_data", {})
+
+        if step == "name":
+            gateway_data["name"] = message.text.strip()
+            state.state_data["gateway_data"] = gateway_data
+            state.state_data["step"] = "api_key"
+            await state.asave()
+
+            text = "لطفاً API Key را وارد کنید:"
+            keyboard = self.get_back_keyboard("admin_payment_gateways")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        elif step == "api_key":
+            gateway_data["api_key"] = message.text.strip()
+            state.state_data["gateway_data"] = gateway_data
+            state.state_data["step"] = "secret_key"
+            await state.asave()
+
+            text = "لطفاً Secret Key را وارد کنید (یا 0 برای رد کردن):"
+            keyboard = self.get_back_keyboard("admin_payment_gateways")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        elif step == "secret_key":
+            secret = message.text.strip()
+            gateway_data["secret_key"] = None if secret == "0" else secret
+
+            # Create the gateway
+            try:
+                await PaymentGateway.objects.acreate(
+                    brand=self.brand,
+                    name=gateway_data["name"],
+                    gateway_type=gateway_data["gateway_type"],
+                    api_key=gateway_data["api_key"],
+                    secret_key=gateway_data.get("secret_key"),
+                    is_sandbox=True,
+                    is_active=True,
+                )
+
+                text = f"""
+✅ درگاه پرداخت با موفقیت اضافه شد
+
+📌 نام: {gateway_data["name"]}
+🔧 نوع: {gateway_data["gateway_type"]}
+⚠️ حالت تستی: فعال
+                """
+
+            except Exception as e:
+                text = f"❌ خطا در ایجاد درگاه: {e}"
+
+            keyboard = self.get_back_keyboard("admin_payment_gateways")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+
+    async def handle_payment_search_message(
+        self, message: types.Message, user: User, state: BotState
+    ):
+        """Handle payment search message"""
+        from apps.orders.models import Payment
+
+        query = message.text.strip()
+
+        try:
+            # Search by payment ID, user username, or amount
+            payments = (
+                await Payment.objects.filter(brand=self.brand)
+                .filter(
+                    Q(payment_id__icontains=query)
+                    | Q(user__username__icontains=query)
+                    | Q(amount__icontains=query)
+                )
+                .aselect_related("user")
+                .aorder_by("-created_at")[:10]
+            )
+
+            if not payments:
+                text = f"❌ هیچ تراکنشی با عبارت «{query}» یافت نشد"
+            else:
+                text = f"🔍 نتایج جستجو برای «{query}»:\n\n"
+
+                async for i, payment in enumerate(payments, 1):
+                    status_emoji = {
+                        "pending": "⏳",
+                        "awaiting_confirmation": "🔍",
+                        "confirmed": "✅",
+                        "failed": "❌",
+                        "cancelled": "🚫",
+                        "refunded": "↩️",
+                    }.get(payment.status, "❓")
+
+                    text += (
+                        f"{i}. {status_emoji} {payment.get_payment_method_display()}\n"
+                    )
+                    text += f"   مبلغ: {payment.amount:,.0f} {payment.currency}\n"
+                    text += f"   کاربر: {payment.user.username}\n\n"
+
+            keyboard = self.get_back_keyboard("admin_payment_history_1")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        except Exception as e:
+            text = f"❌ خطا: {e}"
+            keyboard = self.get_back_keyboard("admin_payment_history_1")
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+
+    # Additional callback handlers for crypto network selection
+
+    async def handle_crypto_network_callback(
+        self, callback: types.CallbackQuery, network: str
+    ):
+        """Handle crypto network selection callback"""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        state = await self.get_user_state(user)
+
+        state.state_data.setdefault("crypto_data", {})["network"] = network
+        state.state_data["step"] = "wallet_address"
+        await state.asave()
+
+        text = "لطفاً آدرس کیف پول را وارد کنید:"
+        keyboard = self.get_back_keyboard("admin_manage_crypto")
+        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()

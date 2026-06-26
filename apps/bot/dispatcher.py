@@ -128,12 +128,8 @@ class MultiBrandDispatcher:
                         message, user, state
                     )
 
-            elif state.state_data and state.state_data.get("action") in (
-                "add_panel_admin",
-                "add_panel_user",
-                "edit_panel_user",
-                "search_panel_user",
-            ):
+            elif state.current_state == BotState.StateType.ADMIN_ACTION:
+                # Handle all admin-related text inputs
                 await handlers["admin_hiddify"].handle_admin_message(
                     message, user, state
                 )
@@ -766,6 +762,125 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].show_payment_settings(callback)
             elif data == "admin_bot_settings":
                 await handlers["admin_hiddify"].show_bot_settings(callback)
+
+            # Payment management callbacks
+            elif data == "admin_payment_gateways":
+                await handlers["admin_hiddify"].show_payment_gateways(callback)
+            elif data == "admin_payment_history":
+                await handlers["admin_hiddify"].show_payment_history_page(callback, 1)
+            elif data.startswith("admin_payment_history_"):
+                page = int(data.replace("admin_payment_history_", ""))
+                await handlers["admin_hiddify"].show_payment_history_page(
+                    callback, page
+                )
+            elif data == "admin_revenue_report":
+                await handlers["admin_hiddify"].show_revenue_report(callback)
+            elif data == "admin_revenue_chart":
+                await handlers["admin_hiddify"].show_revenue_chart(callback)
+            elif data == "admin_export_revenue":
+                await handlers["admin_hiddify"].export_revenue_excel(callback)
+
+            # Payment gateway management
+            elif data == "admin_add_gateway":
+                await handlers["admin_hiddify"].add_payment_gateway(callback)
+            elif data.startswith("gw_type_"):
+                gw_type = data.replace("gw_type_", "")
+                await handlers["admin_hiddify"].handle_gateway_type_selection(
+                    callback, gw_type
+                )
+            elif data == "admin_manage_cards":
+                await handlers["admin_hiddify"].manage_cards(callback)
+            elif data == "admin_manage_crypto":
+                await handlers["admin_hiddify"].manage_crypto(callback)
+
+            # Card management callbacks
+            elif data == "admin_add_card":
+                await handlers["admin_hiddify"].add_payment_card(callback)
+            elif data == "admin_edit_cards":
+                await handlers["admin_hiddify"].edit_cards_list(callback)
+            elif data == "admin_delete_card":
+                await handlers["admin_hiddify"].delete_card_list(callback)
+            elif data.startswith("admin_edit_card_"):
+                card_id = int(data.replace("admin_edit_card_", ""))
+                await handlers["admin_hiddify"].edit_card_details(callback, card_id)
+            elif data.startswith("admin_card_field_"):
+                parts = data.replace("admin_card_field_", "").split("_")
+                card_id = int(parts[0])
+                field = parts[1]
+                await handlers["admin_hiddify"].start_edit_card_field(
+                    callback, card_id, field
+                )
+            elif data.startswith("admin_card_toggle_"):
+                card_id = int(data.replace("admin_card_toggle_", ""))
+                await handlers["admin_hiddify"].toggle_card_status(callback, card_id)
+            elif data.startswith("admin_confirm_delete_card_"):
+                card_id = int(data.replace("admin_confirm_delete_card_", ""))
+                await handlers["admin_hiddify"].confirm_delete_card(callback, card_id)
+            elif data.startswith("admin_do_delete_card_"):
+                card_id = int(data.replace("admin_do_delete_card_", ""))
+                await handlers["admin_hiddify"].do_delete_card(callback, card_id)
+
+            # Crypto management callbacks
+            elif data == "admin_add_crypto":
+                await handlers["admin_hiddify"].add_crypto_currency(callback)
+            elif data == "admin_edit_cryptos":
+                await handlers["admin_hiddify"].edit_cryptos_list(callback)
+            elif data == "admin_delete_crypto":
+                await handlers["admin_hiddify"].delete_crypto_list(callback)
+            elif data == "admin_update_crypto_rates":
+                await handlers["admin_hiddify"].update_crypto_rates(callback)
+            elif data.startswith("admin_edit_crypto_"):
+                crypto_id = int(data.replace("admin_edit_crypto_", ""))
+                await handlers["admin_hiddify"].edit_crypto_details(callback, crypto_id)
+            elif data.startswith("admin_crypto_field_"):
+                parts = data.replace("admin_crypto_field_", "").split("_")
+                crypto_id = int(parts[0])
+                field = parts[1]
+                await handlers["admin_hiddify"].start_edit_crypto_field(
+                    callback, crypto_id, field
+                )
+            elif data.startswith("admin_crypto_toggle_"):
+                crypto_id = int(data.replace("admin_crypto_toggle_", ""))
+                await handlers["admin_hiddify"].toggle_crypto_status(
+                    callback, crypto_id
+                )
+            elif data.startswith("admin_confirm_delete_crypto_"):
+                crypto_id = int(data.replace("admin_confirm_delete_crypto_", ""))
+                await handlers["admin_hiddify"].confirm_delete_crypto(
+                    callback, crypto_id
+                )
+            elif data.startswith("admin_do_delete_crypto_"):
+                crypto_id = int(data.replace("admin_do_delete_crypto_", ""))
+                await handlers["admin_hiddify"].do_delete_crypto(callback, crypto_id)
+
+            # Payment search and filter
+            elif data == "admin_search_payment":
+                await handlers["admin_hiddify"].search_payment(callback)
+            elif data == "admin_filter_payments":
+                await handlers["admin_hiddify"].filter_payments_by_status(callback)
+            elif data.startswith("admin_payments_status_"):
+                parts = data.replace("admin_payments_status_", "").split("_")
+                status = parts[0]
+                page = int(parts[1]) if len(parts) > 1 else 1
+                await handlers["admin_hiddify"].show_payments_by_status(
+                    callback, status, page
+                )
+
+            # Brand settings callbacks
+            elif data == "admin_edit_brand_name":
+                await handlers["admin_hiddify"].edit_brand_name(callback)
+            elif data == "admin_edit_brand_description":
+                await handlers["admin_hiddify"].edit_brand_description(callback)
+
+            # Ticket messages callbacks
+            elif data.startswith("admin_ticket_messages_"):
+                ticket_id = int(data.replace("admin_ticket_messages_", ""))
+                await handlers["admin_hiddify"].show_ticket_messages(
+                    callback, ticket_id
+                )
+            elif data.startswith("admin_reply_ticket_"):
+                ticket_id = int(data.replace("admin_reply_ticket_", ""))
+                await handlers["admin_hiddify"].start_ticket_reply(callback, ticket_id)
 
             elif data in ["payment_methods_back", "back_to_plans"]:
                 await handlers["purchase"].show_subscription_plans(callback)
