@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import qrcode
 from aiogram import types
+from aiogram.enums import ContentType
 
 from apps.accounts.models import User
 from apps.subscriptions.models import Subscription
@@ -373,10 +374,14 @@ UUID کاربر در پنل یافت نشد.
             logger.error(f"Error getting subscription config: {e}")
             text = f"❌ خطا: {e}"
             keyboard = self.get_back_keyboard("my_subscriptions")
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
-        )
+        if callback.message.content_type == ContentType.TEXT:
+            await self.edit_message_with_keyboard(
+                callback.message.chat.id, callback.message.message_id, text, keyboard
+            )
+        else:
+            await self.send_message_with_keyboard(
+                callback.message.chat.id, text, keyboard
+            )
         await callback.answer()
 
     async def show_config_by_protocol(
@@ -412,33 +417,28 @@ UUID کاربر در پنل یافت نشد.
 
             config = configs[idx]
 
-            text = f"""
+            text = (
+                """
     📱 کانفیگ VPN
-
-    📋 نام: {config.name}
-
-    🌐 دامنه: {config.domain}
-
-    🔌 پروتکل: {config.protocol}
-
-    🔐 امنیت: {config.security}
-
-    📡 ترنسپورت: {config.transport}
-
+"""
+                + (f"""📋 نام: {config.name}\n""" if config.name else "")
+                + (f"""🌐 دامنه: {config.domain}\n""" if config.domain else "")
+                + (f"""🔌 پروتکل: {config.protocol}\n""" if config.protocol else "")
+                + (f"""🔐 امنیت: {config.security}\n""" if config.security else "")
+                + (f"""📡 ترنسپورت: {config.transport}\n""" if config.transport else "")
+                + f"""
     🔗 لینک کانفیگ:
     <code>{config.link}</code>
-
+)"""
+                if config.link
+                else ""
+                """
     ⚠️ روی لینک برای کپی کلیک کنید.
-    """.strip()
+    """
+            ).strip()
 
             keyboard = self.create_keyboard(
                 [
-                    [
-                        {
-                            "text": "📋 کپی لینک",
-                            "callback_data": f"copy_{sub_id}_{idx}",
-                        }
-                    ],
                     [
                         {
                             "text": "🖼 QR Code",
@@ -1057,10 +1057,21 @@ UUID کاربر در پنل یافت نشد.
                 file_name = str(uuid4()) + "_subscription_qr.png"
                 qr_image = self.generate_qr_code(config.link)
                 if qr_image:
+                    keyboard = self.create_keyboard(
+                        [
+                            [
+                                {
+                                    "text": "🔙 بازگشت",
+                                    "callback_data": f"subscription_details_{sub_id}",
+                                }
+                            ],
+                        ]
+                    )
                     await self.bot.send_photo(
                         callback.message.chat.id,
                         photo=types.BufferedInputFile(qr_image, filename=file_name),
                         caption="📱 QR Code لینک اشتراک",
+                        reply_markup=keyboard,
                     )
             await callback.answer()
 
