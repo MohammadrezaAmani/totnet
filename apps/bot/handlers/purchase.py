@@ -381,7 +381,8 @@ class PurchaseHandler(BaseHandler):
         text = f"""
 💳 پرداخت با کارت بانکی
 
-سفارش: {order.order_number}
+سفارش: <code>{order.order_number}</code>
+
 مبلغ قابل پرداخت: {self.format_price(order.final_price, order.currency)}
 
 💳 اطلاعات کارت‌های دریافت:
@@ -392,7 +393,7 @@ class PurchaseHandler(BaseHandler):
         for i, card in enumerate(cards):
             text += f"""
 🏦 {card.bank_name}
-💳 شماره کارت: `{card.card_number}`
+💳 شماره کارت: <code>{card.card_number}</code> 
 👤 نام صاحب کارت: {card.cardholder_name}
 
 """
@@ -422,7 +423,11 @@ class PurchaseHandler(BaseHandler):
         keyboard = self.create_keyboard(keyboard_buttons)
 
         await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
+            callback.message.chat.id,
+            callback.message.message_id,
+            text,
+            keyboard,
+            parse_mode="html",
         )
         await callback.answer()
 
