@@ -117,7 +117,6 @@ class BaseHandler:
             [
                 {"text": "🔧 پشتیبانی", "callback_data": "support"},
                 {"text": "📊 آمار", "callback_data": "statistics"},
-                {"text": "📊 ادمین", "callback_data": "admin"},
             ],
             [
                 {"text": "❓ راهنما", "callback_data": "help"},

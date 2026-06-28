@@ -251,18 +251,6 @@ class MultiBrandDispatcher:
                         callback, order_id
                     )
 
-            elif data == "wallet":
-                await handlers["wallet"].show_wallet(callback)
-            elif data == "charge_wallet":
-                await handlers["wallet"].show_charge_options(callback)
-            elif data.startswith("charge_amount_"):
-                parts = data.split("_")
-                if len(parts) >= 3:
-                    amount = int(parts[2])
-                    await handlers["wallet"].initiate_charge(callback, amount)
-            elif data == "wallet_history":
-                await handlers["wallet"].show_wallet_history(callback)
-
             elif data == "my_subscriptions":
                 await handlers["subscription_hiddify"].show_my_subscriptions(callback)
             elif data.startswith("subscription_details_"):
@@ -709,11 +697,29 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].delete_panel_user(callback, user_uuid)
 
             elif data == "admin_pending_orders":
-                await handlers["admin_hiddify"].show_pending_orders(callback)
+                await handlers["admin_hiddify"].list_orders(callback,"pending" )
+            
             elif data == "admin_completed_orders":
-                await handlers["admin_hiddify"].show_completed_orders(callback)
+                await handlers["admin_hiddify"].list_orders(callback, "completed")
             elif data == "admin_failed_orders":
-                await handlers["admin_hiddify"].show_failed_orders(callback)
+                await handlers["admin_hiddify"].list_orders(callback, "failed")
+            elif data == "admin_paid_orders":
+                await handlers["admin_hiddify"].list_orders(callback, "paid")
+            elif data == "admin_all_orders":
+                await handlers["admin_hiddify"].list_orders(callback, "all")
+            elif data == "admin_refresh_orders":
+                await handlers["admin_hiddify"].refresh_orders(callback)
+            # pagination
+            elif data.startswith("aop_"):
+                await handlers["admin_hiddify"].show_order_list_page(callback, int(data.split("_")[-1]))
+            elif data.startswith("aod_"):
+                await handlers["admin_hiddify"].view_order_details(callback, data.split("_")[-1])
+            elif data.startswith("aoc_"):
+                await handlers["admin_hiddify"].change_order_status(callback, data.split("_")[-2],data.split("_")[-1])
+            elif data.startswith("aost_"):
+                await handlers["admin_hiddify"].start_order_status_picker(callback, data.split("_")[-1])
+            elif data.startswith("aoan_"):
+                await handlers["admin_hiddify"].start_order_admin_note(callback, data.split("_")[-1])
             elif data.startswith("admin_view_order_"):
                 order_id = int(data.replace("admin_view_order_", ""))
                 await handlers["admin_hiddify"].view_order_details(callback, order_id)
@@ -751,8 +757,8 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].start_broadcast(callback, "inactive")
             elif data == "admin_broadcast_premium":
                 await handlers["admin_hiddify"].start_broadcast(callback, "premium")
-            elif data == "admin_confirm_broadcast":
-                await handlers["admin_hiddify"].confirm_broadcast(callback)
+            elif data == "admin_broadcast_send":
+                await handlers["admin_hiddify"].confirm_broadcast_send(callback)
             elif data == "admin_cancel_broadcast":
                 await handlers["admin_hiddify"].cancel_broadcast(callback)
 

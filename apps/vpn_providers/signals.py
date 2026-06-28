@@ -11,7 +11,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.orders.models import Payment
+from apps.orders.models import Order, Payment
 from apps.subscriptions.models import Subscription
 from utils.message import broadcast_message
 
@@ -86,6 +86,32 @@ def payment_status_changed(sender, instance: Payment, created, **kwargs):
             ],
         )
 
+@receiver(post_save, sender=Order)
+def order_status_changed(sender, instance: Order, created, **kwargs):
+    if (
+        instance.status == Order.OrderStatus.COMPLETED
+        and not instance.subscriptions.exists()
+    ):
+        Subscription.objects.create(
+            brand=instance.brand,
+            user=instance.user,
+            plan=instance.plan,
+            order=instance,
+            vpn_provider=VPNProvider.objects.filter(
+                brand=instance.brand, provider_type=VPNProvider.ProviderType.HIDDIFY
+            ).first(),
+            owner=instance.user,
+            status=Subscription.SubscriptionStatus.ACTIVE,
+            starts_at=datetime.now(),
+        )
+        broadcast_message(
+            brand_id=instance.brand_id,
+            user_ids=[instance.user.telegram_id],
+            text="واریزی شما برای پلن {} تایید شد.\nاکنون می‌توانید با مراجعه به بخش پلن‌های من کانفیگ‌های ساخته شده استفاده کنید.",
+            buttons_data=[
+                [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
+            ],
+        )
 
 @receiver(pre_save, sender=Subscription)
 def subscription_status_change(sender, instance, **kwargs):
