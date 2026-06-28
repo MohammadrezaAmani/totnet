@@ -27,4 +27,5 @@ dependencies = [
     "uvicorn>=0.24.0",
     "gunicorn>=21.2.0",
     "ipython>=9.14.1",
+    "aiohttp-socks>=0.11.0",
 ]

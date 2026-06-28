@@ -8,6 +8,7 @@ import logging
 from typing import Dict, Optional
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message, Update
 from aiohttp import web
@@ -32,6 +33,10 @@ from apps.bot.services.broadcaster import BroadcastSubscriber
 from apps.bot.services.telegram_sender import TelegramSender
 from apps.brands.models import Brand
 
+session = None
+if proxy := settings.SOCKS5_PROXY:
+    session = AiohttpSession(proxy=proxy)
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,7 +58,7 @@ class MultiBrandDispatcher:
     async def add_brand(self, brand: Brand):
         """Add a new brand bot"""
         try:
-            bot = Bot(token=brand.bot_token)
+            bot = Bot(token=brand.bot_token, session=session)
             dp = Dispatcher()
             subscriber = BroadcastSubscriber(bot, brand.id)
             asyncio.create_task(subscriber.start_listening())
@@ -133,7 +138,30 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].handle_admin_message(
                     message, user, state
                 )
+            # در متد handle_text_messages اضافه کنید:
 
+            elif state.current_state == BotState.StateType.PAYMENT_PROCESS:
+                step = (state.state_data or {}).get("step")
+                action = (state.state_data or {}).get("action")
+
+                if action == "wallet_charge" and step == "waiting_custom_amount":
+                    await handlers["wallet"].handle_custom_amount_message(
+                        message, user, state
+                    )
+                elif action == "wallet_crypto_txid" and step == "waiting_txid":
+                    await handlers["wallet"].handle_txid_message(message, user, state)
+                elif action == "wallet_coupon" and step == "waiting_coupon":
+                    await handlers["wallet"].handle_coupon_message(message, user, state)
+
+            # در متد handle_photo_messages اضافه کنید:
+
+            elif state.current_state == BotState.StateType.PAYMENT_PROCESS:
+                step = (state.state_data or {}).get("step")
+                action = (state.state_data or {}).get("action")
+
+                if action == "wallet_charge" and step == "waiting_receipt":
+                    await handlers["wallet"].handle_receipt_photo(message, user, state)
+                    return
             elif (
                 state.state_data
                 and state.state_data.get("admin_action") == "search_user"
@@ -250,7 +278,85 @@ class MultiBrandDispatcher:
                     await handlers["purchase"].show_card_transfer_payment(
                         callback, order_id
                     )
+            # در متد route_callback اضافه کنید:
 
+            # Wallet callbacks
+            elif data == "wallet":
+                await handlers["wallet"].show_wallet(callback)
+            elif data == "charge_wallet":
+                await handlers["wallet"].show_charge_options(callback)
+            elif data == "charge_custom":
+                await handlers["wallet"].request_custom_amount(callback)
+            elif data.startswith("charge_amount_"):
+                parts = data.split("_")
+                if len(parts) >= 3:
+                    amount = float(parts[2])
+                    await handlers["wallet"].initiate_charge(callback, amount)
+            elif data.startswith("wallet_pay_card_"):
+                parts = data.split("_")
+                if len(parts) >= 4:
+                    amount = float(parts[3])
+                    await handlers["wallet"].show_card_payment(callback, amount)
+            elif data == "wallet_send_receipt":
+                await handlers["wallet"].prompt_send_receipt(callback)
+            elif data.startswith("wallet_pay_gateway_"):
+                parts = data.split("_")
+                if len(parts) >= 4:
+                    amount = float(parts[3])
+                    await handlers["wallet"].show_gateway_payment(callback, amount)
+            elif data.startswith("wallet_gw_"):
+                # Format: wallet_gw_{gateway_id}_{amount_cents}
+                parts = data.split("_")
+                if len(parts) >= 4:
+                    gateway_id = int(parts[2])
+                    amount_cents = int(parts[3])
+                    await handlers["wallet"].process_gateway_payment(
+                        callback, gateway_id, amount_cents
+                    )
+            elif data.startswith("wallet_pay_crypto_"):
+                parts = data.split("_")
+                if len(parts) >= 4:
+                    amount = float(parts[3])
+                    await handlers["wallet"].show_crypto_payment(callback, amount)
+            elif data.startswith("wallet_crypto_"):
+                # Format: wallet_crypto_{crypto_id}_{amount_cents}
+                parts = data.split("_")
+                if len(parts) >= 4:
+                    crypto_id = int(parts[2])
+                    amount_cents = int(parts[3])
+                    await handlers["wallet"].show_crypto_address(
+                        callback, crypto_id, amount_cents
+                    )
+            elif data.startswith("copy_crypto_addr_"):
+                payment_id = data.replace("copy_crypto_addr_", "")
+                await handlers["wallet"].copy_crypto_address(callback, payment_id)
+            elif data.startswith("send_txid_"):
+                payment_id = data.replace("send_txid_", "")
+                await handlers["wallet"].request_txid(callback, payment_id)
+            elif data.startswith("wallet_pay_stars_"):
+                parts = data.split("_")
+                if len(parts) >= 4:
+                    amount = float(parts[3])
+                    await handlers["wallet"].show_stars_payment(callback, amount)
+            elif data.startswith("wallet_stars_pay_"):
+                # Format: wallet_stars_pay_{stars}_{amount_cents}
+                parts = data.split("_")
+                if len(parts) >= 5:
+                    stars = int(parts[3])
+                    amount_cents = int(parts[4])
+                    await handlers["wallet"].process_stars_payment(
+                        callback, stars, amount_cents
+                    )
+            elif data.startswith("wallet_history_"):
+                try:
+                    page = int(data.split("_")[2])
+                    await handlers["wallet"].show_wallet_history(callback, page)
+                except ValueError, IndexError:
+                    await handlers["wallet"].show_wallet_history(callback, 1)
+            elif data == "wallet_noop":
+                await handlers["wallet"].noop(callback)
+            elif data == "wallet_coupon":
+                await handlers["wallet"].show_coupon_input(callback)
             elif data == "wallet":
                 await handlers["wallet"].show_wallet(callback)
             elif data == "charge_wallet":
@@ -414,9 +520,6 @@ class MultiBrandDispatcher:
             elif data.startswith("short_url_"):
                 sub_id = int(data.split("_")[2])
                 await handlers["subscription_hiddify"].get_short_url(callback, sub_id)
-
-            elif data == "wallet":
-                await self.show_wallet(callback, handlers["start"])
 
             elif data == "support":
                 await handlers["support"].show_support_menu(callback)
