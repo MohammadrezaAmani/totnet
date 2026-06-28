@@ -268,7 +268,7 @@ USE_WEBHOOK = config("USE_WEBHOOK", default=False, cast=bool)
 WEBHOOK_DOMAIN = config("WEBHOOK_DOMAIN", default="")
 WEBHOOK_PATH = config("WEBHOOK_PATH", default="/webhook")
 
-
+SOCKS5_PROXY = config("SOCKS5_PROXY", default="socks5://192.168.30.187:2080")
 VPN_PROVIDER_TIMEOUT = config("VPN_PROVIDER_TIMEOUT", default=30, cast=int)
 VPN_HEALTH_CHECK_INTERVAL = config("VPN_HEALTH_CHECK_INTERVAL", default=300, cast=int)
 
