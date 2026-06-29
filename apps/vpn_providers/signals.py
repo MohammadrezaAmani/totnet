@@ -11,7 +11,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.orders.models import Order, Payment
+from apps.orders.models import Order, Payment, Wallet, WalletTransaction
 from apps.subscriptions.models import Subscription
 from utils.message import broadcast_message
 
@@ -59,32 +59,57 @@ def subscription_created(sender, instance, created, **kwargs):
                 loop.close()
 
 
-@receiver(post_save, sender=Payment)
-def payment_status_changed(sender, instance: Payment, created, **kwargs):
-    if (
-        instance.status == Payment.PaymentStatus.CONFIRMED
-        and not instance.order.subscriptions.exists()
-    ):
-        Subscription.objects.create(
-            brand=instance.brand,
-            user=instance.user,
-            plan=instance.order.plan,
-            order=instance.order,
-            vpn_provider=VPNProvider.objects.filter(
-                brand=instance.brand, provider_type=VPNProvider.ProviderType.HIDDIFY
-            ).first(),
-            owner=instance.user,
-            status=Subscription.SubscriptionStatus.ACTIVE,
-            starts_at=datetime.now(),
-        )
-        broadcast_message(
-            brand_id=instance.brand_id,
-            user_ids=[instance.user.telegram_id],
-            text="واریزی شما برای پلن {} تایید شد.\nاکنون می‌توانید با مراجعه به بخش پلن‌های من کانفیگ‌های ساخته شده استفاده کنید.",
-            buttons_data=[
-                [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
-            ],
-        )
+# @receiver(post_save, sender=Payment)
+# def payment_status_changed(sender, instance: Payment, created, **kwargs):
+#     if (
+#         instance.status == Payment.PaymentStatus.CONFIRMED and instance.order
+#         and not instance.order.subscriptions.exists()
+#     ):
+#         Subscription.objects.create(
+#             brand=instance.brand,
+#             user=instance.user,
+#             plan=instance.order.plan,
+#             order=instance.order,
+#             vpn_provider=VPNProvider.objects.filter(
+#                 brand=instance.brand, provider_type=VPNProvider.ProviderType.HIDDIFY
+#             ).first(),
+#             owner=instance.user,
+#             status=Subscription.SubscriptionStatus.ACTIVE,
+#             starts_at=datetime.now(),
+#         )
+#         broadcast_message(
+#             brand_id=instance.brand_id,
+#             user_ids=[instance.user.telegram_id],
+#             text="واریزی شما برای پلن {} تایید شد.\nاکنون می‌توانید با مراجعه به بخش پلن‌های من کانفیگ‌های ساخته شده استفاده کنید.",
+#             buttons_data=[
+#                 [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
+#             ],
+#         )
+#     if (
+#         instance.status == Payment.PaymentStatus.CONFIRMED
+#         and instance.wallet
+#     ):
+#         wallet = Wallet.objects.filter(
+#             user=instance.user, brand=instance.brand
+#         ).first()
+#         WalletTransaction.objects.create(
+#             wallet=wallet,
+#             transaction_type=WalletTransaction.TransactionType.PAYMENT,
+#             amount=instance.amount,
+#             balance_before=wallet.balance,
+#             balance_after = wallet.balance + instance.amount,
+#             description="",
+#         )
+
+#         broadcast_message(
+#             brand_id=instance.brand_id,
+#             user_ids=[instance.user.telegram_id],
+#             text="پرداختی کیف پول شما تایید شد.",
+#             buttons_data=[
+#                 [{"text": "کیف پول من", "callback_data": "wallet"}],
+#             ],
+#         )
+
 
 @receiver(post_save, sender=Order)
 def order_status_changed(sender, instance: Order, created, **kwargs):

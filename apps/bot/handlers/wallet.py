@@ -651,6 +651,7 @@ class WalletHandler(BaseHandler):
         # Create pending payment record
         payment = await Payment.objects.acreate(
             order=None,
+            wallet=await Wallet.objects.aget(user=user, brand=self.brand),
             brand=self.brand,
             user=user,
             payment_method=Payment.PaymentMethod.CARD_TRANSFER,

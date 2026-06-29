@@ -2972,9 +2972,13 @@ UUID:  <code>{u.uuid}</code>
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            tickets = await SupportTicket.objects.filter(
+            # استفاده از select_related برای جلوگیری از کوئری‌های سینک (Lazy Loading) در حلقه
+            queryset = SupportTicket.objects.filter(
                 brand=self.brand, status="open"
-            ).order_by("-created_at")[:10]
+            ).order_by("-created_at").select_related('customer')
+
+            # گرفتن لیست تیکت‌ها با async for (چون queryset قابل await نیست)
+            tickets = [ticket async for ticket in queryset]
 
             if not tickets:
                 text = "❌ هیچ تیکت باز وجود ندارد"
@@ -2983,7 +2987,7 @@ UUID:  <code>{u.uuid}</code>
 
                 for i, ticket in enumerate(tickets, 1):
                     text += f"{i}. تیکت #{ticket.id}\n"
-                    text += f"   کاربر: {ticket.user.username}\n"
+                    text += f"   کاربر: {ticket.customer.username}\n"
                     text += f"   موضوع: {ticket.subject[:30]}\n"
                     text += f"   تاریخ: {ticket.created_at.strftime('%Y-%m-%d')}\n\n"
 
@@ -3013,9 +3017,12 @@ UUID:  <code>{u.uuid}</code>
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            tickets = await SupportTicket.objects.filter(
+            # اسلایس [:10] قبل از حلقه اعمال می‌شود و در دیتابیس لیمیت می‌شود
+            queryset = SupportTicket.objects.filter(
                 brand=self.brand, status="in_progress"
-            ).order_by("-created_at")[:10]
+            ).order_by("-created_at").select_related('customer')[:10]
+
+            tickets = [ticket async for ticket in queryset]
 
             if not tickets:
                 text = "❌ هیچ تیکت در حال انجام وجود ندارد"
@@ -3024,7 +3031,7 @@ UUID:  <code>{u.uuid}</code>
 
                 for i, ticket in enumerate(tickets, 1):
                     text += f"{i}. تیکت #{ticket.id}\n"
-                    text += f"   کاربر: {ticket.user.username}\n"
+                    text += f"   کاربر: {ticket.customer.username}\n"
                     text += f"   موضوع: {ticket.subject[:30]}\n"
                     text += f"   تاریخ: {ticket.created_at.strftime('%Y-%m-%d')}\n\n"
 
@@ -3054,9 +3061,11 @@ UUID:  <code>{u.uuid}</code>
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            tickets = await SupportTicket.objects.filter(
+            queryset = SupportTicket.objects.filter(
                 brand=self.brand, status="resolved"
-            ).order_by("-created_at")[:10]
+            ).order_by("-created_at").select_related('customer')[:10]
+
+            tickets = [ticket async for ticket in queryset]
 
             if not tickets:
                 text = "❌ هیچ تیکت حل شده‌ای وجود ندارد"
@@ -3065,7 +3074,7 @@ UUID:  <code>{u.uuid}</code>
 
                 for i, ticket in enumerate(tickets, 1):
                     text += f"{i}. تیکت #{ticket.id}\n"
-                    text += f"   کاربر: {ticket.user.username}\n"
+                    text += f"   کاربر: {ticket.customer.username}\n"
                     text += f"   موضوع: {ticket.subject[:30]}\n"
                     text += f"   تاریخ: {ticket.created_at.strftime('%Y-%m-%d')}\n\n"
 
@@ -3093,9 +3102,10 @@ UUID:  <code>{u.uuid}</code>
     async def view_ticket_details(self, callback: types.CallbackQuery, ticket_id: int):
         """View details of a specific ticket"""
         try:
+            # اضافه کردن select_related برای خواندن رابطه user بدون کوئری سینک
             ticket = await SupportTicket.objects.filter(
                 brand=self.brand, id=ticket_id
-            ).afirst()
+            ).select_related('user').afirst()
 
             if not ticket:
                 text = "❌ تیکت یافت نشد"
@@ -3110,8 +3120,8 @@ UUID:  <code>{u.uuid}</code>
                 text = f"""
 {status_emoji} جزئیات تیکت #{ticket.id}
 
-👤 کاربر: {ticket.user.username}
-📧 ایمیل: {ticket.user.email}
+👤 کاربر: {ticket.customer.username}
+📧 ایمیل: {ticket.customer.email}
 📋 موضوع: {ticket.subject}
 📝 توضیحات: {ticket.description[:200]}...
 📊 وضعیت: {ticket.get_status_display()}
@@ -3161,6 +3171,7 @@ UUID:  <code>{u.uuid}</code>
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
+            # اینجا چون user را ست می‌کنیم نیازی به select_related نیست
             ticket = await SupportTicket.objects.filter(
                 brand=self.brand, id=ticket_id
             ).afirst()
@@ -3227,7 +3238,6 @@ UUID:  <code>{u.uuid}</code>
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
         await callback.answer()
-
     # ═══════════════════════════════════════════════
     #  BROADCAST
     # ═══════════════════════════════════════════════
@@ -3405,10 +3415,10 @@ UUID:  <code>{u.uuid}</code>
                 await ticket.asave()
 
             # Notify the user who opened the ticket
-            if ticket.user and ticket.user.telegram_id:
+            if ticket.user and ticket.customer.telegram_id:
                 try:
                     await self.bot.send_message(
-                        chat_id=ticket.user.telegram_id,
+                        chat_id=ticket.customer.telegram_id,
                         text=(
                             f"📩 <b>پاسخ به تیکت شما</b>\n\n"
                             f"{reply_text}\n\n"
@@ -3418,7 +3428,7 @@ UUID:  <code>{u.uuid}</code>
                         parse_mode="HTML",
                     )
                 except Exception as e:
-                    logger.warning(f"Could not notify ticket user {ticket.user.telegram_id}: {e}")
+                    logger.warning(f"Could not notify ticket user {ticket.customer.telegram_id}: {e}")
 
             await message.reply("✅ پاسخ ارسال شد و به کاربر اطلاع داده شد.")
         except Exception as e:

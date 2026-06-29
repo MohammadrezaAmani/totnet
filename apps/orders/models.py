@@ -123,7 +123,8 @@ class Payment(models.Model):
 
     payment_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments")
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
+    wallet = models.ForeignKey("Wallet", on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="payments"
     )

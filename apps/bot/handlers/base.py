@@ -81,7 +81,6 @@ class BaseHandler:
     def create_keyboard(self, buttons_data: list) -> InlineKeyboardMarkup:
         """Create inline keyboard from button data"""
         keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-
         for row in buttons_data:
             button_row = []
             if isinstance(row, dict):

@@ -97,7 +97,7 @@ class ReferralsHandler(BaseHandler):
             referrals.append(referral)
 
         completed_referrals = [
-            r for r in referrals if r.status == Referral.ReferralStatus.COMPLETED
+            r for r in referrals if r.status != Referral.ReferralStatus.PENDING
         ]
         pending_referrals = [
             r for r in referrals if r.status == Referral.ReferralStatus.PENDING

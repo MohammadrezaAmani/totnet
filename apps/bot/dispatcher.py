@@ -32,7 +32,11 @@ from apps.bot.models import BotState
 from apps.bot.services.broadcaster import BroadcastSubscriber
 from apps.bot.services.telegram_sender import TelegramSender
 from apps.brands.models import Brand
-
+from aiogram.types import (
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+)
 session = None
 if proxy := settings.SOCKS5_PROXY:
     session = AiohttpSession(proxy=proxy)
@@ -122,17 +126,19 @@ class MultiBrandDispatcher:
                     message, user, state
                 )
 
+            # elif state.current_state == BotState.StateType.SUPPORT_TICKET:
+            #     step = (state.state_data or {}).get("step")
+            #     if step == "subject":
+            #         await handlers["support"].handle_ticket_subject(
+            #             message, user, state
+            #         )
+            #     elif step == "description":
+            #         await handlers["support"].handle_ticket_description(
+            #             message, user, state
+            #         )
+            # Inside handle_text_messages
             elif state.current_state == BotState.StateType.SUPPORT_TICKET:
-                step = (state.state_data or {}).get("step")
-                if step == "subject":
-                    await handlers["support"].handle_ticket_subject(
-                        message, user, state
-                    )
-                elif step == "description":
-                    await handlers["support"].handle_ticket_description(
-                        message, user, state
-                    )
-
+                await handlers["support"].handle_text_message(message, user, state)
             elif state.current_state == BotState.StateType.ADMIN_ACTION:
                 # Handle all admin-related text inputs
                 await handlers["admin_hiddify"].handle_admin_message(
@@ -144,7 +150,10 @@ class MultiBrandDispatcher:
                 step = (state.state_data or {}).get("step")
                 action = (state.state_data or {}).get("action")
 
-                if action == "wallet_charge" and step == "waiting_custom_amount":
+                if action == "wallet_charge" and step == "waiting_receipt":
+                    await handlers["wallet"].handle_receipt_photo(message, user, state)
+                    return
+                elif action == "wallet_charge" and step == "waiting_custom_amount":
                     await handlers["wallet"].handle_custom_amount_message(
                         message, user, state
                     )
@@ -155,13 +164,7 @@ class MultiBrandDispatcher:
 
             # در متد handle_photo_messages اضافه کنید:
 
-            elif state.current_state == BotState.StateType.PAYMENT_PROCESS:
-                step = (state.state_data or {}).get("step")
-                action = (state.state_data or {}).get("action")
 
-                if action == "wallet_charge" and step == "waiting_receipt":
-                    await handlers["wallet"].handle_receipt_photo(message, user, state)
-                    return
             elif (
                 state.state_data
                 and state.state_data.get("admin_action") == "search_user"
@@ -176,6 +179,30 @@ class MultiBrandDispatcher:
                     reply_markup=await handlers["start"].get_main_menu_keyboard(user),
                 )
 
+
+
+        @router.inline_query()
+        async def inline_handler(query: InlineQuery):
+            purchase_handler: PurchaseHandler = handlers["purchase"]
+            user = await purchase_handler.get_or_create_user(query.from_user)
+            text,keyboard = await purchase_handler.get_plans(user)
+
+            result = InlineQueryResultArticle(
+                id="1",
+                title="انتخاب پلن‌ها",
+                description=text,
+                input_message_content=InputTextMessageContent(
+                    message_text=text,
+                ),
+                reply_markup=keyboard,
+            )
+
+            await query.answer(
+                results=[result],
+                cache_time=1,
+                is_personal=True,
+            )
+
         @router.callback_query()
         async def handle_callbacks(callback: CallbackQuery):
             await self.route_callback(callback, handlers)
@@ -188,7 +215,11 @@ class MultiBrandDispatcher:
 
             if state.current_state == BotState.StateType.PAYMENT_PROCESS:
                 step = (state.state_data or {}).get("step")
-                if step == PurchaseStep.WAITING_RECEIPT:
+                action = (state.state_data or {}).get("action")
+                if action == "wallet_charge" and step == PurchaseStep.WAITING_RECEIPT:
+                    await handlers["wallet"].handle_receipt_photo(message, user, state)
+                    return
+                elif step == PurchaseStep.WAITING_RECEIPT:
                     await handlers["purchase"].handle_photo_message(message, state)
                     return
 
@@ -521,31 +552,61 @@ class MultiBrandDispatcher:
                 sub_id = int(data.split("_")[2])
                 await handlers["subscription_hiddify"].get_short_url(callback, sub_id)
 
+            # ── Support System Callbacks ─────────────────────────────────────
             elif data == "support":
                 await handlers["support"].show_support_menu(callback)
             elif data == "create_ticket":
                 await handlers["support"].show_create_ticket(callback)
             elif data.startswith("ticket_cat_"):
-                parts = data.split("_")
-                if len(parts) >= 3:
-                    category_id = int(parts[2])
-                    await handlers["support"].handle_ticket_category(
-                        callback, category_id
-                    )
+                cat_id = int(data.replace("ticket_cat_", ""))
+                await handlers["support"].handle_ticket_category(callback, cat_id)
+
             elif data == "my_tickets":
-                await handlers["support"].show_my_tickets(callback)
+                await handlers["support"].show_my_tickets(callback, page=1)
+            elif data.startswith("tickets_page_"):
+                page = int(data.replace("tickets_page_", ""))
+                await handlers["support"].show_my_tickets(callback, page=page)
+            elif data.startswith("ticket_details_"):
+                ticket_id = int(data.replace("ticket_details_", ""))
+                await handlers["support"].show_ticket_details(callback, ticket_id)
+
+            elif data.startswith("ticket_reply_"):
+                ticket_id = int(data.replace("ticket_reply_", ""))
+                await handlers["support"].start_ticket_reply(callback, ticket_id)
+            elif data.startswith("ticket_close_"):
+                ticket_id = int(data.replace("ticket_close_", ""))
+                await handlers["support"].close_ticket(callback, ticket_id)
+
+            elif data.startswith("ticket_rate_") and not data.startswith("ticket_rate_submit_"):
+                ticket_id = int(data.replace("ticket_rate_", ""))
+                await handlers["support"].show_rating_options(callback, ticket_id)
+            elif data.startswith("ticket_rate_submit_"):
+                parts = data.replace("ticket_rate_submit_", "").split("_")
+                ticket_id = int(parts[0])
+                rating = int(parts[1])
+                await handlers["support"].submit_rating(callback, ticket_id, rating)
+
             elif data == "faq":
-                await handlers["support"].show_faq(callback)
+                await handlers["support"].show_faq(callback, page=1)
+            elif data.startswith("faq_page_"):
+                page = int(data.replace("faq_page_", ""))
+                await handlers["support"].show_faq(callback, page=page)
             elif data.startswith("faq_article_"):
-                parts = data.split("_")
-                if len(parts) >= 3:
-                    article_id = int(parts[2])
-                    await handlers["support"].show_faq_article(callback, article_id)
-            elif data.startswith("faq_helpful"):
-                await callback.answer("✅ متشکریم برای نظر شما!")
+                article_id = int(data.replace("faq_article_", ""))
+                await handlers["support"].show_faq_article(callback, article_id)
+            elif data.startswith("faq_helpful_"):
+                article_id = int(data.replace("faq_helpful_", ""))
+                await handlers["support"].vote_faq(callback, article_id, is_helpful=True)
+            elif data.startswith("faq_not_helpful_"):
+                article_id = int(data.replace("faq_not_helpful_", ""))
+                await handlers["support"].vote_faq(callback, article_id, is_helpful=False)
+            elif data == "faq_search":
+                await handlers["support"].start_faq_search(callback)
+
             elif data == "contact_info":
                 await handlers["support"].show_contact_info(callback)
-
+            elif data == "ticket_noop":
+                await callback.answer()
             elif data == "rewards":
                 await handlers["rewards"].show_rewards(callback)
             elif data == "how_to_earn":
@@ -1293,43 +1354,6 @@ class MultiBrandDispatcher:
 
         await callback.answer()
 
-    async def show_rewards(self, callback: CallbackQuery, handler: BaseHandler):
-        """Show rewards and achievements"""
-        user = await handler.get_or_create_user(callback.from_user)
-
-        text = f"""
-🎁 جایزه‌ها و امتیازات
-
-امتیازات شما: {user.reward_points}
-سطح فعلی: {user.level}
-
-🏆 سطوح:
-- سطح ۱: {user.referral_count} معرفی
-- سطح ۲: ۱۰ معرفی
-- سطح ۳: ۲۵ معرفی
-- سطح ۴: ۵۰ معرفی
-- سطح ۵: ۱۰۰ معرفی
-
-        """
-
-        keyboard = handler.create_keyboard(
-            [
-                [{"text": "📈 ارتقا سطح", "callback_data": "upgrade_level"}],
-                [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
-            ]
-        )
-
-        try:
-            await handler.edit_message_with_keyboard(
-                callback.message.chat.id, callback.message.message_id, text, keyboard
-            )
-        except Exception as e:
-            logger.warning(f"Could not edit rewards message: {e}")
-            await handler.send_message_with_keyboard(
-                callback.message.chat.id, text, keyboard
-            )
-
-        await callback.answer()
 
     async def show_statistics(self, callback: CallbackQuery, handler: BaseHandler):
         """Show user statistics"""
