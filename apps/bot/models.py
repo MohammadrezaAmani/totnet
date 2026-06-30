@@ -17,6 +17,7 @@ class BotState(models.Model):
         SUPPORT_TICKET = "support_ticket", "Support Ticket"
         REFERRAL_SETUP = "referral_setup", "Referral Setup"
         SUBSCRIPTION_MANAGEMENT = "subscription_management", "Subscription Management"
+        ADMIN_ACTION = "admin_action", "Admin Action"
 
     user = models.OneToOneField(
         "accounts.User", on_delete=models.CASCADE, related_name="bot_state"

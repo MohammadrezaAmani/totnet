@@ -69,9 +69,9 @@ if __name__ == "__main__":
             print("Database initialized. Create a superuser:")
             execute_from_command_line(["manage.py", "createsuperuser"])
         elif command == "webhook":
-            from aiohttp import web
+            # from aiohttp import web
 
-            from apps.bot.dispatcher import create_webhook_app
+            # from apps.bot.dispatcher import create_webhook_app
 
             async def start_webhook():
                 shutdown_event = asyncio.Event()
@@ -88,15 +88,15 @@ if __name__ == "__main__":
                         signal.signal(sig, signal_handler)
 
                 await start_bots()
-                app = create_webhook_app()
-                runner = web.AppRunner(app)
-                await runner.setup()
-                site = web.TCPSite(runner, "localhost", 8080)
-                await site.start()
-                logger.info("Webhook server started on http://localhost:8080")
+                # app = create_webhook_app()
+                # runner = web.AppRunner(app)
+                # await runner.setup()
+                # site = web.TCPSite(runner, "localhost", 8080)
+                # await site.start()
+                # logger.info("Webhook server started on http://localhost:8080")
 
                 await shutdown_event.wait()
-                await runner.cleanup()
+                # await runner.cleanup()
 
             asyncio.run(start_webhook())
         else:

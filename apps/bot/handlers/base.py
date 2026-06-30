@@ -26,11 +26,11 @@ class BaseHandler:
         self, telegram_user: types.User, use_cache: bool = True, cache_ttl: int = 300
     ) -> User:
         """Get or create user from Telegram user data"""
-        CACHE_KEY: str = f"{self.brand.id}:{telegram_user}"
+        CACHE_KEY: str = f"{self.brand.id}:{telegram_user.id}"
         created = False
 
         if use_cache:
-            cached = cache.get(CACHE_KEY)
+            cached = await cache.aget(CACHE_KEY)
             if cached:
                 return cached, created
         try:
@@ -53,7 +53,7 @@ class BaseHandler:
                 user=user, brand=self.brand, current_state=BotState.StateType.MAIN_MENU
             )
         if use_cache:
-            cache.set(CACHE_KEY, user, timeout=cache_ttl)
+            await cache.aset(CACHE_KEY, user, timeout=cache_ttl)
         return user, created
 
     async def get_user_state(self, user: User) -> BotState:
@@ -81,9 +81,10 @@ class BaseHandler:
     def create_keyboard(self, buttons_data: list) -> InlineKeyboardMarkup:
         """Create inline keyboard from button data"""
         keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-
         for row in buttons_data:
             button_row = []
+            if isinstance(row, dict):
+                row = [row]
             for button in row:
                 if isinstance(button, dict):
                     btn = InlineKeyboardButton(
@@ -189,11 +190,11 @@ class BaseHandler:
     def format_price(self, amount: float, currency: str = "USD") -> str:
         """Format price with currency"""
         if currency == "USD":
-            return f"${amount:,.2f}"
+            return f"$<code>{amount}</code>"
         elif currency == "IRR":
-            return f"{amount:,.0f} تومان"
+            return f"<code>{amount}</code> تومان"
         else:
-            return f"{amount:,.2f} {currency}"
+            return f"<code>{amount}</code> {currency}"
 
     def format_duration(self, days: int) -> str:
         """Format duration in Persian"""
