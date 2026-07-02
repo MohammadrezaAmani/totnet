@@ -14,7 +14,7 @@ from apps.bot.models import BotState
 from apps.orders.models import Order, Payment, WalletTransaction
 from apps.subscriptions.models import Subscription, SubscriptionPlan
 from apps.vpn_providers.models import VPNProvider
-
+from asgiref.sync import sync_to_async
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -773,7 +773,8 @@ class PurchaseHandler(BaseHandler):
                 ]
             ]
         )
-        for user in await self.brand.admin_users.all():
+
+        async for user in self.brand.admin_users.all():
             try:
                 await self.bot.send_photo(
                     chat_id=user.telegram_id,
