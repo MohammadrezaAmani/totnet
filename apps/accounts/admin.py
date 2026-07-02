@@ -144,7 +144,7 @@ class AuditLogInline(admin.TabularInline):
         return False
 
     def get_queryset(self, request):
-        return super().get_queryset(request).order_by("-timestamp")[:10]
+        return super().get_queryset(request).order_by("-timestamp")
 
 
 @admin.register(User)
