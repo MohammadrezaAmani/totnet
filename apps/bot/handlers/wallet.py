@@ -656,7 +656,7 @@ class WalletHandler(BaseHandler):
             brand=self.brand,
             user=user,
             payment_method=Payment.PaymentMethod.CARD_TRANSFER,
-            status=Payment.PaymentStatus.AWAITING_CONFIRMATION,
+            status=Payment.PaymentStatus.PENDING,
             amount=Decimal(str(amount)),
             currency=wallet.currency,
             receipt_file=file_id,
@@ -704,7 +704,7 @@ class WalletHandler(BaseHandler):
     async def _notify_admin_receipt(self, wallet: Wallet, payment: Payment, file_id: str):
         """ارسال رسید به ادمین برای تأیید/رد"""
         admin_text = (
-            f"🧾شارژ کیف پولn"
+            f"🧾شارژ کیف پول\n"
             f"سفارش: {payment.amount}\n"
             f"مبلغ: {self.format_price(payment.amount, payment.currency)}\n"
             f"payment_id: {payment.id}"
