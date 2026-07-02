@@ -785,3 +785,46 @@ class PurchaseHandler(BaseHandler):
             except Exception as e:
                 logger.error(f"Failed to notify admin {user.telegram_id}: {e}")
 
+    async def admin_confirm_payment(
+        self,
+        callback: types.CallbackQuery,
+        payment_id: int,
+    ):
+        """Confirm payment."""
+
+        try:
+            payment = await Payment.objects.aget(id=int(payment_id))
+        except Payment.DoesNotExist:
+            await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
+            return
+        if payment.status != Payment.PaymentStatus.PENDING:
+            await callback.answer("❌ این پرداخت قابل تأیید نیست.", show_alert=True)
+            return
+        payment.status = Payment.PaymentStatus.CONFIRMED
+        await payment.asave(update_fields=["status"])
+
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.answer("✅ پرداخت تأیید شد.")
+
+    async def admin_reject_payment(
+        self,
+        callback: types.CallbackQuery,
+        payment_id: int,
+    ):
+        """Reject payment."""
+
+        try:
+            payment = await Payment.objects.aget(id=int(payment_id))
+        except Payment.DoesNotExist:
+            await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
+            return
+
+        if payment.status != Payment.PaymentStatus.PENDING:
+            await callback.answer("❌ این پرداخت قابل رد نیست.", show_alert=True)
+            return
+
+        payment.status = Payment.PaymentStatus.FAILED
+        await payment.asave(update_fields=["status"])
+
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.answer("❌ پرداخت رد شد.")

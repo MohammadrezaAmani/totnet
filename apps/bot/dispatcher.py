@@ -284,6 +284,17 @@ class MultiBrandDispatcher:
             elif data.startswith("buy_for_other_"):
                 plan_id = int(data.split("_")[3])
                 await handlers["purchase"].initiate_purchase(callback, plan_id, "other")
+
+
+
+            elif data.startswith("admin_confirm_payment_"):
+                payment_id = int(data.split("_")[3])
+                await handlers["purchase"].admin_confirm_payment(callback, payment_id)
+            elif data.startswith("admin_reject_payment_"):
+                payment_id = int(data.split("_")[3])
+                await handlers["purchase"].admin_reject_payment(callback, payment_id)
+
+
             elif data.startswith("payment_done_"):
                 parts = data.split("_")
                 if len(parts) >= 2:
