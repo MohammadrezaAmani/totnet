@@ -190,11 +190,11 @@ class BaseHandler:
     def format_price(self, amount: float, currency: str = "USD") -> str:
         """Format price with currency"""
         if currency == "USD":
-            return f"$<code>{amount}</code>"
+            return f"${amount}"
         elif currency == "IRR":
-            return f"<code>{amount}</code> تومان"
+            return f"{amount} هزار تومان"
         else:
-            return f"<code>{amount}</code> {currency}"
+            return f"{amount} {currency}"
 
     def format_duration(self, days: int) -> str:
         """Format duration in Persian"""

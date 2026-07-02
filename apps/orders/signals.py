@@ -5,7 +5,7 @@ from django.db import transaction
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
-from apps.orders.models import Order, Payment, Wallet, WalletTransaction
+from apps.orders.models import Order, Payment, WalletTransaction
 from apps.subscriptions.models import Subscription
 from apps.vpn_providers.models import VPNProvider
 from utils.message import broadcast_message
@@ -215,11 +215,6 @@ def payment_post_save(sender, instance, created, **kwargs):
                 description=f"Refund for payment {instance.payment_id}",
             )
 
-        broadcast_message(
-            brand_id=instance.brand_id,
-            user_ids=[instance.user.telegram_id],
-            text="The payment amount has been refunded.",
-        )
 
 
 # ---------------------------------------------------------------------
@@ -247,11 +242,6 @@ def order_post_save(sender, instance, created, **kwargs):
     previous = getattr(instance, "_previous_status", None)
 
     if created:
-        broadcast_message(
-            brand_id=instance.brand_id,
-            user_ids=[instance.user.telegram_id],
-            text=f"Order {instance.order_number} has been created.",
-        )
         return
 
     if previous == instance.status:
