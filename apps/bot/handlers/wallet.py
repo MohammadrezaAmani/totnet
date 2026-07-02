@@ -649,9 +649,10 @@ class WalletHandler(BaseHandler):
         file_id = photo.file_id
 
         # Create pending payment record
+        wallet = await Wallet.objects.aget(user=user, brand=self.brand)
         payment = await Payment.objects.acreate(
             order=None,
-            wallet=await Wallet.objects.aget(user=user, brand=self.brand),
+            wallet=wallet,
             brand=self.brand,
             user=user,
             payment_method=Payment.PaymentMethod.CARD_TRANSFER,
@@ -698,6 +699,85 @@ class WalletHandler(BaseHandler):
 
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
+        await self._notify_admin_receipt(wallet, payment, file_id)
+
+    async def _notify_admin_receipt(self, wallet: Wallet, payment: Payment, file_id: str):
+        """ارسال رسید به ادمین برای تأیید/رد"""
+        admin_text = (
+            f"🧾شارژ کیف پولn"
+            f"سفارش: {payment.amount}\n"
+            f"مبلغ: {self.format_price(payment.amount, payment.currency)}\n"
+            f"payment_id: {payment.id}"
+        )
+        admin_kb = self.create_keyboard(
+            [
+                [
+                    {
+                        "text": "✅ تأیید",
+                        "callback_data": f"admin_confirm_wallet_{payment.id}",
+                    },
+                    {
+                        "text": "❌ رد",
+                        "callback_data": f"admin_reject_wallet_{payment.id}",
+                    },
+                ]
+            ]
+        )
+
+        async for user in self.brand.admin_users.all():
+            try:
+                await self.bot.send_photo(
+                    chat_id=user.telegram_id,
+                    photo=file_id,
+                    caption=admin_text,
+                    reply_markup=admin_kb,
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify admin {user.telegram_id}: {e}")
+
+    async def admin_confirm_payment(
+        self,
+        callback: types.CallbackQuery,
+        payment_id: int,
+    ):
+        """Confirm payment."""
+
+        try:
+            payment = await Payment.objects.aget(id=int(payment_id))
+        except Payment.DoesNotExist:
+            await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
+            return
+        if payment.status != Payment.PaymentStatus.PENDING:
+            await callback.answer("❌ این پرداخت قابل تأیید نیست.", show_alert=True)
+            return
+        payment.status = Payment.PaymentStatus.CONFIRMED
+        await payment.asave(update_fields=["status"])
+
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.answer("✅ پرداخت تأیید شد.")
+
+    async def admin_reject_payment(
+        self,
+        callback: types.CallbackQuery,
+        payment_id: int,
+    ):
+        """Reject payment."""
+
+        try:
+            payment = await Payment.objects.aget(id=int(payment_id))
+        except Payment.DoesNotExist:
+            await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
+            return
+
+        if payment.status != Payment.PaymentStatus.PENDING:
+            await callback.answer("❌ این پرداخت قابل رد نیست.", show_alert=True)
+            return
+
+        payment.status = Payment.PaymentStatus.FAILED
+        await payment.asave(update_fields=["status"])
+
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.answer("❌ پرداخت رد شد.")
     # ==================== Gateway Payment Methods ====================
 
     async def show_gateway_payment(self, callback: types.CallbackQuery, amount: float):

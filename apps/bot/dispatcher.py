@@ -286,6 +286,13 @@ class MultiBrandDispatcher:
                 await handlers["purchase"].initiate_purchase(callback, plan_id, "other")
 
 
+            elif data.startswith("admin_confirm_wallet_"):
+                payment_id = int(data.split("_")[3])
+                await handlers["wallet"].admin_confirm_payment(callback, payment_id)
+            elif data.startswith("admin_reject_wallet_"):
+                payment_id = int(data.split("_")[3])
+                await handlers["wallet"].admin_reject_payment(callback, payment_id)
+
 
             elif data.startswith("admin_confirm_payment_"):
                 payment_id = int(data.split("_")[3])
