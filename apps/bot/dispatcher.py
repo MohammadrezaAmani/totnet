@@ -219,9 +219,9 @@ class MultiBrandDispatcher:
                 if action == "wallet_charge" and step == PurchaseStep.WAITING_RECEIPT:
                     await handlers["wallet"].handle_receipt_photo(message, user, state)
                     return
-                elif step == PurchaseStep.WAITING_RECEIPT:
-                    await handlers["purchase"].handle_photo_message(message, state)
-                    return
+            if step == PurchaseStep.WAITING_RECEIPT:
+                await handlers["purchase"].handle_photo_message(message, state)
+                return
 
             await message.reply(
                 "❌ در حال حاضر منتظر عکس نیستم.\nلطفاً از منوی زیر استفاده کنید:",
