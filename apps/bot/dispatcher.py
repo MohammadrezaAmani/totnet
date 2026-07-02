@@ -212,10 +212,10 @@ class MultiBrandDispatcher:
             """Handle photo messages (e.g., payment receipts)"""
             user, _ = await handlers["start"].get_or_create_user(message.from_user)
             state = await handlers["start"].get_user_state(user)
-
+            step = (state.state_data or {}).get("step")
+            action = (state.state_data or {}).get("action")
             if state.current_state == BotState.StateType.PAYMENT_PROCESS:
-                step = (state.state_data or {}).get("step")
-                action = (state.state_data or {}).get("action")
+
                 if action == "wallet_charge" and step == PurchaseStep.WAITING_RECEIPT:
                     await handlers["wallet"].handle_receipt_photo(message, user, state)
                     return
