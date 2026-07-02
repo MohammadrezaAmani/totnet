@@ -188,8 +188,6 @@ class StartHandler(BaseHandler):
 
         if not template:
             template = """
-🏠 منوی اصلی {brand}
-
 👋 سلام {name}!
 
 📊 وضعیت شما:
