@@ -773,15 +773,14 @@ class PurchaseHandler(BaseHandler):
                 ]
             ]
         )
-
-        admin_chat_id = self.brand.admin_chat_id
-        if admin_chat_id:
+        for user in await self.brand.admin_users.all():
             try:
                 await self.bot.send_photo(
-                    chat_id=admin_chat_id,
+                    chat_id=user.telegram_id,
                     photo=file_id,
                     caption=admin_text,
                     reply_markup=admin_kb,
                 )
             except Exception as e:
-                logger.error(f"Failed to notify admin: {e}")
+                logger.error(f"Failed to notify admin {user.telegram_id}: {e}")
+
