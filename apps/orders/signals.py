@@ -236,30 +236,30 @@ def order_pre_save(sender, instance, **kwargs):
         instance._previous_status = None
 
 
-@receiver(post_save, sender=Order)
-def order_post_save(sender, instance, created, **kwargs):
+# @receiver(post_save, sender=Order)
+# def order_post_save(sender, instance, created, **kwargs):
 
-    previous = getattr(instance, "_previous_status", None)
+#     previous = getattr(instance, "_previous_status", None)
 
-    if created:
-        return
+#     if created:
+#         return
 
-    if previous == instance.status:
-        return
+#     if previous == instance.status:
+#         return
 
-    messages = {
-        Order.OrderStatus.AWAITING_PAYMENT: "Awaiting payment.",
-        Order.OrderStatus.PAID: "Payment received.",
-        Order.OrderStatus.PROCESSING: "Order is processing.",
-        Order.OrderStatus.COMPLETED: "Order completed.",
-        Order.OrderStatus.CANCELLED: "Order cancelled.",
-        Order.OrderStatus.REFUNDED: "Order refunded.",
-        Order.OrderStatus.FAILED: "Order failed.",
-    }
+#     messages = {
+#         Order.OrderStatus.AWAITING_PAYMENT: "Awaiting payment.",
+#         Order.OrderStatus.PAID: "Payment received.",
+#         Order.OrderStatus.PROCESSING: "Order is processing.",
+#         Order.OrderStatus.COMPLETED: "Order completed.",
+#         Order.OrderStatus.CANCELLED: "Order cancelled.",
+#         Order.OrderStatus.REFUNDED: "Order refunded.",
+#         Order.OrderStatus.FAILED: "Order failed.",
+#     }
 
-    if instance.status in messages:
-        broadcast_message(
-            brand_id=instance.brand_id,
-            user_ids=[instance.user.telegram_id],
-            text=messages[instance.status],
-        )
+#     if instance.status in messages:
+#         broadcast_message(
+#             brand_id=instance.brand_id,
+#             user_ids=[instance.user.telegram_id],
+#             text=messages[instance.status],
+#         )
