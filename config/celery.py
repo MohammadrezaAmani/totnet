@@ -27,6 +27,10 @@ app.conf.beat_schedule = {
         "task": "apps.vpn_providers.tasks.sync_all_vpn_users",
         "schedule": 300.0,
     },
+    "sync-connectix-plans": {
+        "task": "apps.vpn_providers.tasks.sync_all_connectix_plans",
+        "schedule": 900.0,
+    },
     "check-vpn-health": {
         "task": "apps.vpn_providers.tasks.check_all_providers_health",
         "schedule": 300.0,

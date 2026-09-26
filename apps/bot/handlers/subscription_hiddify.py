@@ -215,7 +215,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
 
             if sub.traffic_limit_gb:
                 used_gb = float(sub.traffic_used_gb or 0)
-                total_gb = sub.traffic_limit_gb
+                total_gb = float(sub.traffic_limit_gb)
                 percent = min(100, (used_gb / total_gb) * 100) if total_gb else 0
                 text += f"""
 📊 ترافیک:

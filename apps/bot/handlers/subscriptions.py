@@ -162,7 +162,7 @@ class SubscriptionHandler(BaseHandler):
 📊 اطلاعات ترافیک:
 • حجم کل: {self.format_traffic(subscription.traffic_limit_gb)}
 • مصرف شده: {self.format_traffic(float(subscription.traffic_used_gb))}
-• باقی‌مانده: {self.format_traffic(subscription.traffic_limit_gb - float(subscription.traffic_used_gb))}
+• باقی‌مانده: {self.format_traffic(float(subscription.traffic_limit_gb) - float(subscription.traffic_used_gb))}
 • درصد مصرف: {usage_percent:.1f}%
 """
 
@@ -459,7 +459,7 @@ class SubscriptionHandler(BaseHandler):
 """
 
         if subscription.traffic_limit_gb:
-            remaining = subscription.traffic_limit_gb - float(
+            remaining = float(subscription.traffic_limit_gb) - float(
                 subscription.traffic_used_gb
             )
             text += f"• 📊 باقی‌مانده: {remaining:.2f} GB\n"

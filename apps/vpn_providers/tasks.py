@@ -2,6 +2,7 @@
 
 import logging
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 from asgiref.sync import async_to_sync
 from celery import shared_task
@@ -11,6 +12,7 @@ from django.utils import timezone
 from apps.subscriptions.models import (
     ProviderRemoteSubscription,
     Subscription,
+    SubscriptionPlan,
 )
 
 from .models import VPNProvider, VPNProviderHealthCheck, VPNProviderStats
@@ -70,7 +72,7 @@ def sync_vpn_users(self, provider_id: int):
             proxies={},
             inbounds=["main"],
             traffic_limit=(
-                subscription.traffic_limit_gb * 1024**3
+                int(subscription.traffic_limit_gb * 1024**3)
                 if subscription.traffic_limit_gb
                 else None
             ),
@@ -190,6 +192,162 @@ def sync_connectix_status(provider):
     provider.last_sync = synced_at
     provider.save(update_fields=("last_sync", "updated_at"))
     return True
+
+
+def _connectix_decimal(value, *, default=Decimal("0")):
+    if value in (None, ""):
+        return default
+    try:
+        return Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, ValueError):
+        return default
+
+
+def _connectix_duration_unit(value):
+    normalized = str(value or "").strip().casefold()
+    if normalized.startswith("week"):
+        return SubscriptionPlan.DurationUnit.WEEKS
+    if normalized.startswith("month"):
+        return SubscriptionPlan.DurationUnit.MONTHS
+    if normalized.startswith("year"):
+        return SubscriptionPlan.DurationUnit.YEARS
+    if normalized.startswith("day"):
+        return SubscriptionPlan.DurationUnit.DAYS
+    return None
+
+
+@shared_task(bind=True, max_retries=3)
+def sync_connectix_plans(self, provider_id: int):
+    """Import the provider's current sellable plans into its local brand."""
+    try:
+        provider = VPNProvider.objects.select_related("brand").get(pk=provider_id)
+    except VPNProvider.DoesNotExist:
+        logger.warning("Connectix plan sync skipped: provider %s missing", provider_id)
+        return 0
+    if provider.provider_type != VPNProvider.ProviderType.CONNECTIX:
+        logger.info("Plan sync skipped for non-Connectix provider %s", provider_id)
+        return 0
+
+    client = _client(provider)
+    if not isinstance(client, ConnectixProvider):
+        return 0
+
+    async def fetch_plans():
+        try:
+            return await client.client.get_seller_plans(
+                for_client_page=False, is_archived=False
+            )
+        finally:
+            await client.close()
+
+    try:
+        plans = async_to_sync(fetch_plans)()
+    except Exception as exc:
+        logger.error(
+            "Connectix plan sync failed for provider %s (%s)",
+            provider.pk,
+            type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
+
+    currency = str((provider.configuration or {}).get("currency", "T"))[:3] or "T"
+    synced_ids = set()
+    for position, upstream in enumerate(plans):
+        group_is_mapped = bool(upstream.group_id)
+        if not group_is_mapped:
+            logger.warning(
+                "Connectix plan %s has no matched group ID (%r); importing hidden",
+                upstream.plan_id,
+                upstream.group_name,
+            )
+        duration_unit = _connectix_duration_unit(upstream.period_unit)
+        duration_value = None
+        try:
+            parsed_period = int(Decimal(upstream.period)) if upstream.period else None
+            if parsed_period and duration_unit:
+                duration_value = parsed_period
+        except (InvalidOperation, ValueError):
+            pass
+        raw_traffic = str(upstream.traffic_amount or "").strip()
+        unlimited = raw_traffic.casefold() in {"∞", "inf", "infinite", "unlimited"}
+        traffic = None if unlimited or not raw_traffic else _connectix_decimal(raw_traffic)
+        if unlimited:
+            plan_type = SubscriptionPlan.PlanType.UNLIMITED
+            traffic = None
+        elif duration_value is not None and traffic is not None and traffic > 0:
+            plan_type = SubscriptionPlan.PlanType.HYBRID
+        elif traffic is not None and traffic > 0:
+            plan_type = SubscriptionPlan.PlanType.TRAFFIC_BASED
+            duration_value = None
+            duration_unit = None
+        else:
+            plan_type = SubscriptionPlan.PlanType.TIME_BASED
+            traffic = None
+        title = upstream.title.strip()[:100] or f"Connectix {upstream.plan_id[:12]}"
+        upstream_cost = _connectix_decimal(upstream.price)
+        sell_price = _connectix_decimal(upstream.sell_price)
+        if sell_price == 0 and upstream_cost > 0:
+            # Connectix uses "0" for an unset seller override on some paid plans.
+            sell_price = upstream_cost
+        defaults = {
+            "vpn_provider": provider,
+            "upstream_group_id": upstream.group_id,
+            "upstream_group_name": upstream.group_name[:100],
+            "upstream_plan_name": upstream.title[:200],
+            "upstream_count_of_devices": upstream.count_of_devices,
+            "name": title,
+            "description": f"{upstream.group_name} · {upstream.title}"[:2000],
+            "plan_type": plan_type,
+            "price": sell_price,
+            "upstream_cost": upstream_cost,
+            "currency": currency,
+            "duration_value": duration_value,
+            "duration_unit": duration_unit,
+            "traffic_limit_gb": traffic,
+            "max_users": upstream.count_of_devices or 1,
+            "is_active": group_is_mapped,
+            "is_visible": group_is_mapped and upstream.displayed_in_robot is not False,
+            "display_order": position,
+        }
+        # Keep brand/name unique even if the seller reuses a translated title.
+        existing = SubscriptionPlan.objects.filter(
+            vpn_provider=provider, upstream_plan_id=upstream.plan_id
+        ).first()
+        if existing:
+            for key, value in defaults.items():
+                setattr(existing, key, value)
+            existing.save()
+        else:
+            name_in_use = SubscriptionPlan.objects.filter(
+                brand=provider.brand, name=title
+            ).exclude(vpn_provider=provider, upstream_plan_id=upstream.plan_id).exists()
+            if name_in_use:
+                defaults["name"] = f"{title[:82]} · {upstream.plan_id[:12]}"
+            SubscriptionPlan.objects.create(
+                brand=provider.brand,
+                upstream_plan_id=upstream.plan_id,
+                **defaults,
+            )
+        synced_ids.add(upstream.plan_id)
+
+    # Plans removed from the non-archived endpoint are hidden from new purchases.
+    SubscriptionPlan.objects.filter(vpn_provider=provider).exclude(
+        upstream_plan_id__in=synced_ids
+    ).update(is_active=False, is_visible=False)
+    provider.last_sync = timezone.now()
+    provider.save(update_fields=("last_sync", "updated_at"))
+    return len(synced_ids)
+
+
+@shared_task
+def sync_all_connectix_plans():
+    """Refresh plans for each active Connectix provider."""
+    provider_ids = VPNProvider.objects.filter(
+        provider_type=VPNProvider.ProviderType.CONNECTIX,
+        status=VPNProvider.ProviderStatus.ACTIVE,
+    ).values_list("pk", flat=True)
+    for provider_id in provider_ids:
+        sync_connectix_plans.delay(provider_id)
 
 
 @shared_task

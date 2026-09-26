@@ -1,4 +1,5 @@
 import logging
+from html import escape
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
@@ -6,6 +7,7 @@ from aiogram import types
 from asgiref.sync import sync_to_async
 from django.db.models import Q
 from django.utils import timezone
+from django.conf import settings
 
 from apps.accounts.models import User
 from apps.bot.handlers.wallet import WalletHandler
@@ -21,6 +23,7 @@ from apps.vpn_providers.services.hiddify import (
     HiddifyProvider,
     HiddifyUser,
 )
+from apps.vpn_providers.services.connectix import ConnectixProvider
 
 import asyncio
 
@@ -302,24 +305,15 @@ class HiddifyAdminHandler(BaseHandler):
         return text, self.create_keyboard(buttons)
 
     async def check_admin_access(self, user: User) -> bool:
-        if user.is_staff or user.is_superuser:
-            return True
-        try:
-            return await user.admin_brands.filter(pk=self.brand.pk).aexists()
-        except Exception as e:
-            logger.error(f"Error checking admin access: {e}")
-            return False
+        return await self.has_admin_access(user)
 
     async def check_admin_role(self, user: User) -> Optional[AdminRole]:
         if user.is_superuser:
             return AdminRole.SUPER_ADMIN
         if user.is_staff:
             return AdminRole.ADMIN
-        try:
-            if await user.admin_brands.filter(pk=self.brand.pk).aexists():
-                return AdminRole.ADMIN
-        except Exception as e:
-            logger.error(f"Error checking admin role: {e}")
+        if await self.has_admin_access(user):
+            return AdminRole.ADMIN
         return None
 
     async def get_hiddify_provider(self) -> Optional[HiddifyProvider]:
@@ -340,6 +334,77 @@ class HiddifyAdminHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Error getting Hiddify provider: {e}")
             return None
+
+    async def get_connectix_provider(self):
+        provider = await VPNProvider.objects.filter(
+            brand=self.brand,
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+        ).order_by("-is_default", "priority").afirst()
+        if not provider:
+            return None
+        return ConnectixProvider(
+            base_url=provider.base_url or settings.CONNECTIX_API_BASE_URL,
+            username=settings.CONNECTIX_USERNAME,
+            password=settings.CONNECTIX_PASSWORD,
+            timeout_seconds=settings.CONNECTIX_TIMEOUT_SECONDS,
+        )
+
+    async def list_connectix_users(self, callback: types.CallbackQuery, page: int = 1):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        if not await self.check_admin_access(user):
+            await callback.answer("❌ دسترسی ندارید", show_alert=True)
+            return
+        provider = await self.get_connectix_provider()
+        if not provider:
+            await callback.answer("❌ پنل Connectix فعال نیست", show_alert=True)
+            return
+        try:
+            result = await provider.client.get_clients(
+                page=max(1, page), record_per_page=USERS_PER_PAGE
+            )
+            lines = ["👥 <b>کاربران Connectix</b> · فقط‌خواندنی", "━━━━━━━━━━━━━━━━━━"]
+            if not result.clients:
+                lines.append("کاربری در این صفحه نیست.")
+            for record in result.clients:
+                label = escape(record.name or record.username)
+                status = "🟢 فعال" if record.is_active and not record.is_expired else "🔴 غیرفعال"
+                if record.is_expired:
+                    status = "⌛ منقضی"
+                lines.extend(
+                    [
+                        f"<b>{label}</b> · <code>{escape(record.username)}</code>",
+                        f"وضعیت: {status} · پلن: {escape(record.plan_name or '—')}",
+                        f"گروه: {escape(record.group_name or '—')} · باقی‌مانده: {escape(record.remains_days or '—')} روز",
+                        f"انقضا: {escape(record.expire_date or '—')} · مصرف: {escape(record.used_traffic or '—')}",
+                        "",
+                    ]
+                )
+            lines.append(f"صفحه {result.current_page} از {max(1, result.last_page)} · کل: {result.total}")
+            buttons = []
+            nav = []
+            if result.current_page > 1:
+                nav.append({"text": "◀️", "callback_data": f"admin_connectix_users_page_{result.current_page - 1}"})
+            if result.current_page < result.last_page:
+                nav.append({"text": "▶️", "callback_data": f"admin_connectix_users_page_{result.current_page + 1}"})
+            if nav:
+                buttons.append(nav)
+            buttons.append([
+                {"text": "🔄 بروزرسانی", "callback_data": f"admin_connectix_users_page_{result.current_page}"},
+                {"text": "🔙 بازگشت", "callback_data": "admin_panel_users"},
+            ])
+            text = "\n".join(lines)
+            keyboard = self.create_keyboard(buttons)
+        except Exception as exc:
+            logger.warning("Connectix client list failed (%s)", type(exc).__name__)
+            text = "❌ دریافت فهرست کاربران Connectix ناموفق بود."
+            keyboard = self.get_back_keyboard("admin_panel_users")
+        finally:
+            await provider.close()
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
 
     async def list_panel_users(self, callback: types.CallbackQuery):
         """Entry point – fetches all users and renders page 1"""
@@ -1166,18 +1231,35 @@ UUID:  <code>{u.uuid}</code>
 
         self._search_cache.pop(callback.from_user.id, None)
 
-        text = """👥  مدیریت کاربران پنل Hiddify
+        has_connectix = await VPNProvider.objects.filter(
+            brand=self.brand,
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+        ).aexists()
+        has_hiddify = await VPNProvider.objects.filter(
+            brand=self.brand,
+            provider_type=VPNProvider.ProviderType.HIDDIFY,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+        ).aexists()
+        text = "👥 مدیریت کاربران پنل"
+        if has_hiddify:
+            text += "\n\nاز این بخش کاربران پنل Hiddify را مدیریت کنید."
+        if has_connectix:
+            text += "\n\nفهرست Connectix به صورت صفحه‌بندی‌شده و فقط‌خواندنی است."
+        if not has_connectix and not has_hiddify:
+            text += "\n\nهیچ پنل فعالی برای این برند تنظیم نشده است."
 
-از این بخش می‌توانید کاربران VPN را مدیریت کنید."""
-
-        keyboard = self.create_keyboard(
-            [
-                [
+        rows = []
+        if has_connectix:
+            rows.append([{"text": "📋 کاربران Connectix", "callback_data": "admin_list_connectix_users"}])
+        if has_hiddify:
+            rows.append([
                     {
-                        "text": "📋 لیست کاربران",
+                        "text": "📋 لیست کاربران Hiddify",
                         "callback_data": "admin_list_panel_users",
                     }
-                ],
+                ])
+            rows.extend([
                 [
                     {
                         "text": "➕ افزودن کاربر",
@@ -1196,9 +1278,9 @@ UUID:  <code>{u.uuid}</code>
                         "callback_data": "admin_update_usage",
                     }
                 ],
-                [{"text": "🔙 بازگشت", "callback_data": "admin"}],
-            ]
-        )
+            ])
+        rows.append([{"text": "🔙 بازگشت", "callback_data": "admin"}])
+        keyboard = self.create_keyboard(rows)
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
@@ -1448,7 +1530,14 @@ UUID:  <code>{u.uuid}</code>
         }.get(role, "نامشخص")
 
         has_hiddify = await VPNProvider.objects.filter(
-            brand=self.brand, provider_type=VPNProvider.ProviderType.HIDDIFY
+            brand=self.brand,
+            provider_type=VPNProvider.ProviderType.HIDDIFY,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+        ).aexists()
+        has_connectix = await VPNProvider.objects.filter(
+            brand=self.brand,
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            status=VPNProvider.ProviderStatus.ACTIVE,
         ).aexists()
 
         text = f"""
@@ -1457,7 +1546,7 @@ UUID:  <code>{u.uuid}</code>
 👤 نام کاربری: {user.username}
 📊 نقش: {role_name}
 🏢 برند: {self.brand.name}
-{"🌐 پنل Hiddify: متصل" if has_hiddify else "⚠️ پنل VPN: تنظیم نشده"}
+{"🌐 پنل Hiddify: متصل" if has_hiddify else "🌐 پنل Connectix: متصل" if has_connectix else "⚠️ پنل VPN: تنظیم نشده"}
 
 چه کاری می\u200cخواهید انجام دهید؟
         """
@@ -1474,13 +1563,6 @@ UUID:  <code>{u.uuid}</code>
                             "callback_data": "admin_panel_users",
                         }
                     ],
-                    [
-                        {
-                            "text": "👤 مدیریت ادمین\u200cهای پنل",
-                            "callback_data": "admin_panel_admins",
-                        }
-                    ],
-                    [{"text": "📊 آمار سرور", "callback_data": "admin_server_status"}],
                     [
                         {
                             "text": "🛒 مدیریت سفارش\u200cها",
@@ -1502,6 +1584,13 @@ UUID:  <code>{u.uuid}</code>
                     [{"text": "⚙️ تنظیمات", "callback_data": "admin_settings"}],
                 ]
             )
+            if has_hiddify:
+                buttons.extend(
+                    [
+                        [{"text": "👤 مدیریت ادمین‌های Hiddify", "callback_data": "admin_panel_admins"}],
+                        [{"text": "📊 آمار سرور Hiddify", "callback_data": "admin_server_status"}],
+                    ]
+                )
 
         elif role == AdminRole.MODERATOR:
             buttons.extend(

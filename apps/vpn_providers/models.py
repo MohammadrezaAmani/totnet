@@ -28,7 +28,7 @@ class VPNProvider(models.Model):
     description = models.TextField(null=True, blank=True)
 
     base_url = models.URLField()
-    api_key = models.CharField(max_length=500)
+    api_key = models.CharField(max_length=500, blank=True)
     public_api_key = models.CharField(max_length=500, null=True, blank=True)
 
     proxy_path = models.CharField(max_length=100, default="", blank=True)

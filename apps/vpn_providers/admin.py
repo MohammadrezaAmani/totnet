@@ -6,6 +6,7 @@ Enhanced with Hiddify integration
 from asgiref.sync import async_to_sync
 from django import forms
 from django.contrib import admin, messages
+from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
@@ -295,7 +296,30 @@ class VPNProviderAdmin(admin.ModelAdmin):
 
     hiddify_admins_count.short_description = "Hiddify Admins"
 
-    actions = ["test_connection", "sync_hiddify_admins", "check_health"]
+    actions = [
+        "test_connection",
+        "sync_hiddify_admins",
+        "sync_connectix_plans",
+        "check_health",
+    ]
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if obj.provider_type == VPNProvider.ProviderType.CONNECTIX and obj.status == VPNProvider.ProviderStatus.ACTIVE:
+            from .tasks import sync_connectix_plans
+
+            transaction.on_commit(lambda: sync_connectix_plans.delay(obj.pk))
+
+    @admin.action(description="Sync plans from Connectix")
+    def sync_connectix_plans(self, request, queryset):
+        from .tasks import sync_connectix_plans
+
+        for provider in queryset.filter(
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+        ):
+            sync_connectix_plans.delay(provider.pk)
+            messages.success(request, f"Queued plan sync for {provider.name}")
 
     readonly_fields = readonly_fields + ("capability_summary",)
 

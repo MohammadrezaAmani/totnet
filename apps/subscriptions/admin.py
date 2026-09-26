@@ -199,7 +199,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
 
     def traffic_percentage_used(self, obj):
         if obj.traffic_limit_gb:
-            pct = (float(obj.traffic_used_gb) / obj.traffic_limit_gb) * 100
+            pct = (float(obj.traffic_used_gb) / float(obj.traffic_limit_gb)) * 100
             color = "green" if pct < 80 else ("orange" if pct < 100 else "red")
             return format_html('<span style="color: {};">{:.1f}%</span>', color, pct)
         return "∞"

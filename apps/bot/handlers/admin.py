@@ -35,16 +35,7 @@ class AdminHandler(BaseHandler):
 
     async def check_admin_access(self, user: User) -> bool:
         """Check if user has admin access"""
-
-        if user.is_staff or user.is_superuser:
-            return True
-
-        try:
-            has_brand_admin = await user.admin_brands.filter(pk=self.brand.pk).aexists()
-            return has_brand_admin
-        except Exception as e:
-            logger.error(f"Error checking admin access: {e}")
-            return False
+        return await self.has_admin_access(user)
 
     async def check_admin_role(self, user: User) -> AdminRole:
         """Get user's admin role"""
@@ -54,12 +45,8 @@ class AdminHandler(BaseHandler):
         if user.is_staff:
             return AdminRole.ADMIN
 
-        try:
-            has_brand_admin = await user.admin_brands.filter(pk=self.brand.pk).aexists()
-            if has_brand_admin:
-                return AdminRole.ADMIN
-        except Exception as e:
-            logger.error(f"Error checking admin role: {e}")
+        if await self.has_admin_access(user):
+            return AdminRole.ADMIN
 
         return None
 

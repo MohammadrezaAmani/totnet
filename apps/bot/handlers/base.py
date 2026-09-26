@@ -78,6 +78,27 @@ class BaseHandler:
             state.state_data = {}
         await state.asave()
 
+    async def has_admin_access(self, user: User) -> bool:
+        """Check platform-wide and brand-scoped admin grants from current data."""
+        try:
+            current = await User.objects.only(
+                "is_staff", "is_superuser", "user_type", "brand_id"
+            ).aget(pk=user.pk)
+            if current.is_staff or current.is_superuser:
+                return True
+            if (
+                current.brand_id == self.brand.pk
+                and current.user_type
+                in {User.UserType.BRAND_MANAGER, User.UserType.BRAND_ADMIN}
+            ):
+                return True
+            return await current.admin_brands.filter(pk=self.brand.pk).aexists()
+        except User.DoesNotExist:
+            return False
+        except Exception as exc:
+            logger.warning("Admin access lookup failed for user %s: %s", user.pk, exc)
+            return False
+
     def create_keyboard(self, buttons_data: list) -> InlineKeyboardMarkup:
         """Create inline keyboard from button data"""
         keyboard = InlineKeyboardMarkup(inline_keyboard=[])
@@ -123,17 +144,7 @@ class BaseHandler:
         ]
 
         if user:
-            is_admin = user.is_staff or user.is_superuser
-            if not is_admin:
-                try:
-                    is_admin = await user.admin_brands.filter(
-                        pk=self.brand.pk
-                    ).aexists()
-                except Exception as e:
-                    logger.warning(f"Error checking admin brands: {e}")
-                    is_admin = False
-
-            if is_admin:
+            if await self.has_admin_access(user):
                 buttons.append([{"text": "🔑 ادمین", "callback_data": "admin"}])
 
         return self.create_keyboard(buttons)
@@ -189,6 +200,12 @@ class BaseHandler:
 
     def format_price(self, amount: float, currency: str = "USD") -> str:
         """Format price with currency"""
+        if currency in {"T", "IRT"}:
+            try:
+                formatted = f"{float(amount):,.2f}".rstrip("0").rstrip(".")
+            except (TypeError, ValueError):
+                formatted = str(amount)
+            return f"{formatted} تومان"
         if currency == "USD":
             return f"${amount}"
         elif currency == "IRR":
@@ -196,8 +213,14 @@ class BaseHandler:
         else:
             return f"{amount} {currency}"
 
-    def format_duration(self, days: int) -> str:
+    def format_duration(self, days: int, unit: str | None = None) -> str:
         """Format duration in Persian"""
+        if unit == "weeks":
+            return f"{days} هفته"
+        if unit == "months":
+            return f"{days} ماه"
+        if unit == "years":
+            return f"{days} سال"
         if days == 1:
             return "یک روز"
         elif days == 7:
@@ -211,10 +234,10 @@ class BaseHandler:
         else:
             return f"{days} روز"
 
-    def format_traffic(self, gb: int) -> str:
+    def format_traffic(self, gb) -> str:
         """Format traffic in Persian"""
         if gb < 1024:
-            return f"{gb} گیگابایت"
+            return f"{gb.normalize() if hasattr(gb, 'normalize') else gb} گیگابایت"
         else:
             tb = gb / 1024
             return f"{tb:.1f} ترابایت"

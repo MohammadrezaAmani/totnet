@@ -103,11 +103,14 @@ class ConnectixSellerPlan:
     plan_id: str
     title: str
     price: str = ""
+    sell_price: str = ""
     period: str = ""
     period_unit: str = ""
     traffic_amount: str = ""
     count_of_devices: int | None = None
+    group_id: str = ""
     group_name: str = ""
+    plan_type: str = ""
     displayed_in_panel: bool | None = None
     displayed_in_robot: bool | None = None
 
@@ -294,6 +297,22 @@ class ConnectixClient:
         groups = body.get("seller_plan_group")
         if not isinstance(groups, list):
             raise ConnectixMalformedResponse("Connectix seller plan list is malformed")
+        group_ids_by_name: dict[str, str] = {}
+        metadata_groups = body.get("groups", [])
+        if isinstance(metadata_groups, list):
+            for metadata_group in metadata_groups:
+                if not isinstance(metadata_group, dict):
+                    continue
+                group_id = metadata_group.get("id")
+                if not isinstance(group_id, (str, int)):
+                    continue
+                names = [metadata_group.get("name")]
+                translations = metadata_group.get("name_translations")
+                if isinstance(translations, dict):
+                    names.extend(translations.values())
+                for name in names:
+                    if isinstance(name, str) and name.strip():
+                        group_ids_by_name[_normalized_group_name(name)] = str(group_id)
         plans: list[ConnectixSellerPlan] = []
         for group in groups:
             if not isinstance(group, dict) or not isinstance(
@@ -308,7 +327,11 @@ class ConnectixClient:
                         "Connectix seller plan is malformed"
                     )
                 plan_id = item.get("id")
-                title = item.get("title")
+                title = (
+                    item.get("seller_persian_title")
+                    or item.get("title")
+                    or item.get("seller_english_title")
+                )
                 if not isinstance(plan_id, (str, int)) or not isinstance(title, str):
                     raise ConnectixMalformedResponse(
                         "Connectix seller plan lacks an id/title"
@@ -319,17 +342,26 @@ class ConnectixClient:
                     group_name = str(
                         translations.get("en") or translations.get("fa") or ""
                     )
+                raw_group_id = item.get("group_id")
+                group_id = (
+                    str(raw_group_id)
+                    if isinstance(raw_group_id, (str, int))
+                    else group_ids_by_name.get(_normalized_group_name(group_name), "")
+                )
                 count = item.get("count_of_devices")
                 plans.append(
                     ConnectixSellerPlan(
                         plan_id=str(plan_id),
                         title=title,
                         price=_optional_str(item, "price"),
+                        sell_price=_optional_str(item, "sell_price"),
                         period=_optional_str(item, "period"),
                         period_unit=_optional_str(item, "period_unit"),
                         traffic_amount=_optional_str(item, "traffic_amount"),
                         count_of_devices=count if isinstance(count, int) else None,
+                        group_id=group_id,
                         group_name=group_name,
+                        plan_type=_optional_str(item, "type"),
                         displayed_in_panel=_optional_nullable_bool(
                             item, "is_displayed_in_panel"
                         ),
@@ -432,3 +464,7 @@ def _optional_nullable_bool(data: dict[str, Any], key: str) -> bool | None:
     if value is None:
         return None
     return _optional_bool(data, key)
+
+
+def _normalized_group_name(value: str) -> str:
+    return " ".join(value.casefold().strip().split())

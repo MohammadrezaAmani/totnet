@@ -767,6 +767,16 @@ class MultiBrandDispatcher:
             elif data == "admin_list_panel_users":
                 await handlers["admin_hiddify"].list_panel_users(callback)
 
+            elif data == "admin_list_connectix_users":
+                await handlers["admin_hiddify"].list_connectix_users(callback)
+
+            elif data.startswith("admin_connectix_users_page_"):
+                try:
+                    page = int(data.rsplit("_", 1)[1])
+                    await handlers["admin_hiddify"].list_connectix_users(callback, page)
+                except ValueError:
+                    await callback.answer("❌ صفحه نامعتبر")
+
             elif data.startswith("admin_users_page_"):
                 try:
                     page = int(data.rsplit("_", 1)[1])

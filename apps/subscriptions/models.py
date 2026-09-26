@@ -54,7 +54,9 @@ class SubscriptionPlan(models.Model):
         max_length=10, choices=DurationUnit.choices, null=True, blank=True
     )
 
-    traffic_limit_gb = models.PositiveIntegerField(null=True, blank=True)
+    traffic_limit_gb = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
 
     max_users = models.PositiveIntegerField(default=1)
 
@@ -173,7 +175,9 @@ class Subscription(models.Model):
     expires_at = models.DateTimeField(null=True, blank=True)
 
     traffic_used_gb = models.DecimalField(max_digits=15, decimal_places=2, default=0)
-    traffic_limit_gb = models.PositiveIntegerField(null=True, blank=True)
+    traffic_limit_gb = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
 
     subscription_url = models.TextField(null=True, blank=True)
     connection_configs = models.JSONField(default=dict, blank=True)
@@ -228,7 +232,10 @@ class Subscription(models.Model):
     def traffic_percentage_used(self):
         """Calculate percentage of traffic used"""
         if self.traffic_limit_gb:
-            return min(100, (float(self.traffic_used_gb) / self.traffic_limit_gb) * 100)
+            return min(
+                100,
+                (float(self.traffic_used_gb) / float(self.traffic_limit_gb)) * 100,
+            )
         return 0
 
 

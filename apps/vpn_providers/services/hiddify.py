@@ -169,7 +169,7 @@ class HiddifyUser:
         if self.telegram_id is not None:
             result["telegram_id"] = self.telegram_id
         if self.usage_limit_GB is not None:
-            result["usage_limit_GB"] = self.usage_limit_GB
+            result["usage_limit_GB"] = float(self.usage_limit_GB)
         if self.current_usage_GB is not None:
             result["current_usage_GB"] = self.current_usage_GB
         if self.package_days is not None:

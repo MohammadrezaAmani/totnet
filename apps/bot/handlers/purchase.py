@@ -54,14 +54,14 @@ class PurchaseHandler(BaseHandler):
                 plan_text = f"{plan.name}"
                 if plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
                     plan_text += (
-                        f" - {self.format_duration(plan.duration_value)} - نامحدود"
+                        f" - {self.format_duration(plan.duration_value, plan.duration_unit)} - نامحدود"
                     )
                 elif plan.plan_type == SubscriptionPlan.PlanType.TRAFFIC_BASED:
                     plan_text += f" - {self.format_traffic(plan.traffic_limit_gb)}"
                 elif plan.plan_type == SubscriptionPlan.PlanType.TIME_BASED:
-                    plan_text += f" - {self.format_duration(plan.duration_value)}"
+                    plan_text += f" - {self.format_duration(plan.duration_value, plan.duration_unit)}"
                 elif plan.plan_type == SubscriptionPlan.PlanType.HYBRID:
-                    plan_text += f" - {self.format_duration(plan.duration_value)} - {self.format_traffic(plan.traffic_limit_gb)}"
+                    plan_text += f" - {self.format_duration(plan.duration_value, plan.duration_unit)} - {self.format_traffic(plan.traffic_limit_gb)}"
 
                 plan_text += (
                     f"\n💰 {self.format_price(plan.discounted_price, plan.currency)}"
@@ -123,14 +123,14 @@ class PurchaseHandler(BaseHandler):
         text += "\n📊 مشخصات:\n"
 
         if plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
-            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value)}\n"
+            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value, plan.duration_unit)}\n"
             text += "📈 ترافیک: نامحدود\n"
         elif plan.plan_type == SubscriptionPlan.PlanType.TRAFFIC_BASED:
             text += f"📊 حجم ترافیک: {self.format_traffic(plan.traffic_limit_gb)}\n"
         elif plan.plan_type == SubscriptionPlan.PlanType.TIME_BASED:
-            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value)}\n"
+            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value, plan.duration_unit)}\n"
         elif plan.plan_type == SubscriptionPlan.PlanType.HYBRID:
-            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value)}\n"
+            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value, plan.duration_unit)}\n"
             text += f"📊 حجم ترافیک: {self.format_traffic(plan.traffic_limit_gb)}\n"
 
         text += f"👥 تعداد کاربر: {plan.max_users}\n"
