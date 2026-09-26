@@ -247,7 +247,11 @@ class ConnectixClient:
         if response.status_code == 404:
             raise ConnectixNotFoundError("Connectix resource was not found")
         if response.status_code == 422:
-            raise ConnectixValidationError("Connectix rejected the request fields")
+            fields = _validation_error_fields(response)
+            detail = f": {', '.join(fields)}" if fields else ""
+            raise ConnectixValidationError(
+                f"Connectix rejected request fields{detail}"
+            )
         if response.status_code == 429:
             raise ConnectixUpstreamError("Connectix rate limit was reached")
         if response.status_code >= 500:
@@ -468,3 +472,17 @@ def _optional_nullable_bool(data: dict[str, Any], key: str) -> bool | None:
 
 def _normalized_group_name(value: str) -> str:
     return " ".join(value.casefold().strip().split())
+
+
+def _validation_error_fields(response: httpx.Response) -> list[str]:
+    """Extract field names only; never include server-echoed submitted values."""
+    try:
+        body = response.json()
+    except ValueError:
+        return []
+    if not isinstance(body, dict):
+        return []
+    errors = body.get("errors")
+    if not isinstance(errors, dict):
+        return []
+    return sorted(str(key)[:80] for key in errors)[:20]

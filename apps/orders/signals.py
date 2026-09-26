@@ -319,6 +319,74 @@ def order_pre_save(sender, instance, **kwargs):
         instance._previous_status = None
 
 
+@receiver(post_save, sender=Order)
+def order_completed_post_save(sender, instance, created, **kwargs):
+    """Provision completed orders only when free or backed by confirmed payment."""
+    previous = getattr(instance, "_previous_status", None)
+    if created or previous == instance.status:
+        return
+    if instance.status != Order.OrderStatus.COMPLETED:
+        return
+
+    has_confirmed_payment = Payment.objects.filter(
+        order=instance, status=Payment.PaymentStatus.CONFIRMED
+    ).exists()
+    if instance.final_price > 0 and not has_confirmed_payment:
+        logger.warning(
+            "Completed order %s has no confirmed payment; provisioning was not started",
+            instance.pk,
+        )
+        return
+
+    subscription = Subscription.objects.filter(order=instance).first()
+    if subscription and subscription.status == Subscription.SubscriptionStatus.ACTIVE:
+        return
+
+    provider = None
+    if instance.plan.vpn_provider_id:
+        provider = VPNProvider.objects.filter(
+            pk=instance.plan.vpn_provider_id,
+            brand=instance.brand,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+        ).first()
+    if provider is None:
+        provider = VPNProvider.objects.filter(
+            brand=instance.brand,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+            is_default=True,
+        ).first()
+    if provider is None:
+        logger.error(
+            "Completed order %s has no active provider; provisioning was not started",
+            instance.pk,
+        )
+        return
+
+    subscription, _ = Subscription.objects.get_or_create(
+        order=instance,
+        defaults={
+            "brand": instance.brand,
+            "user": instance.user,
+            "plan": instance.plan,
+            "vpn_provider": provider,
+            "owner": instance.recipient or instance.user,
+            "status": Subscription.SubscriptionStatus.PENDING,
+            "starts_at": timezone.now(),
+            "traffic_limit_gb": instance.plan.traffic_limit_gb,
+        },
+    )
+    # Completion in the order admin records approval. The service sets it back
+    # to completed after the provider account has actually activated.
+    Order.objects.filter(pk=instance.pk).update(
+        status=Order.OrderStatus.PAID, updated_at=timezone.now()
+    )
+    transaction.on_commit(
+        lambda subscription_id=subscription.pk: _enqueue_order_provisioning(
+            subscription_id
+        )
+    )
+
+
 # @receiver(post_save, sender=Order)
 # def order_post_save(sender, instance, created, **kwargs):
 

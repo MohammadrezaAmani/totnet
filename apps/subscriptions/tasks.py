@@ -168,6 +168,8 @@ def provision_paid_order(order_pk: int):
             return False
         if subscription.provisioning_state == "retryable_error":
             return False
+        if subscription.provisioning_state == "needs_review":
+            return False
         has_remote_identity = ProviderRemoteSubscription.objects.filter(
             subscription=subscription, remote_id__gt=""
         ).exists() or bool(

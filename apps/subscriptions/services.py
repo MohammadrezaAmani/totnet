@@ -412,10 +412,24 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
             await remote_account.asave(
                 update_fields=["state", "last_error", "updated_at"]
             )
+        subscription.provisioning_state = "needs_review"
+        subscription.provisioning_error_code = type(exc).__name__[:80]
+        subscription.provisioning_error = str(exc)[:1000]
+        subscription.provisioning_retryable = False
+        await subscription.asave(
+            update_fields=(
+                "provisioning_state",
+                "provisioning_error_code",
+                "provisioning_error",
+                "provisioning_retryable",
+                "updated_at",
+            )
+        )
         logger.error(
-            "Connectix provisioning failed for local subscription %s (%s)",
+            "Connectix provisioning failed for local subscription %s (%s): %s",
             subscription.pk,
             type(exc).__name__,
+            exc,
         )
         return False
     finally:

@@ -113,7 +113,9 @@ class ConnectixProvider:
             "password": password,
             "phone": None,
             "chat_id": None,
-            "telegram_id": request.telegram_id,
+            # Connectix rejected the supplied Telegram ID during validation.
+            # Keep the remote account unlinked; local ownership is tracked here.
+            "telegram_id": None,
             "group_id": request.group_id,
             "plan_id": request.plan_id,
             "enable_plan_after_first_login": True,

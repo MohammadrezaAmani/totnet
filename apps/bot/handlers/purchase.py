@@ -12,7 +12,9 @@ from apps.accounts.models import User
 from apps.bot.models import BotState
 from apps.orders.models import Order, Payment, Wallet
 from apps.orders.services import WalletCheckoutError, pay_order_with_wallet
-from apps.subscriptions.models import SubscriptionPlan
+from apps.subscriptions.models import Subscription, SubscriptionPlan
+from apps.subscriptions.tasks import provision_paid_order
+from apps.vpn_providers.models import VPNProvider
 
 from .base import BaseHandler
 
@@ -219,6 +221,24 @@ class PurchaseHandler(BaseHandler):
             status=Order.OrderStatus.PENDING,
         )
 
+        if order.final_price <= 0:
+            queued, message = await self._queue_free_order(order)
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+            keyboard = self.create_keyboard(
+                [[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}]]
+            )
+            await self.edit_message_with_keyboard(
+                callback.message.chat.id,
+                callback.message.message_id,
+                message,
+                keyboard,
+            )
+            await callback.answer(
+                "✅ درخواست ثبت شد" if queued else "❌ فعال‌سازی انجام نشد",
+                show_alert=not queued,
+            )
+            return
+
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
@@ -230,6 +250,49 @@ class PurchaseHandler(BaseHandler):
         )
 
         await self.show_payment_methods(callback, order)
+
+    async def _queue_free_order(self, order: Order) -> tuple[bool, str]:
+        """Fulfill zero-price plans without routing them through payment screens."""
+        provider = None
+        if order.plan.vpn_provider_id:
+            provider = await VPNProvider.objects.filter(
+                pk=order.plan.vpn_provider_id,
+                brand=order.brand,
+                status=VPNProvider.ProviderStatus.ACTIVE,
+            ).afirst()
+        if provider is None:
+            provider = await VPNProvider.objects.filter(
+                brand=order.brand,
+                status=VPNProvider.ProviderStatus.ACTIVE,
+                is_default=True,
+            ).afirst()
+        if provider is None:
+            order.status = Order.OrderStatus.FAILED
+            order.admin_notes = "Free order could not be provisioned: no active provider."
+            await order.asave(update_fields=("status", "admin_notes", "updated_at"))
+            return False, "❌ برای این برند پنل فعالی تنظیم نشده است. با پشتیبانی تماس بگیرید."
+
+        await Subscription.objects.aget_or_create(
+            order=order,
+            defaults={
+                "brand": order.brand,
+                "user": order.user,
+                "plan": order.plan,
+                "vpn_provider": provider,
+                "owner": order.recipient or order.user,
+                "status": Subscription.SubscriptionStatus.PENDING,
+                "starts_at": order.created_at,
+                "traffic_limit_gb": order.plan.traffic_limit_gb,
+            },
+        )
+        order.status = Order.OrderStatus.PAID
+        order.admin_notes = "Zero-price plan; no payment required."
+        await order.asave(update_fields=("status", "admin_notes", "updated_at"))
+        provision_paid_order.delay(order.pk)
+        return True, (
+            "✅ پلن رایگان ثبت شد و برای فعال‌سازی ارسال شد.\n"
+            "پس از آماده‌شدن، پیام تأیید دریافت می‌کنی؛ وضعیت را از «اشتراک‌های من» ببین."
+        )
 
     async def handle_gift_recipient_message(self, message: types.Message, user, state):
         """Resolve a same-brand Telegram account before creating a gift order."""
@@ -272,6 +335,17 @@ class PurchaseHandler(BaseHandler):
             currency=plan.currency,
             status=Order.OrderStatus.PENDING,
         )
+        if order.final_price <= 0:
+            _, result_text = await self._queue_free_order(order)
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+            await self.send_message_with_keyboard(
+                message.chat.id,
+                result_text,
+                self.create_keyboard(
+                    [[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}]]
+                ),
+            )
+            return
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,

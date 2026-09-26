@@ -388,8 +388,15 @@ def check_provider_health(self, provider_id: int):
         return False
 
     client = _client(provider)
+
+    async def run_health_check():
+        try:
+            return await client.health_check()
+        finally:
+            await client.close()
+
     try:
-        result = async_to_sync(client.health_check)()
+        result = async_to_sync(run_health_check)()
         checked_at = timezone.now()
         server_info = result.get("server_info")
         version = getattr(server_info, "version", None)
@@ -424,8 +431,6 @@ def check_provider_health(self, provider_id: int):
             type(exc).__name__,
         )
         raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
-    finally:
-        async_to_sync(client.close)()
 
 
 @shared_task
