@@ -1,7 +1,7 @@
 import logging
 
 from django.db import transaction
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
 
@@ -22,8 +22,6 @@ def _apply_payment_wallet_delta(instance, *, delta, transaction_type, key, descr
         if WalletTransaction.objects.filter(idempotency_key=key).exists():
             return
         balance_before = wallet.balance
-        wallet.balance += delta
-        wallet.save(update_fields=["balance", "updated_at"])
         WalletTransaction.objects.create(
             wallet=wallet,
             transaction_type=transaction_type,
@@ -41,6 +39,7 @@ def _apply_payment_wallet_delta(instance, *, delta, transaction_type, key, descr
 # ---------------------------------------------------------------------
 
 
+@receiver(pre_save, sender=WalletTransaction)
 def wallet_transaction_pre_save(sender, instance, **kwargs):
     """
     Fill balance_before / balance_after automatically if not provided.
@@ -70,6 +69,7 @@ def wallet_transaction_pre_save(sender, instance, **kwargs):
         instance.balance_after = wallet.balance - instance.amount
 
 
+@receiver(post_save, sender=WalletTransaction)
 def wallet_transaction_created(sender, instance, created, **kwargs):
     """
     Synchronize wallet balance with transaction.
@@ -91,6 +91,7 @@ def wallet_transaction_created(sender, instance, created, **kwargs):
     )
 
 
+@receiver(post_delete, sender=WalletTransaction)
 def wallet_transaction_deleted(sender, instance, **kwargs):
     """
     Rollback wallet balance if transaction is deleted.

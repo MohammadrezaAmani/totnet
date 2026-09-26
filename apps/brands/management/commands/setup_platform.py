@@ -115,7 +115,9 @@ class Command(BaseCommand):
         program, created = ReferralProgram.objects.get_or_create(
             brand=brand,
             defaults={
-                "is_active": True,
+                # Keep rewards disabled until a profitable reference service and
+                # its point-box capacities have been configured by the operator.
+                "is_active": False,
                 "name": "برنامه معرفی دوستان",
                 "description": "با معرفی دوستان خود امتیاز و جایزه کسب کنید!",
                 "referrer_reward_type": ReferralProgram.RewardType.PERCENTAGE,

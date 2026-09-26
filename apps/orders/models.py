@@ -170,7 +170,9 @@ class Payment(models.Model):
     crypto_txid = models.CharField(max_length=255, null=True, blank=True)
 
     stars_amount = models.PositiveIntegerField(null=True, blank=True)
-    telegram_payment_charge_id = models.CharField(max_length=255, null=True, blank=True)
+    telegram_payment_charge_id = models.CharField(
+        max_length=255, null=True, blank=True, unique=True
+    )
 
     verified_by = models.ForeignKey(
         "accounts.User",
@@ -459,7 +461,7 @@ class CouponUsage(models.Model):
         "accounts.User", on_delete=models.CASCADE, related_name="coupon_usages"
     )
     order = models.ForeignKey(
-        Order, on_delete=models.CASCADE, related_name="coupon_usages"
+        Order, on_delete=models.CASCADE, related_name="coupon_usages", null=True, blank=True
     )
 
     discount_amount = models.DecimalField(max_digits=15, decimal_places=2)

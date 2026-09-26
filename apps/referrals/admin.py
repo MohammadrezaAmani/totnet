@@ -44,6 +44,16 @@ class ReferralProgramAdmin(admin.ModelAdmin):
         "lifetime_reference_service",
         "lifetime_point_value",
     )
+    exclude = (
+        "referrer_reward_type",
+        "referrer_reward_value",
+        "referrer_max_reward",
+        "referee_reward_type",
+        "referee_reward_value",
+        "referee_max_reward",
+        "require_purchase",
+        "same_ip_limit",
+    )
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if db_field.name == "brand" and not request.user.is_superuser:

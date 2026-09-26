@@ -4,10 +4,12 @@ Handles referral system and marketing
 """
 
 import logging
+import secrets
 
 from aiogram import types
 
-from apps.referrals.models import Referral, ReferralLink, ReferralProgram, RewardAccount
+from apps.referrals.models import Referral, ReferralLink
+from apps.referrals.selectors import referral_level_progress
 
 from .base import BaseHandler
 
@@ -30,27 +32,41 @@ class ReferralsHandler(BaseHandler):
             logger.warning(f"Could not fetch bot username: {e}")
             return self.brand.slug
 
+    async def get_or_create_referral_link(self, user):
+        try:
+            return await ReferralLink.objects.aget(user=user, brand=self.brand)
+        except ReferralLink.DoesNotExist:
+            if not user.referral_code:
+                user.referral_code = secrets.token_hex(4).upper()
+                await user.asave(update_fields=["referral_code", "updated_at"])
+            referral_link, _ = await ReferralLink.objects.aget_or_create(
+                user=user,
+                brand=self.brand,
+                defaults={"code": user.referral_code},
+            )
+            return referral_link
+
     async def show_referral_menu(self, callback: types.CallbackQuery):
         """Show referral system menu"""
         user, _ = await self.get_or_create_user(callback.from_user)
 
-        try:
-            referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)
-        except ReferralLink.DoesNotExist:
-            referral_link = await ReferralLink.objects.acreate(
-                user=user, brand=self.brand, code=user.referral_code
-            )
+        referral_link = await self.get_or_create_referral_link(user)
 
         bot_username = await self.get_bot_username()
         referral_url = f"https://t.me/{bot_username}?start={referral_link.code}"
-        account = await RewardAccount.objects.filter(user=user, brand=self.brand).afirst()
-        lifetime_points = account.lifetime_points if account else 0
-        program = await ReferralProgram.objects.filter(brand=self.brand, is_active=True).select_related("reference_service").afirst()
-        current_level = None
-        if program:
-            async for level in program.levels.filter(min_lifetime_points__lte=lifetime_points).order_by("-min_lifetime_points")[:1]:
-                current_level = level
+        progress = await referral_level_progress(
+            user_id=user.pk, brand_id=self.brand.pk
+        )
+        account = progress["account"]
+        program = progress["program"]
+        lifetime_points = progress["lifetime_points"]
+        current_level = progress["current_level"]
         level_label = f"{current_level.badge} {current_level.name}" if current_level else "—"
+        program_notice = (
+            "امتیازها پس از خرید سودآور دوستان معرفی‌شده محاسبه می‌شوند."
+            if program and program.reference_service_id
+            else "لینک معرفی فعال است؛ امتیاز و پاداش این برند هنوز پیکربندی نشده است."
+        )
 
         text = f"""
 👥 سیستم معرفی دوستان
@@ -59,16 +75,16 @@ class ReferralsHandler(BaseHandler):
 {referral_url}
 
 📊 آمار معرفی:
-• تعداد کلیک: {referral_link.click_count}
+• ورودهای یکتا از لینک: {referral_link.click_count}
 • تعداد ثبت‌نام: {referral_link.conversion_count}
-• تعداد کل معرفی‌ها: {user.referral_count}
+• تعداد کل معرفی‌ها: {progress['referral_count']}
 
 💰 درآمد از معرفی:
 • امتیاز مادام‌العمر: {lifetime_points:g}
 • امتیاز کامل قابل استفاده: {account.liquid_points if account else 0:g}
 • سطح فعلی: {level_label}
 
-با معرفی دوستان خود امتیاز و جایزه کسب کنید!
+{program_notice}
         """
 
         keyboard = self.create_keyboard(
@@ -101,36 +117,43 @@ class ReferralsHandler(BaseHandler):
             await callback.answer("❌ لینک معرفی یافت نشد.")
             return
 
-        referrals = []
-        async for referral in Referral.objects.filter(referrer=user, brand=self.brand):
-            referrals.append(referral)
-
-        completed_referrals = [
-            r for r in referrals if r.status == Referral.ReferralStatus.REWARDED
-        ]
-        pending_referrals = [
-            r for r in referrals if r.status == Referral.ReferralStatus.PENDING
-        ]
-
-        account = await RewardAccount.objects.filter(user=user, brand=self.brand).afirst()
-        lifetime_points = account.lifetime_points if account else 0
-        program = await ReferralProgram.objects.filter(brand=self.brand, is_active=True).select_related("reference_service").afirst()
+        all_referrals = Referral.objects.filter(referrer=user, brand=self.brand)
+        total_referrals = await all_referrals.acount()
+        completed_referrals = await all_referrals.filter(
+            status=Referral.ReferralStatus.REWARDED
+        ).acount()
+        pending_referrals = await all_referrals.filter(
+            status=Referral.ReferralStatus.PENDING
+        ).acount()
+        progress = await referral_level_progress(
+            user_id=user.pk, brand_id=self.brand.pk
+        )
+        account = progress["account"]
+        lifetime_points = progress["lifetime_points"]
+        program = progress["program"]
         level_lines = []
-        if program:
+        if program and program.enable_level_rewards:
+            current_level = progress["current_level"]
             async for level in program.levels.order_by("level"):
-                done = lifetime_points >= level.min_lifetime_points
-                level_lines.append(f"• {level.badge} {level.name}: {level.min_lifetime_points:g} امتیاز {'✓' if done else ''}")
+                done = current_level and level.level <= current_level.level
+                level_lines.append(
+                    f"• {level.badge} {level.name}: {level.min_referrals} معرفی، "
+                    f"{level.min_lifetime_points:g} امتیاز و تبدیل {level.min_conversion_rate:g}% "
+                    f"{'✓' if done else ''}"
+                )
+        elif program:
+            level_lines.append("سطح‌ها برای این برند غیرفعال هستند.")
         levels_text = "\n".join(level_lines) or "سطحی برای این برند تنظیم نشده است."
         text = f"""
 📈 آمار تفصیلی معرفی
 
 📊 آمار کلیک و ثبت:
-• تعداد کلیک: {referral_link.click_count or 0}
-• تعداد ثبت‌نام: {len(referrals)}
-• نرخ تبدیل: {(len(completed_referrals) / max(referral_link.click_count or 1, 1)) * 100:.1f}%
+• ورودهای یکتا از لینک: {referral_link.click_count or 0}
+• تعداد ثبت‌نام: {total_referrals}
+• نرخ تبدیل به خرید: {(completed_referrals / max(referral_link.click_count or 1, 1)) * 100:.1f}%
 
-✅ معرفی‌های تکمیل شده: {len(completed_referrals)}
-⏳ معرفی‌های در انتظار: {len(pending_referrals)}
+✅ معرفی‌های دارای خرید: {completed_referrals}
+⏳ معرفی‌های در انتظار: {pending_referrals}
 
 💰 درآمد:
 • امتیاز مادام‌العمر: {lifetime_points:g}
@@ -162,12 +185,7 @@ class ReferralsHandler(BaseHandler):
         """Share referral link with user"""
         user, _ = await self.get_or_create_user(callback.from_user)
 
-        try:
-            referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)
-        except ReferralLink.DoesNotExist:
-            referral_link = await ReferralLink.objects.acreate(
-                user=user, brand=self.brand, code=user.referral_code
-            )
+        referral_link = await self.get_or_create_referral_link(user)
 
         bot_username = await self.get_bot_username()
         referral_url = f"https://t.me/{bot_username}?start={referral_link.code}"

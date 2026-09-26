@@ -743,8 +743,25 @@ class MultiBrandDispatcher:
                 await handlers["rewards"].show_how_to_earn(callback)
             elif data == "leaderboard":
                 await handlers["rewards"].show_leaderboard(callback)
+            elif data == "achievements":
+                await handlers["rewards"].show_achievements(callback)
+            elif data.startswith("achievements_page_"):
+                try:
+                    page = int(data.rsplit("_", 1)[1])
+                except ValueError:
+                    page = 1
+                await handlers["rewards"].show_achievements(callback, page=page)
+            elif data.startswith("claim_achievement_"):
+                try:
+                    achievement_id = int(data.rsplit("_", 1)[1])
+                except ValueError:
+                    await callback.answer("دستاورد نامعتبر است.", show_alert=True)
+                else:
+                    await handlers["rewards"].claim_achievement(
+                        callback, achievement_id
+                    )
             elif data == "upgrade_level":
-                await callback.answer("🌟 امتیاز شما افزایش یافت!")
+                await handlers["rewards"].show_rewards(callback)
 
             elif data == "statistics":
                 await handlers["stats"].show_statistics(callback)

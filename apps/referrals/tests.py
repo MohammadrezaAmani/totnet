@@ -6,10 +6,13 @@ from django.test import TestCase
 
 from apps.accounts.models import User
 from apps.brands.models import Brand
-from apps.orders.models import Order, Payment, Wallet
+from apps.orders.models import Order, Payment, Wallet, WalletTransaction
 from apps.referrals.models import (
+    Achievement,
     Referral,
+    ReferralClick,
     ReferralLink,
+    ReferralLevel,
     ReferralProgram,
     ReferralReward,
     RewardAccount,
@@ -19,9 +22,13 @@ from apps.referrals.models import (
     RewardService,
 )
 from apps.referrals.services import (
+    AchievementClaimError,
     attribute_referral,
     award_level_one_referral_for_payment,
+    claim_user_achievement,
+    refresh_user_achievements,
     set_active_reference_service,
+    track_referral_click,
 )
 from apps.subscriptions.models import SubscriptionPlan
 from apps.vpn_providers.models import VPNProvider
@@ -85,6 +92,98 @@ class ReferralAttributionTests(TestCase):
             )
         )
         self.assertFalse(Referral.objects.exists())
+
+    def test_referral_start_is_counted_once_per_visitor(self):
+        self.assertTrue(
+            track_referral_click(
+                code=self.link.code,
+                brand_id=self.brand.pk,
+                visitor_id=self.referee.pk,
+            )
+        )
+        self.assertFalse(
+            track_referral_click(
+                code=self.link.code,
+                brand_id=self.brand.pk,
+                visitor_id=self.referee.pk,
+            )
+        )
+        self.link.refresh_from_db()
+        self.assertEqual(self.link.click_count, 1)
+        self.assertEqual(ReferralClick.objects.filter(link=self.link).count(), 1)
+
+
+class AchievementTests(TestCase):
+    def setUp(self):
+        self.brand = Brand.objects.create(
+            name="Achievement Test",
+            slug=f"achievement-test-{uuid.uuid4().hex[:8]}",
+            contact_email="achievements@example.invalid",
+            bot_token=f"token-{uuid.uuid4().hex}",
+            currency="USD",
+        )
+        self.user = User.objects.create_user(
+            username=f"achievement-user-{uuid.uuid4().hex[:8]}", brand=self.brand
+        )
+        self.referee = User.objects.create_user(
+            username=f"achievement-referee-{uuid.uuid4().hex[:8]}", brand=self.brand
+        )
+        self.link = ReferralLink.objects.create(
+            user=self.user,
+            brand=self.brand,
+            code=f"achievement-{uuid.uuid4().hex[:8]}",
+        )
+        self.achievement = Achievement.objects.create(
+            brand=self.brand,
+            name="First referral",
+            description="Make a referral",
+            achievement_type=Achievement.AchievementType.REFERRAL,
+            requirements={"referrals": 1},
+            reward_amount=Decimal("2.50"),
+            is_repeatable=True,
+        )
+
+    def test_achievement_progress_claim_and_repeatable_threshold(self):
+        self.assertTrue(
+            attribute_referral(
+                user_id=self.referee.pk, brand_id=self.brand.pk, code=self.link.code
+            )
+        )
+        progress = refresh_user_achievements(
+            user_id=self.user.pk, brand_id=self.brand.pk
+        )
+        self.assertEqual(progress[0].progress, Decimal("100.00"))
+        claim_user_achievement(
+            user_id=self.user.pk,
+            brand_id=self.brand.pk,
+            achievement_id=self.achievement.pk,
+        )
+        progress = refresh_user_achievements(
+            user_id=self.user.pk, brand_id=self.brand.pk
+        )
+        self.assertEqual(progress[0].claim_count, 1)
+        self.assertEqual(progress[0].progress, Decimal("50.00"))
+        self.assertFalse(progress[0].is_completed)
+        self.assertEqual(
+            Wallet.objects.get(user=self.user, brand=self.brand).balance,
+            Decimal("2.50"),
+        )
+
+    def test_claim_rechecks_requirements_after_admin_changes_them(self):
+        attribute_referral(
+            user_id=self.referee.pk, brand_id=self.brand.pk, code=self.link.code
+        )
+        refresh_user_achievements(user_id=self.user.pk, brand_id=self.brand.pk)
+        self.achievement.requirements = {"referrals": 2}
+        self.achievement.save(update_fields=["requirements"])
+
+        with self.assertRaises(AchievementClaimError):
+            claim_user_achievement(
+                user_id=self.user.pk,
+                brand_id=self.brand.pk,
+                achievement_id=self.achievement.pk,
+            )
+        self.assertFalse(Wallet.objects.filter(user=self.user, brand=self.brand).exists())
 
 
 class ReferralProfitPointTests(TestCase):
@@ -205,6 +304,37 @@ class ReferralProfitPointTests(TestCase):
         self.assertEqual(ReferralReward.objects.filter(order=self.order).count(), 1)
         self.assertEqual(RewardPointLedger.objects.filter(order=self.order, entry_type="earned").count(), 1)
         self.assertEqual(referral.status, Referral.ReferralStatus.REWARDED)
+
+    def test_qualified_level_multiplier_and_bonus_are_applied_once(self):
+        self.program.enable_level_rewards = True
+        self.program.save(update_fields=["enable_level_rewards", "updated_at"])
+        ReferralLevel.objects.create(
+            program=self.program,
+            level=1,
+            name="Starter",
+            min_referrals=1,
+            min_lifetime_points=Decimal("0"),
+            min_conversion_rate=Decimal("0"),
+            reward_multiplier=Decimal("2"),
+            bonus_reward=Decimal("3.00"),
+        )
+
+        points = award_level_one_referral_for_payment(
+            payment_id=str(self.payment.payment_id)
+        )
+        award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
+
+        account = RewardAccount.objects.get(user=self.referrer, brand=self.brand)
+        wallet = Wallet.objects.get(user=self.referrer, brand=self.brand)
+        self.assertEqual(points, Decimal("5.00000000"))
+        self.assertEqual(account.lifetime_points, Decimal("4.00000000"))
+        self.assertEqual(wallet.balance, Decimal("3.00"))
+        self.assertEqual(
+            WalletTransaction.objects.filter(
+                wallet=wallet, idempotency_key__startswith="referral-level-bonus:"
+            ).count(),
+            1,
+        )
 
     def test_recovery_task_only_queues_unrewarded_referred_purchases(self):
         from apps.referrals.tasks import recover_pending_referral_rewards

@@ -12,21 +12,25 @@ from typing import Optional
 from aiogram import types
 from aiogram.types import LabeledPrice, PreCheckoutQuery
 from asgiref.sync import sync_to_async
-from django.db import transaction as db_transaction
 from django.db.models import Sum
 from django.utils import timezone
 
 from apps.bot.models import BotState
 from apps.orders.models import (
-    Coupon,
-    CouponUsage,
     CryptoCurrency,
-    Order,
     Payment,
     PaymentCard,
-    PaymentGateway,
     Wallet,
     WalletTransaction,
+)
+from apps.orders.services import (
+    WalletCouponError,
+    WalletOperationError,
+    credit_wallet as apply_wallet_credit,
+    debit_wallet as apply_wallet_debit,
+    redeem_wallet_coupon,
+    validate_stars_pre_checkout,
+    confirm_stars_payment,
 )
 
 from .base import BaseHandler
@@ -55,6 +59,25 @@ class WalletHandler(BaseHandler):
         "IRT": {"min": 10_000, "max": 100_000_000},
     }
 
+    def _validated_charge_amount(self, amount, currency: str) -> Decimal:
+        """Validate callback/user amounts on the server, independent of the UI."""
+        if currency not in self.LIMITS:
+            raise WalletOperationError("Wallet currency is not supported for top-ups")
+        try:
+            value = Decimal(str(amount))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise WalletOperationError("Invalid charge amount") from exc
+        limits = self.LIMITS[currency]
+        precision = Decimal("1") if currency in {"IRR", "IRT"} else Decimal("0.01")
+        if (
+            not value.is_finite()
+            or value != value.quantize(precision)
+            or value < limits["min"]
+            or value > limits["max"]
+        ):
+            raise WalletOperationError("Charge amount is outside the allowed range")
+        return value
+
     # ==================== Main Methods ====================
 
     async def get_or_create_wallet(self, user) -> Wallet:
@@ -62,13 +85,15 @@ class WalletHandler(BaseHandler):
         try:
             wallet = await Wallet.objects.aget(user=user, brand=self.brand)
         except Wallet.DoesNotExist:
-            wallet = await Wallet.objects.acreate(
+            wallet, _ = await Wallet.objects.aget_or_create(
                 user=user,
                 brand=self.brand,
-                balance=Decimal("0.00"),
-                currency=self.brand.currency,
-                is_active=True,
-                is_frozen=False,
+                defaults={
+                    "balance": Decimal("0.00"),
+                    "currency": self.brand.currency,
+                    "is_active": True,
+                    "is_frozen": False,
+                },
             )
         return wallet
 
@@ -85,7 +110,7 @@ class WalletHandler(BaseHandler):
             recent_transactions.append(trans)
 
         # Build status display
-        if wallet.is_frozen:
+        if not wallet.is_active or wallet.is_frozen:
             status_icon = "🟡"
             status_text = "مسدود شده"
         elif wallet.is_active:
@@ -130,9 +155,9 @@ class WalletHandler(BaseHandler):
             text += "┌──────────────────────────────\n"
             for i, trans in enumerate(recent_transactions, 1):
                 icon = self._get_transaction_icon(trans.transaction_type)
-                is_credit = self._is_credit_type(trans.transaction_type)
-                sign = "+" if is_credit else "-"
-                amount_str = f"{sign}{trans.amount:,.2f}"
+                delta = trans.balance_after - trans.balance_before
+                sign = "+" if delta >= 0 else "-"
+                amount_str = f"{sign}{abs(trans.amount):,.2f}"
                 date_str = trans.created_at.strftime("%m/%d %H:%M")
                 description = self._truncate_text(trans.description or "تراکنش", 18)
 
@@ -227,9 +252,9 @@ class WalletHandler(BaseHandler):
 
             for trans in transactions:
                 icon = self._get_transaction_icon(trans.transaction_type)
-                is_credit = self._is_credit_type(trans.transaction_type)
-                sign = "+" if is_credit else "-"
-                amount_str = f"{sign}{trans.amount:,.2f}"
+                delta = trans.balance_after - trans.balance_before
+                sign = "+" if delta >= 0 else "-"
+                amount_str = f"{sign}{abs(trans.amount):,.2f}"
                 date_str = trans.created_at.strftime("%Y/%m/%d - %H:%M")
                 description = trans.description or "تراکنش"
                 type_display = trans.get_transaction_type_display()
@@ -283,7 +308,7 @@ class WalletHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
 
-        if wallet.is_frozen:
+        if not wallet.is_active or wallet.is_frozen:
             await callback.answer(
                 "❌ کیف پول شما مسدود شده است.\nلطفاً با پشتیبانی تماس بگیرید.",
                 show_alert=True,
@@ -291,7 +316,12 @@ class WalletHandler(BaseHandler):
             return
 
         currency = wallet.currency
-        amounts = self.PRESET_AMOUNTS.get(currency, self.PRESET_AMOUNTS["USD"])
+        amounts = self.PRESET_AMOUNTS.get(currency)
+        if not amounts:
+            await callback.answer(
+                "شارژ کیف پول برای این ارز هنوز پیکربندی نشده است.", show_alert=True
+            )
+            return
         symbol = self._get_currency_symbol(currency)
 
         text = f"""
@@ -346,6 +376,7 @@ class WalletHandler(BaseHandler):
     async def request_custom_amount(self, callback: types.CallbackQuery):
         """Request custom charge amount from user"""
         user, _ = await self.get_or_create_user(callback.from_user)
+        wallet = await self.get_or_create_wallet(user)
 
         await self.update_user_state(
             user,
@@ -353,8 +384,13 @@ class WalletHandler(BaseHandler):
             {"action": "wallet_charge", "step": "waiting_custom_amount"},
         )
 
-        limits = self.LIMITS.get(self.brand.currency, self.LIMITS["USD"])
-        symbol = self._get_currency_symbol(self.brand.currency)
+        limits = self.LIMITS.get(wallet.currency)
+        if not limits:
+            await callback.answer(
+                "شارژ کیف پول برای این ارز هنوز پیکربندی نشده است.", show_alert=True
+            )
+            return
+        symbol = self._get_currency_symbol(wallet.currency)
 
         text = f"""
 ✏️ <b>مبلغ دلخواه</b>
@@ -363,8 +399,8 @@ class WalletHandler(BaseHandler):
 لطفاً مبلغ مورد نظر برای شارژ را وارد کنید:
 
 📊 <b>محدودیت‌ها:</b>
-├ حداقل: <code>{self._format_amount(limits["min"], self.brand.currency)}</code> {symbol}
-└ حداکثر: <code>{self._format_amount(limits["max"], self.brand.currency)}</code> {symbol}
+├ حداقل: <code>{self._format_amount(limits["min"], wallet.currency)}</code> {symbol}
+└ حداکثر: <code>{self._format_amount(limits["max"], wallet.currency)}</code> {symbol}
 
 💡 مثال: 50000 یا 100000
         """
@@ -385,27 +421,30 @@ class WalletHandler(BaseHandler):
         """Handle custom amount input"""
         try:
             amount_text = message.text.strip().replace(",", "").replace(" ", "")
-            amount = Decimal(amount_text)
+            wallet = await self.get_or_create_wallet(user)
+            amount = self._validated_charge_amount(amount_text, wallet.currency)
 
-            limits = self.LIMITS.get(self.brand.currency, self.LIMITS["USD"])
-            symbol = self._get_currency_symbol(self.brand.currency)
+            limits = self.LIMITS.get(wallet.currency)
+            if not limits:
+                raise WalletOperationError("Wallet currency is not supported for top-ups")
+            symbol = self._get_currency_symbol(wallet.currency)
 
             if amount < limits["min"]:
                 await message.reply(
-                    f"❌ حداقل مبلغ شارژ <code>{self._format_amount(limits['min'], self.brand.currency)}</code> {symbol} می‌باشد."
+                    f"❌ حداقل مبلغ شارژ <code>{self._format_amount(limits['min'], wallet.currency)}</code> {symbol} می‌باشد."
                 )
                 return
 
             if amount > limits["max"]:
                 await message.reply(
-                    f"❌ حداکثر مبلغ شارژ <code>{self._format_amount(limits['max'], self.brand.currency)}</code> {symbol} می‌باشد."
+                    f"❌ حداکثر مبلغ شارژ <code>{self._format_amount(limits['max'], wallet.currency)}</code> {symbol} می‌باشد."
                 )
                 return
 
             # Proceed to payment method selection
-            await self.show_payment_methods(message.chat.id, user, float(amount))
+            await self.show_payment_methods(message.chat.id, user, amount)
 
-        except ValueError, InvalidOperation:
+        except (ValueError, InvalidOperation, WalletOperationError):
             await message.reply(
                 "❌ لطفاً یک عدد معتبر وارد کنید.\n\n💡 مثال: 50000 یا 100000"
             )
@@ -415,7 +454,13 @@ class WalletHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
 
-        if wallet.is_frozen:
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            await callback.answer("❌ مبلغ شارژ معتبر نیست.", show_alert=True)
+            return
+
+        if not wallet.is_active or wallet.is_frozen:
             await callback.answer(
                 "❌ کیف پول شما مسدود شده است.\nلطفاً با پشتیبانی تماس بگیرید.",
                 show_alert=True,
@@ -435,14 +480,32 @@ class WalletHandler(BaseHandler):
     ):
         """Show available payment methods"""
         wallet = await self.get_or_create_wallet(user)
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            if callback:
+                await callback.answer("❌ مبلغ شارژ معتبر نیست.", show_alert=True)
+            else:
+                await self.send_message_with_keyboard(
+                    chat_id,
+                    "❌ مبلغ شارژ معتبر نیست.",
+                    self.get_back_keyboard("charge_wallet"),
+                )
+            return
+        if not wallet.is_active or wallet.is_frozen:
+            if callback:
+                await callback.answer("❌ کیف پول شما در دسترس نیست.", show_alert=True)
+            else:
+                await self.send_message_with_keyboard(
+                    chat_id,
+                    "❌ کیف پول شما در دسترس نیست.",
+                    self.get_back_keyboard("wallet"),
+                )
+            return
         symbol = self._get_currency_symbol(wallet.currency)
 
         # Check available payment methods
         has_cards = await PaymentCard.objects.filter(
-            brand=self.brand, is_active=True
-        ).aexists()
-
-        has_gateways = await PaymentGateway.objects.filter(
             brand=self.brand, is_active=True
         ).aexists()
 
@@ -454,7 +517,7 @@ class WalletHandler(BaseHandler):
         await self.update_user_state(
             user,
             BotState.StateType.PAYMENT_PROCESS,
-            {"action": "wallet_charge", "amount": amount},
+            {"action": "wallet_charge", "amount": str(amount)},
         )
 
         text = f"""
@@ -480,17 +543,6 @@ class WalletHandler(BaseHandler):
                 ]
             )
 
-        # Online gateway option
-        if has_gateways:
-            button_rows.append(
-                [
-                    {
-                        "text": "🌐 درگاه پرداخت آنلاین",
-                        "callback_data": f"wallet_pay_gateway_{amount}",
-                    }
-                ]
-            )
-
         # Crypto option
         if has_crypto:
             button_rows.append(
@@ -502,15 +554,16 @@ class WalletHandler(BaseHandler):
                 ]
             )
 
-        # Telegram Stars option
-        button_rows.append(
-            [
-                {
-                    "text": "⭐ ستاره‌های تلگرام",
-                    "callback_data": f"wallet_pay_stars_{amount}",
-                }
-            ]
-        )
+        # The current Stars conversion is denominated in USD.
+        if wallet.currency == "USD":
+            button_rows.append(
+                [
+                    {
+                        "text": "⭐ ستاره‌های تلگرام",
+                        "callback_data": f"wallet_pay_stars_{amount}",
+                    }
+                ]
+            )
 
         if not button_rows:
             text += "\n\n❌ متأسفانه در حال حاضر هیچ روش پرداختی فعالی وجود ندارد.\nلطفاً بعداً تلاش کنید یا با پشتیبانی تماس بگیرید."
@@ -535,6 +588,14 @@ class WalletHandler(BaseHandler):
         """Show card transfer payment details"""
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            await callback.answer("❌ مبلغ شارژ معتبر نیست.", show_alert=True)
+            return
+        if not wallet.is_active or wallet.is_frozen:
+            await callback.answer("❌ کیف پول شما در دسترس نیست.", show_alert=True)
+            return
         symbol = self._get_currency_symbol(wallet.currency)
 
         # Get active cards
@@ -552,7 +613,11 @@ class WalletHandler(BaseHandler):
         await self.update_user_state(
             user,
             BotState.StateType.PAYMENT_PROCESS,
-            {"action": "wallet_charge", "amount": amount, "step": "waiting_receipt"},
+            {
+                "action": "wallet_charge",
+                "amount": str(amount),
+                "step": "waiting_receipt",
+            },
         )
 
         text = f"""
@@ -571,7 +636,7 @@ class WalletHandler(BaseHandler):
 ├ 👤 صاحب حساب: <code>{card.cardholder_name}</code>
 """
 
-        text += """
+        text += f"""
 ━━━━━━━━━━━━━━━━━━━━━━
 
 ⚠️ <b>راهنمای پرداخت:</b>
@@ -580,7 +645,7 @@ class WalletHandler(BaseHandler):
 3️⃣ روی دکمه "📸 ارسال رسید" کلیک کنید
 4️⃣ عکس رسید را ارسال کنید
 
-⏰ لطفاً ظرف <b>۳۰ دقیقه</b> رسید را ارسال کنید.
+⏰ لطفاً ظرف <b>۲۴ ساعت</b> رسید را ارسال کنید.
 ❗ بدون ارسال رسید، واریز تأیید نمی‌شود.
         """
 
@@ -629,13 +694,20 @@ class WalletHandler(BaseHandler):
     async def handle_receipt_photo(self, message: types.Message, user, state: BotState):
         """Handle payment receipt photo"""
         amount = state.state_data.get("amount") if state.state_data else None
+        wallet = await self.get_or_create_wallet(user)
 
-        if not amount:
+        if amount is None:
             await message.reply("❌ خطا در پردازش. لطفاً دوباره تلاش کنید.")
             await self._send_charge_menu(message.chat.id, user)
             return
 
-        wallet = await self.get_or_create_wallet(user)
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            await message.reply("❌ مبلغ پرداخت منقضی یا نامعتبر است. دوباره شارژ را آغاز کنید.")
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+            return
+
         symbol = self._get_currency_symbol(wallet.currency)
 
         # Get the photo
@@ -778,11 +850,18 @@ class WalletHandler(BaseHandler):
         except Payment.DoesNotExist:
             await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
             return
-        if payment.status != Payment.PaymentStatus.PENDING:
+        if payment.status not in (
+            Payment.PaymentStatus.PENDING,
+            Payment.PaymentStatus.AWAITING_CONFIRMATION,
+        ) or not payment.wallet_id:
             await callback.answer("❌ این پرداخت قابل تأیید نیست.", show_alert=True)
             return
         payment.status = Payment.PaymentStatus.CONFIRMED
-        await payment.asave(update_fields=["status"])
+        payment.verified_by = user
+        payment.verified_at = timezone.now()
+        await payment.asave(
+            update_fields=["status", "verified_by", "verified_at", "updated_at"]
+        )
 
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.answer("✅ پرداخت تأیید شد.")
@@ -805,155 +884,39 @@ class WalletHandler(BaseHandler):
             await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
             return
 
-        if payment.status != Payment.PaymentStatus.PENDING:
+        if payment.status not in (
+            Payment.PaymentStatus.PENDING,
+            Payment.PaymentStatus.AWAITING_CONFIRMATION,
+        ) or not payment.wallet_id:
             await callback.answer("❌ این پرداخت قابل رد نیست.", show_alert=True)
             return
 
         payment.status = Payment.PaymentStatus.FAILED
-        await payment.asave(update_fields=["status"])
+        payment.verified_by = user
+        payment.verified_at = timezone.now()
+        await payment.asave(
+            update_fields=["status", "verified_by", "verified_at", "updated_at"]
+        )
 
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.answer("❌ پرداخت رد شد.")
     # ==================== Gateway Payment Methods ====================
 
     async def show_gateway_payment(self, callback: types.CallbackQuery, amount: float):
-        """Show online payment gateway options"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        wallet = await self.get_or_create_wallet(user)
-        symbol = self._get_currency_symbol(wallet.currency)
-
-        # Get active gateways
-        gateways = []
-        async for gw in PaymentGateway.objects.filter(
-            brand=self.brand, is_active=True
-        ).order_by("name"):
-            gateways.append(gw)
-
-        if not gateways:
-            await callback.answer("❌ درگاه پرداخت فعالی وجود ندارد.", show_alert=True)
-            return
-
-        text = f"""
-🌐 <b>پرداخت آنلاین</b>
-━━━━━━━━━━━━━━━━━━━━━━
-
-💰 مبلغ: <code>{amount:,.2f}</code> {symbol}
-
-💡 لطفاً درگاه پرداخت را انتخاب کنید:
-        """
-
-        button_rows = []
-        for gw in gateways:
-            # Calculate total with fees
-            total = amount
-            if gw.transaction_fee_percentage > 0:
-                fee = amount * (gw.transaction_fee_percentage / 100)
-                total = amount + fee
-            if gw.fixed_transaction_fee > 0:
-                total += gw.fixed_transaction_fee
-
-            fee_text = ""
-            if total != amount:
-                fee_text = f" (+{total - amount:,.2f} کارمزد)"
-
-            button_rows.append(
-                [
-                    {
-                        "text": f"🔗 {gw.name}{fee_text}",
-                        "callback_data": f"wallet_gw_{gw.id}_{int(amount * 100)}",
-                    }
-                ]
-            )
-
-        button_rows.append(
-            [{"text": "🔙 بازگشت", "callback_data": f"charge_amount_{int(amount)}"}]
+        """Report unavailable until a real gateway adapter is installed."""
+        await callback.answer(
+            "درگاه آنلاین هنوز به سرویس پرداخت متصل نیست؛ هیچ پرداختی ثبت نشد.",
+            show_alert=True,
         )
-        keyboard = self.create_keyboard(button_rows)
-
-        await self._safe_edit_message(
-            callback.message.chat.id,
-            callback.message.message_id,
-            text,
-            keyboard,
-        )
-        await callback.answer()
 
     async def process_gateway_payment(
         self, callback: types.CallbackQuery, gateway_id: int, amount_cents: int
     ):
-        """Process online gateway payment - creates payment and returns URL"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        wallet = await self.get_or_create_wallet(user)
-        amount = Decimal(str(amount_cents)) / Decimal("100")
-
-        try:
-            gateway = await PaymentGateway.objects.aget(
-                id=gateway_id, brand=self.brand, is_active=True
-            )
-        except PaymentGateway.DoesNotExist:
-            await callback.answer("❌ درگاه پرداخت یافت نشد.", show_alert=True)
-            return
-
-        # Calculate total with fees
-        total = amount
-        if gateway.transaction_fee_percentage > 0:
-            total += amount * (gateway.transaction_fee_percentage / 100)
-        if gateway.fixed_transaction_fee > 0:
-            total += gateway.fixed_transaction_fee
-
-        # Create payment record
-        payment = await Payment.objects.acreate(
-            brand=self.brand,
-            user=user,
-            payment_method=Payment.PaymentMethod.ONLINE_GATEWAY,
-            status=Payment.PaymentStatus.PENDING,
-            amount=total,
-            currency=wallet.currency,
-            gateway_name=gateway.name,
-            gateway_response={"gateway_type": gateway.gateway_type},
-            notes=f"شارژ کیف پول - {gateway.name}",
-            expires_at=timezone.now() + timedelta(minutes=30),
+        """Never create a pending payment without a configured provider."""
+        await callback.answer(
+            "درگاه آنلاین هنوز به سرویس پرداخت متصل نیست؛ هیچ پرداختی ثبت نشد.",
+            show_alert=True,
         )
-
-        # Here you would integrate with the actual payment gateway
-        # For ZarinPal, IDPay, etc., you would call their API to get payment URL
-        # This is a placeholder that shows the concept
-
-        symbol = self._get_currency_symbol(wallet.currency)
-        text = f"""
-🌐 <b>درگاه پرداخت {gateway.name}</b>
-━━━━━━━━━━━━━━━━━━━━━━
-
-💰 مبلغ: <code>{amount:,.2f}</code> {symbol}
-💳 کارمزد: <code>{total - amount:,.2f}</code> {symbol}
-💵 مبلغ نهایی: <code>{total:,.2f}</code> {symbol}
-
-📋 شناسه پرداخت: <code>{str(payment.payment_id)[:8]}...</code>
-
-⚠️ <b>توجه:</b>
-درگاه پرداخت در حال تنظیم می‌باشد.
-لطفاً از روش‌های پرداخت دیگر استفاده کنید یا با پشتیبانی تماس بگیرید.
-        """
-
-        keyboard = self.create_keyboard(
-            [
-                [
-                    {
-                        "text": "💳 کارت به کارت",
-                        "callback_data": f"wallet_pay_card_{amount}",
-                    }
-                ],
-                [{"text": "🔙 بازگشت", "callback_data": "charge_wallet"}],
-            ]
-        )
-
-        await self._safe_edit_message(
-            callback.message.chat.id,
-            callback.message.message_id,
-            text,
-            keyboard,
-        )
-        await callback.answer("⚠️ درگاه در حال تنظیم است", show_alert=True)
 
     # ==================== Crypto Payment Methods ====================
 
@@ -961,6 +924,14 @@ class WalletHandler(BaseHandler):
         """Show cryptocurrency payment options"""
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            await callback.answer("❌ مبلغ شارژ معتبر نیست.", show_alert=True)
+            return
+        if not wallet.is_active or wallet.is_frozen:
+            await callback.answer("❌ کیف پول شما در دسترس نیست.", show_alert=True)
+            return
         symbol = self._get_currency_symbol(wallet.currency)
 
         # Get active cryptocurrencies
@@ -985,10 +956,9 @@ class WalletHandler(BaseHandler):
 
         button_rows = []
         for crypto in cryptos:
-            # Calculate crypto amount
-            crypto_amount = Decimal("0")
-            if crypto.conversion_rate and crypto.conversion_rate > 0:
-                crypto_amount = Decimal(str(amount)) / crypto.conversion_rate
+            if crypto.conversion_rate <= 0:
+                continue
+            crypto_amount = amount / crypto.conversion_rate
 
             button_rows.append(
                 [
@@ -1002,6 +972,9 @@ class WalletHandler(BaseHandler):
         button_rows.append(
             [{"text": "🔙 بازگشت", "callback_data": f"charge_amount_{int(amount)}"}]
         )
+        if len(button_rows) == 1:
+            await callback.answer("برای رمزارزها نرخ تبدیل معتبر ثبت نشده است.", show_alert=True)
+            return
         keyboard = self.create_keyboard(button_rows)
 
         await self._safe_edit_message(
@@ -1019,6 +992,14 @@ class WalletHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
         amount = Decimal(str(amount_cents)) / Decimal("100")
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            await callback.answer("❌ مبلغ شارژ معتبر نیست.", show_alert=True)
+            return
+        if not wallet.is_active or wallet.is_frozen:
+            await callback.answer("❌ کیف پول شما در دسترس نیست.", show_alert=True)
+            return
         symbol = self._get_currency_symbol(wallet.currency)
 
         try:
@@ -1027,6 +1008,10 @@ class WalletHandler(BaseHandler):
             )
         except CryptoCurrency.DoesNotExist:
             await callback.answer("❌ رمزارز یافت نشد.", show_alert=True)
+            return
+
+        if crypto.conversion_rate <= 0:
+            await callback.answer("❌ نرخ تبدیل رمزارز تنظیم نشده است.", show_alert=True)
             return
 
         # Calculate crypto amount based on conversion rate
@@ -1041,6 +1026,7 @@ class WalletHandler(BaseHandler):
         payment = await Payment.objects.acreate(
             brand=self.brand,
             user=user,
+            wallet=wallet,
             payment_method=Payment.PaymentMethod.CRYPTOCURRENCY,
             status=Payment.PaymentStatus.PENDING,
             amount=amount,
@@ -1115,8 +1101,18 @@ class WalletHandler(BaseHandler):
 
     async def copy_crypto_address(self, callback: types.CallbackQuery, payment_id: str):
         """Copy crypto address to clipboard"""
+        user, _ = await self.get_or_create_user(callback.from_user)
         try:
-            payment = await Payment.objects.aget(payment_id=payment_id)
+            payment = await Payment.objects.aget(
+                payment_id=payment_id,
+                user=user,
+                brand=self.brand,
+                payment_method=Payment.PaymentMethod.CRYPTOCURRENCY,
+                status__in=(
+                    Payment.PaymentStatus.PENDING,
+                    Payment.PaymentStatus.AWAITING_CONFIRMATION,
+                ),
+            )
             if payment.crypto_address:
                 await callback.answer(payment.crypto_address, show_alert=False)
             else:
@@ -1127,6 +1123,19 @@ class WalletHandler(BaseHandler):
     async def request_txid(self, callback: types.CallbackQuery, payment_id: str):
         """Request TXID from user"""
         user, _ = await self.get_or_create_user(callback.from_user)
+
+        try:
+            await Payment.objects.aget(
+                payment_id=payment_id,
+                user=user,
+                brand=self.brand,
+                payment_method=Payment.PaymentMethod.CRYPTOCURRENCY,
+                status=Payment.PaymentStatus.PENDING,
+                expires_at__gt=timezone.now(),
+            )
+        except Payment.DoesNotExist:
+            await callback.answer("❌ پرداخت منقضی یا نامعتبر است.", show_alert=True)
+            return
 
         await self.update_user_state(
             user,
@@ -1169,30 +1178,37 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         await callback.answer()
 
     async def handle_txid_message(self, message: types.Message, user, state: BotState):
-        """Handle TXID input"""
-        txid = message.text.strip()
+        """Validate a crypto reference and route it to an admin for review."""
+        txid = (message.text or "").strip()
         payment_id = state.state_data.get("payment_id") if state.state_data else None
-
-        if not payment_id:
-            await message.reply("❌ خطا در پردازش. لطفاً دوباره تلاش کنید.")
+        if not payment_id or not txid or len(txid) > 255 or any(ch.isspace() for ch in txid):
+            await message.reply("❌ شناسهٔ تراکنش نامعتبر است. فقط TXID معتبر را ارسال کنید.")
             return
 
         try:
-            payment = await Payment.objects.aget(payment_id=payment_id, user=user)
+            payment = await Payment.objects.aget(
+                payment_id=payment_id,
+                user=user,
+                brand=self.brand,
+                payment_method=Payment.PaymentMethod.CRYPTOCURRENCY,
+                status=Payment.PaymentStatus.PENDING,
+                expires_at__gt=timezone.now(),
+            )
         except Payment.DoesNotExist:
-            await message.reply("❌ پرداخت یافت نشد.")
+            await message.reply("❌ پرداخت پیدا نشد یا منقضی شده است.")
             return
 
-        # Update payment with TXID
         payment.crypto_txid = txid
         payment.status = Payment.PaymentStatus.AWAITING_CONFIRMATION
-        await payment.asave()
-
-        # Reset state
+        await payment.asave(update_fields=["crypto_txid", "status", "updated_at"])
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-
+        notified = await self._notify_admin_crypto_payment(payment)
         symbol = self._get_currency_symbol(payment.currency)
-
+        status_text = (
+            "در انتظار بررسی ادمین"
+            if notified
+            else "اعلان به ادمین نرسید؛ لطفاً با پشتیبانی تماس بگیرید"
+        )
         text = f"""
 ✅ <b>TXID دریافت شد</b>
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -1201,41 +1217,67 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 💰 مبلغ: <code>{payment.amount:,.2f}</code> {symbol}
 ₿ رمزارز: {payment.crypto_currency}
 
-⏳ <b>وضعیت:</b> در انتظار تأیید تراکنش
-
-💡 <b>توضیحات:</b>
-• تراکنش شما ثبت شد
-• پس از تأیید در بلاکچین، موجودی کیف پول شارژ می‌شود
-• معمولاً تأیید ظرف <b>۱۰ تا ۶۰ دقیقه</b> انجام می‌شود
-• با ارسال TXID، فرآیند بررسی سریع‌تر انجام می‌شود
+⏳ <b>وضعیت:</b> {status_text}
         """
-
         keyboard = self.create_keyboard(
             [
                 [{"text": "💰 مشاهده کیف پول", "callback_data": "wallet"}],
                 [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
             ]
         )
-
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
+    async def _notify_admin_crypto_payment(self, payment: Payment) -> bool:
+        keyboard = self.create_keyboard(
+            [[
+                {"text": "✅ تأیید", "callback_data": f"admin_confirm_wallet_{payment.pk}"},
+                {"text": "❌ رد", "callback_data": f"admin_reject_wallet_{payment.pk}"},
+            ]]
+        )
+        text = (
+            "₿ رسید رمزارز برای بررسی\n"
+            f"مبلغ: {self.format_price(payment.amount, payment.currency)}\n"
+            f"ارز: {payment.crypto_currency}\n"
+            f"TXID: <code>{payment.crypto_txid}</code>\n"
+            f"شناسه پرداخت: {payment.pk}"
+        )
+        notified = 0
+        async for admin in self.get_brand_admin_recipients():
+            try:
+                await self.bot.send_message(
+                    chat_id=admin.telegram_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                notified += 1
+            except Exception:
+                logger.exception(
+                    "Failed to notify admin %s about crypto payment %s",
+                    admin.pk,
+                    payment.pk,
+                )
+        return notified > 0
 
     # ==================== Telegram Stars Payment Methods ====================
 
     async def show_stars_payment(self, callback: types.CallbackQuery, amount: float):
-        """Show Telegram Stars payment option"""
+        """Show a quoted Stars invoice for USD wallets only."""
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
-        symbol = self._get_currency_symbol(wallet.currency)
-
-        # Calculate stars amount (1 star ≈ $0.01)
-        # This rate should be configurable per brand
-        stars_rate = Decimal("0.01")  # 1 star = $0.01
-        stars_amount = int(Decimal(str(amount)) / stars_rate)
-
-        if stars_amount < 1:
-            await callback.answer("❌ مبلغ خیلی کم است.", show_alert=True)
+        if wallet.currency != "USD":
+            await callback.answer("پرداخت با ستاره فقط برای کیف پول دلاری فعال است.", show_alert=True)
             return
-
+        if not wallet.is_active or wallet.is_frozen:
+            await callback.answer("❌ کیف پول شما در دسترس نیست.", show_alert=True)
+            return
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            await callback.answer("❌ مبلغ شارژ معتبر نیست.", show_alert=True)
+            return
+        stars_amount = int(amount * 100)
+        symbol = self._get_currency_symbol(wallet.currency)
         text = f"""
 ⭐ <b>پرداخت با ستاره‌های تلگرام</b>
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -1243,136 +1285,124 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 💰 مبلغ شارژ: <code>{amount:,.2f}</code> {symbol}
 ⭐ معادل: <code>{stars_amount:,}</code> ستاره
 
-📊 <b>نرخ تبدیل:</b> ۱ ستاره = ۰.۰۱ دلار
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-✅ <b>مزایای پرداخت با ستاره:</b>
-• ✨ پرداخت فوری و خودکار
-• 🚫 نیاز به تأیید ادمین نیست
-• 💰 کیف پول بلافاصله شارژ می‌شود
-
-⚠️ <b>توجه:</b>
-• موجودی ستاره باید در حساب تلگرام شما کافی باشد
-• ستاره‌ها قابل بازگشت نیستند
+نرخ شارژ این برند: ۱ ستاره = ۰٫۰۱ دلار.
+بعد از پرداخت، اعتبار دقیق همین فاکتور به کیف پول واریز می‌شود.
         """
-
-        button_rows = [
+        keyboard = self.create_keyboard(
             [
-                {
-                    "text": f"⭐ پرداخت {stars_amount:,} ستاره",
-                    "callback_data": f"wallet_stars_pay_{stars_amount}_{int(amount * 100)}",
-                }
-            ],
-            [{"text": "🔙 بازگشت", "callback_data": f"charge_amount_{int(amount)}"}],
-        ]
-        keyboard = self.create_keyboard(button_rows)
-
+                [{"text": f"⭐ پرداخت {stars_amount:,} ستاره", "callback_data": f"wallet_stars_pay_{stars_amount}_{int(amount * 100)}"}],
+                [{"text": "🔙 بازگشت", "callback_data": f"charge_amount_{int(amount)}"}],
+            ]
+        )
         await self._safe_edit_message(
-            callback.message.chat.id,
-            callback.message.message_id,
-            text,
-            keyboard,
+            callback.message.chat.id, callback.message.message_id, text, keyboard
         )
         await callback.answer()
 
     async def process_stars_payment(
         self, callback: types.CallbackQuery, stars_amount: int, amount_cents: int
     ):
-        """Process Telegram Stars payment - send invoice"""
+        """Create a stored, expiring Stars quote before sending its invoice."""
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
         amount = Decimal(str(amount_cents)) / Decimal("100")
-        symbol = self._get_currency_symbol(wallet.currency)
+        if wallet.currency != "USD" or not wallet.is_active or wallet.is_frozen:
+            await callback.answer("❌ پرداخت با ستاره برای این کیف پول در دسترس نیست.", show_alert=True)
+            return
+        try:
+            amount = self._validated_charge_amount(amount, wallet.currency)
+        except WalletOperationError:
+            await callback.answer("❌ مبلغ شارژ معتبر نیست.", show_alert=True)
+            return
+        expected_stars = int(amount * 100)
+        if stars_amount != expected_stars:
+            await callback.answer("❌ مبلغ فاکتور تغییر کرده؛ دوباره تلاش کنید.", show_alert=True)
+            return
 
-        # Send invoice via Telegram
+        payment = await Payment.objects.acreate(
+            brand=self.brand,
+            user=user,
+            wallet=wallet,
+            payment_method=Payment.PaymentMethod.TELEGRAM_STARS,
+            status=Payment.PaymentStatus.PENDING,
+            amount=amount,
+            currency=wallet.currency,
+            stars_amount=stars_amount,
+            notes="Wallet top-up via Telegram Stars",
+            expires_at=timezone.now() + timedelta(minutes=30),
+        )
+        symbol = self._get_currency_symbol(wallet.currency)
         await self.bot.send_invoice(
             chat_id=callback.message.chat.id,
             title=f"شارژ کیف پول - {self.brand.name}",
             description=f"شارژ {amount:,.2f} {symbol} به کیف پول شما",
-            payload=f"wallet_charge_{user.id}_{stars_amount}",
-            currency="XTR",  # Telegram Stars currency code
-            prices=[
-                LabeledPrice(label=f"شارژ {amount:,.2f} {symbol}", amount=stars_amount)
-            ],
-            provider_token="",  # Empty for Telegram Stars
+            payload=f"wallet_charge_{payment.payment_id.hex}",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"شارژ {amount:,.2f} {symbol}", amount=stars_amount)],
+            provider_token="",
         )
-
         await callback.answer()
 
     async def handle_pre_checkout_query(self, pre_checkout_query: PreCheckoutQuery):
-        """Handle pre-checkout query for Telegram Stars"""
+        """Reject invoices unless the database has the exact live quote."""
         try:
-            payload = pre_checkout_query.invoice_payload
-            if payload and payload.startswith("wallet_charge_"):
-                # Validate the payload format
-                parts = payload.split("_")
-                if len(parts) >= 3:
-                    await pre_checkout_query.answer(ok=True)
-                    return
-
-            await pre_checkout_query.answer(
-                ok=False, error_message="خطا در پردازش پرداخت. لطفاً دوباره تلاش کنید."
+            prefix = "wallet_charge_"
+            payment_id = pre_checkout_query.invoice_payload.removeprefix(prefix)
+            if not pre_checkout_query.invoice_payload.startswith(prefix):
+                raise WalletOperationError("Invalid invoice payload")
+            valid = await sync_to_async(
+                validate_stars_pre_checkout, thread_sensitive=True
+            )(
+                payment_id=payment_id,
+                telegram_user_id=pre_checkout_query.from_user.id,
+                paid_stars=pre_checkout_query.total_amount,
+                currency=pre_checkout_query.currency,
             )
-        except Exception as e:
-            logger.error(f"Error in pre-checkout query: {e}")
+            if not valid:
+                raise WalletOperationError("Stars invoice did not match the payment")
+            await pre_checkout_query.answer(ok=True)
+        except Exception as exc:
+            logger.warning("Rejected Telegram Stars pre-checkout (%s)", type(exc).__name__)
             await pre_checkout_query.answer(
-                ok=False, error_message="خطای سیستمی. لطفاً بعداً تلاش کنید."
+                ok=False,
+                error_message="فاکتور نامعتبر یا منقضی است. دوباره از کیف پول پرداخت را آغاز کنید.",
             )
 
     async def handle_successful_payment(self, message: types.Message, user):
-        """Handle successful Telegram Stars payment"""
-        if not message.successful_payment:
+        """Confirm the matching invoice; the payment signal credits the wallet once."""
+        successful_payment = message.successful_payment
+        if not successful_payment:
+            return
+        prefix = "wallet_charge_"
+        payload = successful_payment.invoice_payload or ""
+        if not payload.startswith(prefix):
+            await message.reply("❌ فاکتور پرداخت شناسایی نشد؛ با پشتیبانی تماس بگیرید.")
+            return
+        payment_id = payload.removeprefix(prefix)
+        try:
+            payment = await sync_to_async(
+                confirm_stars_payment, thread_sensitive=True
+            )(
+                payment_id=payment_id,
+                user_id=user.pk,
+                charge_id=successful_payment.telegram_payment_charge_id,
+                paid_stars=successful_payment.total_amount,
+            )
+        except WalletOperationError as exc:
+            logger.error("Stars payment confirmation failed (%s)", type(exc).__name__)
+            await message.reply("❌ پرداخت با فاکتور شما تطبیق نداشت؛ با پشتیبانی تماس بگیرید.")
             return
 
-        stars_amount = message.successful_payment.total_amount
-        charge_id = message.successful_payment.telegram_payment_charge_id
-
-        # Convert stars to currency (1 star = $0.01)
-        stars_rate = Decimal("0.01")
-        amount = Decimal(str(stars_amount)) * stars_rate
-
         wallet = await self.get_or_create_wallet(user)
-        symbol = self._get_currency_symbol(wallet.currency)
-
-        # Create payment record
-        await Payment.objects.acreate(
-            brand=self.brand,
-            user=user,
-            payment_method=Payment.PaymentMethod.TELEGRAM_STARS,
-            status=Payment.PaymentStatus.CONFIRMED,
-            amount=amount,
-            currency=wallet.currency,
-            stars_amount=stars_amount,
-            telegram_payment_charge_id=charge_id,
-            notes="شارژ کیف پول - ستاره تلگرام",
-        )
-
-        # Credit wallet
-        await self._credit_wallet(
-            wallet,
-            amount,
-            WalletTransaction.TransactionType.DEPOSIT,
-            f"شارژ کیف پول - {stars_amount:,} ستاره تلگرام",
-            metadata={"payment_method": "telegram_stars", "stars": stars_amount},
-        )
-
-        # Refresh wallet to get updated balance
         await wallet.arefresh_from_db()
-
+        symbol = self._get_currency_symbol(wallet.currency)
         text = f"""
 ✅ <b>پرداخت موفق!</b>
-━━━━━━━━━━━━━━━━━━━━━━
 
-⭐ ستاره‌های پرداخت شده: <code>{stars_amount:,}</code>
-💰 مبلغ شارژ: <code>{amount:,.2f}</code> {symbol}
-
-💵 <b>موجودی جدید کیف پول:</b>
-<code>{wallet.balance:,.2f}</code> {symbol}
-
-🎉 ممنون از پرداخت شما! کیف پول با موفقیت شارژ شد.
+⭐ ستاره‌های پرداخت شده: <code>{successful_payment.total_amount:,}</code>
+💰 مبلغ شارژ: <code>{payment.amount:,.2f}</code> {symbol}
+💵 موجودی جدید کیف پول: <code>{wallet.balance:,.2f}</code> {symbol}
         """
-
         keyboard = self.create_keyboard(
             [
                 [{"text": "💰 مشاهده کیف پول", "callback_data": "wallet"}],
@@ -1380,7 +1410,6 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
                 [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
             ]
         )
-
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
     # ==================== Coupon Methods ====================
@@ -1396,17 +1425,16 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         )
 
         text = """
-🎁 <b>استفاده از کد تخفیف</b>
+🎁 <b>اعتبار کد هدیه</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-لطفاً کد تخفیف خود را وارد کنید:
+کد هدیهٔ دارای مبلغ ثابت را وارد کنید تا اعتبار آن به کیف پول افزوده شود.
 
 💡 <b>نکات:</b>
-• کدهای تخفیف معمولاً ترکیبی از حروف و اعداد هستند
-• کدها به حروف بزرگ و کوچک حساس نیستند
-• هر کد معمولاً فقط یک بار قابل استفاده است
+• کدهای درصدی و کدهای مخصوص پلن باید هنگام خرید اشتراک استفاده شوند
+• تعداد استفاده و سقف هر کد در زمان ثبت کنترل می‌شود
 
-📌 <b>مثال:</b> <code>WELCOME50</code> یا <code>VPN2024</code>
+📌 <b>مثال:</b> <code>WALLET10</code>
         """
 
         keyboard = self.get_back_keyboard("wallet")
@@ -1422,99 +1450,36 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
     async def handle_coupon_message(
         self, message: types.Message, user, state: BotState
     ):
-        """Handle coupon code input and validate"""
+        """Apply a fixed-value wallet coupon atomically."""
         code = message.text.strip().upper()
-
         try:
-            coupon = await Coupon.objects.aget(
+            coupon, _usage, _transaction = await sync_to_async(
+                redeem_wallet_coupon, thread_sensitive=True
+            )(
+                user_id=user.pk,
+                brand_id=self.brand.pk,
                 code=code,
-                brand=self.brand,
-                is_active=True,
             )
-        except Coupon.DoesNotExist:
-            await message.reply(
-                "❌ <b>کد تخفیف نامعتبر است!</b>\n\n"
-                "• کد را به درستی وارد کنید\n"
-                "• ممکن است کد منقضی شده باشد\n"
-                "• برای دریافت کد تخفیف با پشتیبانی تماس بگیرید"
-            )
+        except WalletCouponError as exc:
+            messages = {
+                "Coupon was not found or is inactive": "❌ کد تخفیف پیدا نشد یا غیرفعال است.",
+                "Coupon is outside its valid period": "❌ این کد در بازهٔ اعتبارش نیست.",
+                "Coupon usage limit has been reached": "❌ ظرفیت استفاده از این کد تکمیل شده است.",
+                "Coupon has already reached this user's limit": "❌ سقف استفادهٔ شما از این کد تکمیل شده است.",
+                "Coupon is only available to new users": "❌ این کد فقط برای کاربران جدید است.",
+                "This coupon must be applied to a subscription order": "❌ این کد باید هنگام خرید اشتراک استفاده شود.",
+                "Coupon has no wallet value": "❌ این کد اعتبار کیف پول ندارد.",
+                "Wallet was not found": "❌ کیف پول پیدا نشد.",
+                "Wallet currency does not match the brand": "❌ ارز کیف پول با برند هماهنگ نیست؛ با پشتیبانی تماس بگیرید.",
+                "Wallet is unavailable": "❌ کیف پول شما غیرفعال یا مسدود است.",
+            }
+            await message.reply(messages.get(str(exc), "❌ کد تخفیف قابل استفاده نیست."))
             return
 
-        now = timezone.now()
-
-        # Check validity period
-        if now < coupon.valid_from:
-            await message.reply(
-                f"❌ این کد تخفیف از تاریخ <code>{coupon.valid_from.strftime('%Y/%m/%d')}</code> فعال می‌شود."
-            )
-            return
-
-        if now > coupon.valid_until:
-            await message.reply(
-                f"❌ این کد تخفیف در تاریخ <code>{coupon.valid_until.strftime('%Y/%m/%d')}</code> منقضی شده است."
-            )
-            return
-
-        # Check total usage limit
-        if coupon.max_uses and coupon.current_uses >= coupon.max_uses:
-            await message.reply("❌ ظرفیت استفاده از این کد تخفیف تکمیل شده است.")
-            return
-
-        # Check per-user limit
-        user_uses = await CouponUsage.objects.filter(coupon=coupon, user=user).acount()
-        if user_uses >= coupon.max_uses_per_user:
-            await message.reply("❌ شما قبلاً از این کد تخفیف استفاده کرده‌اید.")
-            return
-
-        # Check if new users only
-        if coupon.new_users_only:
-            has_orders = await Order.objects.filter(
-                user=user, brand=self.brand
-            ).aexists()
-            if has_orders:
-                await message.reply(
-                    "❌ این کد تخفیف فقط برای کاربران جدید قابل استفاده است."
-                )
-                return
-
-        # Calculate discount/bonus amount
-        if coupon.coupon_type == Coupon.CouponType.PERCENTAGE:
-            # For wallet, percentage coupons give a fixed bonus
-            bonus = Decimal(str(coupon.discount_value))
-        else:
-            bonus = Decimal(str(coupon.discount_value))
-
-        # Apply max discount limit
-        if coupon.max_discount_amount:
-            bonus = min(bonus, coupon.max_discount_amount)
-
-        # Reset state
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-
-        # Apply bonus to wallet
         wallet = await self.get_or_create_wallet(user)
-        symbol = self._get_currency_symbol(wallet.currency)
-
-        await self._credit_wallet(
-            wallet,
-            bonus,
-            WalletTransaction.TransactionType.BONUS,
-            f"جوایز کد تخفیف {code}",
-            metadata={"coupon_code": code, "coupon_id": coupon.id},
-        )
-
-        # Update coupon usage
-        await CouponUsage.objects.acreate(
-            coupon=coupon,
-            user=user,
-            order=None,
-            discount_amount=bonus,
-        )
-        coupon.current_uses += 1
-        await coupon.asave()
-
-        # Refresh wallet balance
         await wallet.arefresh_from_db()
+        symbol = self._get_currency_symbol(wallet.currency)
 
         text = f"""
 🎉 <b>کد تخفیف با موفقیت فعال شد!</b>
@@ -1522,7 +1487,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 
 🎁 کد تخفیف: <code>{code}</code>
 📝 نام: {coupon.name}
-💰 مبلغ جایزه: <code>{bonus:,.2f}</code> {symbol}
+💰 مبلغ جایزه: <code>{_transaction.amount:,.2f}</code> {symbol}
 
 💵 <b>موجودی جدید کیف پول:</b>
 <code>{wallet.balance:,.2f}</code> {symbol}
@@ -1551,6 +1516,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         description: str,
         reference_id: str = None,
         metadata: dict = None,
+        idempotency_key: str = None,
     ) -> Optional[WalletTransaction]:
         """Public method to credit wallet - used by other handlers"""
         wallet = await self.get_or_create_wallet(user)
@@ -1560,7 +1526,13 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
             return None
 
         return await self._credit_wallet(
-            wallet, amount, transaction_type, description, reference_id, metadata
+            wallet,
+            amount,
+            transaction_type,
+            description,
+            reference_id,
+            metadata,
+            idempotency_key,
         )
 
     async def debit_wallet(
@@ -1571,6 +1543,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         description: str,
         reference_id: str = None,
         metadata: dict = None,
+        idempotency_key: str = None,
     ) -> Optional[WalletTransaction]:
         """Public method to debit wallet - used by purchase handler"""
         wallet = await self.get_or_create_wallet(user)
@@ -1580,7 +1553,13 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
             return None
 
         return await self._debit_wallet(
-            wallet, amount, transaction_type, description, reference_id, metadata
+            wallet,
+            amount,
+            transaction_type,
+            description,
+            reference_id,
+            metadata,
+            idempotency_key,
         )
 
     async def check_wallet_balance(self, user) -> Decimal:
@@ -1591,7 +1570,17 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
     async def can_afford(self, user, amount: Decimal) -> bool:
         """Check if user can afford the amount"""
         wallet = await self.get_or_create_wallet(user)
-        return wallet.balance >= amount and not wallet.is_frozen
+        try:
+            amount = Decimal(str(amount))
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+        return (
+            amount.is_finite()
+            and amount > 0
+            and wallet.balance >= amount
+            and wallet.is_active
+            and not wallet.is_frozen
+        )
 
     # ==================== Internal Helper Methods ====================
 
@@ -1603,37 +1592,22 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         description: str,
         reference_id: str = None,
         metadata: dict = None,
+        idempotency_key: str = None,
     ) -> WalletTransaction:
         """Credit amount to wallet and create transaction record"""
-        async with db_transaction.atomic():
-            # Lock the wallet row
-            wallet = await Wallet.objects.select_for_update().aget(pk=wallet.pk)
-
-            balance_before = wallet.balance
-            balance_after = balance_before + amount
-
-            # Create transaction record
-            transaction = await WalletTransaction.objects.acreate(
-                wallet=wallet,
-                transaction_type=transaction_type,
+        try:
+            return await sync_to_async(apply_wallet_credit, thread_sensitive=True)(
+                wallet_id=wallet.pk,
                 amount=amount,
-                balance_before=balance_before,
-                balance_after=balance_after,
-                reference_id=reference_id,
+                transaction_type=transaction_type,
                 description=description,
-                metadata=metadata or {},
+                reference_id=reference_id,
+                metadata=metadata,
+                idempotency_key=idempotency_key,
             )
-
-            # Update wallet balance
-            wallet.balance = balance_after
-            await wallet.asave()
-
-            logger.info(
-                f"Wallet credited: user={wallet.user_id}, amount={amount}, "
-                f"balance_before={balance_before}, balance_after={balance_after}"
-            )
-
-            return transaction
+        except WalletOperationError as exc:
+            logger.warning("Wallet credit rejected for wallet %s: %s", wallet.pk, exc)
+            raise
 
     async def _debit_wallet(
         self,
@@ -1643,48 +1617,22 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         description: str,
         reference_id: str = None,
         metadata: dict = None,
+        idempotency_key: str = None,
     ) -> Optional[WalletTransaction]:
         """Debit amount from wallet and create transaction record"""
-        async with db_transaction.atomic():
-            # Lock the wallet row
-            wallet = await Wallet.objects.select_for_update().aget(pk=wallet.pk)
-
-            if wallet.balance < amount:
-                logger.warning(
-                    f"Insufficient balance: user={wallet.user_id}, "
-                    f"balance={wallet.balance}, amount={amount}"
-                )
-                return None
-
-            if wallet.is_frozen:
-                logger.warning(f"Wallet is frozen: user={wallet.user_id}")
-                return None
-
-            balance_before = wallet.balance
-            balance_after = balance_before - amount
-
-            # Create transaction record
-            transaction = await WalletTransaction.objects.acreate(
-                wallet=wallet,
-                transaction_type=transaction_type,
+        try:
+            return await sync_to_async(apply_wallet_debit, thread_sensitive=True)(
+                wallet_id=wallet.pk,
                 amount=amount,
-                balance_before=balance_before,
-                balance_after=balance_after,
-                reference_id=reference_id,
+                transaction_type=transaction_type,
                 description=description,
-                metadata=metadata or {},
+                reference_id=reference_id,
+                metadata=metadata,
+                idempotency_key=idempotency_key,
             )
-
-            # Update wallet balance
-            wallet.balance = balance_after
-            await wallet.asave()
-
-            logger.info(
-                f"Wallet debited: user={wallet.user_id}, amount={amount}, "
-                f"balance_before={balance_before}, balance_after={balance_after}"
-            )
-
-            return transaction
+        except WalletOperationError as exc:
+            logger.warning("Wallet debit rejected for wallet %s: %s", wallet.pk, exc)
+            return None
 
     @sync_to_async
     def _calculate_total_by_type(
@@ -1769,7 +1717,14 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         """Send charge menu directly (for message handlers)"""
         wallet = await self.get_or_create_wallet(user)
         currency = wallet.currency
-        amounts = self.PRESET_AMOUNTS.get(currency, self.PRESET_AMOUNTS["USD"])
+        amounts = self.PRESET_AMOUNTS.get(currency)
+        if not amounts:
+            await self.send_message_with_keyboard(
+                chat_id,
+                "شارژ کیف پول برای این ارز هنوز پیکربندی نشده است.",
+                self.get_back_keyboard("wallet"),
+            )
+            return
         symbol = self._get_currency_symbol(currency)
 
         text = f"""

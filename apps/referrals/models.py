@@ -181,6 +181,29 @@ class ReferralLink(models.Model):
         return f"{self.user.username} - {self.code}"
 
 
+class ReferralClick(models.Model):
+    """Deduplicate referral-link starts by user to keep click stats meaningful."""
+
+    link = models.ForeignKey(
+        ReferralLink, on_delete=models.CASCADE, related_name="visits"
+    )
+    visitor = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="referral_visits"
+    )
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="referral_visits"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "referral_clicks"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["link", "visitor"], name="uniq_referral_visit_per_user"
+            )
+        ]
+
+
 class Referral(models.Model):
     """Individual referral records"""
 
@@ -354,7 +377,14 @@ class Achievement(models.Model):
     icon = models.ImageField(upload_to="achievements/", null=True, blank=True)
     color = models.CharField(max_length=7, default="#ffd700")
 
-    requirements = models.JSONField(default=dict, blank=True)
+    requirements = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Thresholds: referrals, conversions, purchases, lifetime_points, "
+            "total_spent, wallet_deposits. Example: {\"referrals\": 5}."
+        ),
+    )
 
     reward_points = models.PositiveIntegerField(default=0)
     reward_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
@@ -388,6 +418,7 @@ class UserAchievement(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     reward_claimed = models.BooleanField(default=False)
     reward_claimed_at = models.DateTimeField(null=True, blank=True)
+    claim_count = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -575,6 +606,7 @@ class RewardPointLedger(models.Model):
         SERVICE_REBASE = "service_rebase", "Service Rebase"
         CONVERTED_TO_WALLET = "converted_to_wallet", "Converted to Wallet"
         REDEEMED = "redeemed", "Redeemed"
+        ACHIEVEMENT_BONUS = "achievement_bonus", "Achievement Bonus"
 
     account = models.ForeignKey(
         RewardAccount, on_delete=models.CASCADE, related_name="ledger_entries"
