@@ -13,6 +13,7 @@ x-app-env: &app-env
   CONNECTIX_USERNAME: ${CONNECTIX_USERNAME:-}
   CONNECTIX_PASSWORD: ${CONNECTIX_PASSWORD:-}
   CONNECTIX_TIMEOUT_SECONDS: ${CONNECTIX_TIMEOUT_SECONDS:-20}
+  BOT_RELOAD_INTERVAL_SECONDS: ${BOT_RELOAD_INTERVAL_SECONDS:-5}
   STATIC_ROOT: /data/static
   MEDIA_ROOT: /data/media
   LOG_DIR: /data/logs
@@ -30,6 +31,8 @@ x-app-service: &app-service
   environment: *app-env
   init: true
   restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   depends_on:
     db:
       condition: service_healthy
@@ -111,7 +114,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=3)"
+        - "import http.client; c=http.client.HTTPConnection('127.0.0.1',8000,timeout=3); c.request('GET','/admin/login/'); r=c.getresponse(); assert r.status in (200,301,302,303,307,308), r.status"
       interval: 15s
       timeout: 5s
       retries: 5

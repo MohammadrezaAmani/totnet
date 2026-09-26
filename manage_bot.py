@@ -17,7 +17,6 @@ django.setup()
 import logging  # noqa
 
 from apps.bot.dispatcher import start_bots  # noqa
-from apps.brands.models import Brand  # noqa
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,23 +35,7 @@ async def main():
     try:
         logger.info("Starting Multi-Tenant VPN Bot Platform...")
 
-        while True:
-            brand_count = await Brand.objects.filter(
-                status=Brand.BrandStatus.ACTIVE, bot_token__isnull=False
-            ).acount()
-
-            if brand_count > 0:
-                logger.info(f"Found {brand_count} active brands, initializing bots...")
-
-                await start_bots()
-
-                logger.info("Bots stopped. Exiting...")
-                break
-            else:
-                logger.info(
-                    "No active brands found. Waiting for brands to be configured..."
-                )
-                await asyncio.sleep(5)
+        await start_bots()
 
     except KeyboardInterrupt:
         logger.info("Bot stopped by user before starting.")

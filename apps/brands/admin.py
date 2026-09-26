@@ -2,7 +2,7 @@
 Admin configuration for brands app
 """
 
-from django.contrib import admin
+from django.contrib import admin, messages
 
 from .models import (
     Brand,
@@ -61,6 +61,26 @@ class BrandAdmin(admin.ModelAdmin):
             {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
         ),
     )
+
+    def save_model(self, request, obj, form, change):
+        previous = self.get_object(request, str(obj.pk)) if change else None
+        token_added_or_changed = bool(obj.bot_token) and (
+            previous is None or previous.bot_token != obj.bot_token
+        )
+        auto_activated = (
+            token_added_or_changed and obj.status == Brand.BrandStatus.PENDING
+        )
+        if auto_activated:
+            obj.status = Brand.BrandStatus.ACTIVE
+
+        super().save_model(request, obj, form, change)
+
+        if auto_activated:
+            self.message_user(
+                request,
+                "Bot activated. The bot service will detect it and start polling shortly.",
+                level=messages.SUCCESS,
+            )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

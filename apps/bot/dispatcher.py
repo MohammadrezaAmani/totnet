@@ -37,10 +37,6 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent,
 )
-session = None
-if proxy := settings.SOCKS5_PROXY:
-    session = AiohttpSession(proxy=proxy)
-
 logger = logging.getLogger(__name__)
 
 
@@ -51,21 +47,35 @@ class MultiBrandDispatcher:
         self.brand_bots: Dict[str, Bot] = {}
         self.brand_dispatchers: Dict[str, Dispatcher] = {}
         self.brand_handlers: Dict[str, Dict[str, BaseHandler]] = {}
+        self.brand_signatures: Dict[str, tuple] = {}
+        self.polling_tasks: Dict[str, asyncio.Task] = {}
+        self.subscriber_tasks: Dict[str, asyncio.Task] = {}
+        self.subscribers: Dict[str, BroadcastSubscriber] = {}
 
     async def initialize_brands(self):
-        """Initialize bots for all active brands"""
+        """Initialize currently active brands without starting pollers."""
         async for brand in Brand.objects.filter(
             status=Brand.BrandStatus.ACTIVE, bot_token__isnull=False
-        ):
-            await self.add_brand(brand)
+        ).exclude(bot_token=""):
+            await self.add_brand(brand, start_polling=False)
 
-    async def add_brand(self, brand: Brand):
+    async def add_brand(self, brand: Brand, *, start_polling: bool = True) -> bool:
         """Add a new brand bot"""
+        bot_session = (
+            AiohttpSession(proxy=settings.SOCKS5_PROXY)
+            if settings.SOCKS5_PROXY
+            else None
+        )
+        bot = Bot(token=brand.bot_token, session=bot_session)
+        subscriber = None
         try:
-            bot = Bot(token=brand.bot_token, session=session)
+            bot_identity = await bot.get_me()
+            if brand.bot_username != bot_identity.username:
+                await Brand.objects.filter(pk=brand.pk).aupdate(
+                    bot_username=bot_identity.username
+                )
             dp = Dispatcher()
             subscriber = BroadcastSubscriber(bot, brand.id)
-            asyncio.create_task(subscriber.start_listening())
             handlers = {
                 "start": StartHandler(bot, brand),
                 "purchase": PurchaseHandler(bot, brand),
@@ -87,14 +97,102 @@ class MultiBrandDispatcher:
             await self.setup_brand_routes(dp, brand, handlers)
 
             self.brand_bots[brand.slug] = bot
-
             self.brand_dispatchers[brand.slug] = dp
             self.brand_handlers[brand.slug] = handlers
+            self.brand_signatures[brand.slug] = (brand.bot_token, brand.updated_at)
+            self.subscribers[brand.slug] = subscriber
+            self.subscriber_tasks[brand.slug] = asyncio.create_task(
+                subscriber.start_listening(),
+                name=f"broadcast-subscriber:{brand.slug}",
+            )
+            if start_polling:
+                self.polling_tasks[brand.slug] = asyncio.create_task(
+                    self._poll_brand(brand.slug, dp, bot),
+                    name=f"telegram-poller:{brand.slug}",
+                )
 
-            logger.info(f"Brand bot initialized: {brand.name} ({brand.slug})")
+            logger.info(
+                "Brand bot initialized: %s (@%s, %s)",
+                brand.name,
+                bot_identity.username or "unknown",
+                brand.slug,
+            )
+            return True
 
         except Exception as e:
-            logger.error(f"Failed to initialize brand {brand.name}: {e}")
+            if subscriber:
+                await subscriber.redis.aclose()
+            await bot.session.close()
+            logger.exception("Failed to initialize brand %s: %s", brand.name, e)
+            return False
+
+    async def _poll_brand(self, brand_slug: str, dp: Dispatcher, bot: Bot):
+        try:
+            await dp.start_polling(bot, handle_signals=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Polling stopped unexpectedly for brand %s", brand_slug)
+
+    async def remove_brand(self, brand_slug: str):
+        """Stop a brand's poller and release all bot resources."""
+        dp = self.brand_dispatchers.get(brand_slug)
+        bot = self.brand_bots.get(brand_slug)
+        polling_task = self.polling_tasks.pop(brand_slug, None)
+
+        if polling_task and not polling_task.done():
+            try:
+                if dp:
+                    await dp.stop_polling()
+                else:
+                    polling_task.cancel()
+            except RuntimeError:
+                polling_task.cancel()
+            try:
+                await polling_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Error while stopping brand poller %s", brand_slug)
+
+        subscriber_task = self.subscriber_tasks.pop(brand_slug, None)
+        subscriber = self.subscribers.pop(brand_slug, None)
+        if subscriber_task and not subscriber_task.done():
+            subscriber_task.cancel()
+            await asyncio.gather(subscriber_task, return_exceptions=True)
+        if subscriber:
+            await subscriber.redis.aclose()
+
+        if bot:
+            await bot.session.close()
+
+        self.brand_bots.pop(brand_slug, None)
+        self.brand_dispatchers.pop(brand_slug, None)
+        self.brand_handlers.pop(brand_slug, None)
+        self.brand_signatures.pop(brand_slug, None)
+        logger.info("Brand bot stopped: %s", brand_slug)
+
+    async def reconcile_brands(self):
+        """Apply active brand/token changes without restarting this process."""
+        desired = {}
+        async for brand in Brand.objects.filter(
+            status=Brand.BrandStatus.ACTIVE, bot_token__isnull=False
+        ).exclude(bot_token=""):
+            desired[brand.slug] = brand
+
+        for brand_slug, current_signature in list(self.brand_signatures.items()):
+            brand = desired.get(brand_slug)
+            new_signature = (brand.bot_token, brand.updated_at) if brand else None
+            polling_task = self.polling_tasks.get(brand_slug)
+            if new_signature != current_signature or (
+                polling_task is not None and polling_task.done()
+            ):
+                await self.remove_brand(brand_slug)
+
+        for brand_slug, brand in desired.items():
+            if brand_slug not in self.brand_signatures:
+                if await self.add_brand(brand):
+                    logger.info("Brand bot activated: %s", brand.slug)
 
     async def setup_brand_routes(self, dp: Dispatcher, brand: Brand, handlers: dict):
         """Setup routes for a brand's bot"""
@@ -1533,18 +1631,15 @@ class MultiBrandDispatcher:
             logger.error(f"Error processing webhook for {brand.name}: {e}")
 
     async def start_polling(self):
-        """Start polling for all brand bots"""
-        tasks = []
-        for brand_slug, dp in self.brand_dispatchers.items():
-            bot = self.brand_bots[brand_slug]
-            task = asyncio.create_task(dp.start_polling(bot))
-            tasks.append(task)
-            logger.info(f"Started polling for brand: {brand_slug}")
-
-        if tasks:
-            await asyncio.gather(*tasks)
-        else:
-            logger.warning("No bots to poll!")
+        """Keep active brand bots synchronized with admin changes."""
+        while True:
+            try:
+                await self.reconcile_brands()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Brand bot reconciliation failed")
+            await asyncio.sleep(settings.BOT_RELOAD_INTERVAL_SECONDS)
 
     async def setup_webhooks(self):
         """Setup webhooks for all brands"""
@@ -1579,12 +1674,10 @@ def create_webhook_app():
 
 
 async def start_bots():
-    """Initialize and start all brand bots"""
-    await multi_dispatcher.initialize_brands()
-
+    """Run the bot supervisor and apply brand changes as they are saved."""
     if settings.USE_WEBHOOK:
+        await multi_dispatcher.initialize_brands()
         await multi_dispatcher.setup_webhooks()
         logger.info("Bots configured for webhook mode")
     else:
         await multi_dispatcher.start_polling()
-        logger.info("Bots started in polling mode")
