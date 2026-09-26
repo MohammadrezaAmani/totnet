@@ -27,12 +27,26 @@ class SubscriptionPlan(models.Model):
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="subscription_plans"
     )
+    vpn_provider = models.ForeignKey(
+        "vpn_providers.VPNProvider",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="subscription_plans",
+    )
+
+    upstream_plan_id = models.CharField(max_length=100, blank=True)
+    upstream_group_id = models.CharField(max_length=100, blank=True)
+    upstream_group_name = models.CharField(max_length=100, blank=True)
+    upstream_plan_name = models.CharField(max_length=200, blank=True)
+    upstream_count_of_devices = models.PositiveIntegerField(null=True, blank=True)
 
     name = models.CharField(max_length=100)
     description = models.TextField(null=True, blank=True)
     plan_type = models.CharField(max_length=20, choices=PlanType.choices)
 
     price = models.DecimalField(max_digits=15, decimal_places=2)
+    upstream_cost = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     currency = models.CharField(max_length=3, default="USD")
 
     duration_value = models.PositiveIntegerField(null=True, blank=True)
@@ -69,6 +83,21 @@ class SubscriptionPlan(models.Model):
 
     def __str__(self):
         return f"{self.brand.name} - {self.name}"
+
+    def clean(self):
+        super().clean()
+        if (
+            self.vpn_provider_id
+            and self.brand_id
+            and self.vpn_provider.brand_id != self.brand_id
+        ):
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError(
+                {
+                    "vpn_provider": "The provider and subscription plan must belong to the same brand."
+                }
+            )
 
     @property
     def discounted_price(self):
@@ -134,7 +163,6 @@ class Subscription(models.Model):
     qr_codes = models.JSONField(default=list, blank=True)
 
     connectix_username = models.CharField(max_length=100, null=True, blank=True)
-    connectix_password = models.CharField(max_length=100, null=True, blank=True)
 
     auto_renewal_enabled = models.BooleanField(default=False)
 
@@ -149,6 +177,11 @@ class Subscription(models.Model):
 
     class Meta:
         db_table = "subscriptions"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["order"], name="uniq_subscription_per_order"
+            )
+        ]
         indexes = [
             models.Index(fields=["brand", "status"]),
             models.Index(fields=["user", "status"]),
@@ -180,6 +213,48 @@ class Subscription(models.Model):
         if self.traffic_limit_gb:
             return min(100, (float(self.traffic_used_gb) / self.traffic_limit_gb) * 100)
         return 0
+
+
+class ProviderRemoteSubscription(models.Model):
+    """Provider-side identity and sync state for one local subscription."""
+
+    class State(models.TextChoices):
+        PROVISIONING = "provisioning", "Provisioning"
+        ACTIVE = "active", "Active"
+        ERROR = "error", "Error"
+
+    subscription = models.OneToOneField(
+        Subscription, on_delete=models.CASCADE, related_name="remote_account"
+    )
+    provider = models.ForeignKey(
+        "vpn_providers.VPNProvider",
+        on_delete=models.PROTECT,
+        related_name="remote_subscriptions",
+    )
+    remote_id = models.CharField(max_length=128, null=True, blank=True)
+    username = models.CharField(max_length=100, blank=True)
+    subscription_url = models.TextField(blank=True)
+    remote_status = models.CharField(max_length=40, blank=True)
+    state = models.CharField(
+        max_length=20, choices=State.choices, default=State.PROVISIONING
+    )
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "provider_remote_subscriptions"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "remote_id"],
+                condition=models.Q(remote_id__isnull=False),
+                name="uniq_provider_remote_subscription_id",
+            )
+        ]
+        indexes = [models.Index(fields=["provider", "state"])]
 
 
 class SubscriptionUsage(models.Model):

@@ -31,21 +31,13 @@ app.conf.beat_schedule = {
         "task": "apps.vpn_providers.tasks.check_all_providers_health",
         "schedule": 300.0,
     },
-    "process-subscription-notifications": {
-        "task": "apps.subscriptions.tasks.process_subscription_notifications",
-        "schedule": 60.0,
+    "cleanup-old-provider-health-checks": {
+        "task": "apps.vpn_providers.tasks.cleanup_old_health_checks",
+        "schedule": 86400.0,
     },
-    "update-subscription-stats": {
-        "task": "apps.subscriptions.tasks.update_all_subscription_stats",
-        "schedule": 3600.0,
-    },
-    "process-broadcast-queue": {
-        "task": "apps.broadcasts.tasks.process_broadcast_queue",
-        "schedule": 30.0,
-    },
-    "generate-daily-analytics": {
-        "task": "apps.analytics.tasks.generate_daily_analytics",
-        "schedule": 3600.0,
+    "cleanup-old-provider-stats": {
+        "task": "apps.vpn_providers.tasks.cleanup_old_stats",
+        "schedule": 86400.0,
     },
 }
 

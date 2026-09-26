@@ -1,11 +1,11 @@
-from datetime import datetime
 import logging
 
 from django.db import transaction
-from django.db.models.signals import post_delete, post_save, pre_save
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
+from django.utils import timezone
 
-from apps.orders.models import Order, Payment, WalletTransaction
+from apps.orders.models import Order, Payment, Wallet, WalletTransaction
 from apps.subscriptions.models import Subscription
 from apps.vpn_providers.models import VPNProvider
 from utils.message import broadcast_message
@@ -13,12 +13,34 @@ from utils.message import broadcast_message
 logger = logging.getLogger(__name__)
 
 
+def _apply_payment_wallet_delta(instance, *, delta, transaction_type, key, description):
+    """Apply one payment-driven wallet change once, protected by a row lock."""
+    if not instance.wallet_id:
+        return
+    with transaction.atomic():
+        wallet = Wallet.objects.select_for_update().get(pk=instance.wallet_id)
+        if WalletTransaction.objects.filter(idempotency_key=key).exists():
+            return
+        balance_before = wallet.balance
+        wallet.balance += delta
+        wallet.save(update_fields=["balance", "updated_at"])
+        WalletTransaction.objects.create(
+            wallet=wallet,
+            transaction_type=transaction_type,
+            amount=delta,
+            balance_before=balance_before,
+            balance_after=wallet.balance,
+            reference_id=str(instance.payment_id),
+            idempotency_key=key,
+            description=description,
+        )
+
+
 # ---------------------------------------------------------------------
 # Wallet Transactions
 # ---------------------------------------------------------------------
 
 
-@receiver(pre_save, sender=WalletTransaction)
 def wallet_transaction_pre_save(sender, instance, **kwargs):
     """
     Fill balance_before / balance_after automatically if not provided.
@@ -48,7 +70,6 @@ def wallet_transaction_pre_save(sender, instance, **kwargs):
         instance.balance_after = wallet.balance - instance.amount
 
 
-@receiver(post_save, sender=WalletTransaction)
 def wallet_transaction_created(sender, instance, created, **kwargs):
     """
     Synchronize wallet balance with transaction.
@@ -70,7 +91,6 @@ def wallet_transaction_created(sender, instance, created, **kwargs):
     )
 
 
-@receiver(post_delete, sender=WalletTransaction)
 def wallet_transaction_deleted(sender, instance, **kwargs):
     """
     Rollback wallet balance if transaction is deleted.
@@ -131,45 +151,77 @@ def payment_post_save(sender, instance, created, **kwargs):
                 order.status = Order.OrderStatus.PAID
                 order.save(update_fields=["status", "updated_at"])
 
-            if not Subscription.objects.filter(order=order).exists():
-                Subscription.objects.create(
-                    brand=instance.brand,
-                    user=instance.user,
-                    plan=instance.order.plan,
-                    order=instance.order,
-                    vpn_provider=VPNProvider.objects.filter(
-                        brand=instance.brand, provider_type=VPNProvider.ProviderType.HIDDIFY
-                    ).first(),
-                    owner=instance.user,
-                    status=Subscription.SubscriptionStatus.ACTIVE,
-                    starts_at=datetime.now(),
+            provider = None
+            if order.plan.vpn_provider_id:
+                provider = VPNProvider.objects.filter(
+                    pk=order.plan.vpn_provider_id,
+                    brand=order.brand,
+                    status=VPNProvider.ProviderStatus.ACTIVE,
+                ).first()
+            else:
+                provider = VPNProvider.objects.filter(
+                    brand=order.brand,
+                    status=VPNProvider.ProviderStatus.ACTIVE,
+                    is_default=True,
+                ).first()
+            if provider:
+                Subscription.objects.get_or_create(
+                    order=order,
+                    defaults={
+                        "brand": order.brand,
+                        "user": order.user,
+                        "plan": order.plan,
+                        "vpn_provider": provider,
+                        "owner": order.recipient or order.user,
+                        "status": Subscription.SubscriptionStatus.PENDING,
+                        "starts_at": timezone.now(),
+                        "traffic_limit_gb": order.plan.traffic_limit_gb,
+                    },
                 )
-                broadcast_message(
-                    brand_id=instance.brand_id,
-                    user_ids=[instance.user.telegram_id],
-                    text="واریزی شما برای پلن {} تایید شد.\nاکنون می‌توانید با مراجعه به بخش پلن‌های من کانفیگ‌های ساخته شده استفاده کنید.",
-                    buttons_data=[
-                        [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
-                    ],
+            else:
+                logger.error(
+                    "Payment %s confirmed for order %s, but brand %s has no active provider",
+                    instance.pk,
+                    order.pk,
+                    order.brand_id,
                 )
-        if instance.wallet:
-            wallet = instance.wallet
-            WalletTransaction.objects.create(
-                wallet=wallet,
+            if provider:
+                transaction.on_commit(
+                    lambda brand_id=instance.brand_id, telegram_id=instance.user.telegram_id: (
+                        broadcast_message(
+                            brand_id=brand_id,
+                            user_ids=[telegram_id],
+                            text="پرداخت شما تأیید شد و سفارش برای فعال‌سازی اشتراک ثبت شد.",
+                            buttons_data=[
+                                [
+                                    {
+                                        "text": "📱 اشتراک‌های من",
+                                        "callback_data": "my_subscriptions",
+                                    }
+                                ],
+                            ],
+                        )
+                    )
+                )
+        if instance.wallet_id and not instance.order_id:
+            _apply_payment_wallet_delta(
+                instance,
+                delta=instance.amount,
                 transaction_type=WalletTransaction.TransactionType.DEPOSIT,
-                amount=instance.amount,
-                balance_before=wallet.balance,
-                balance_after = wallet.balance + instance.amount,
-                description="",
+                key=f"payment:{instance.payment_id}:confirmed-credit",
+                description="Wallet top-up confirmed",
             )
-
-            broadcast_message(
-                brand_id=instance.brand_id,
-                user_ids=[instance.user.telegram_id],
-                text="پرداختی کیف پول شما تایید شد.",
-                buttons_data=[
-                    [{"text": "کیف پول من", "callback_data": "wallet"}],
-                ],
+            transaction.on_commit(
+                lambda brand_id=instance.brand_id, telegram_id=instance.user.telegram_id: (
+                    broadcast_message(
+                        brand_id=brand_id,
+                        user_ids=[telegram_id],
+                        text="پرداختی کیف پول شما تایید شد.",
+                        buttons_data=[
+                            [{"text": "کیف پول من", "callback_data": "wallet"}]
+                        ],
+                    )
+                )
             )
 
     # ---------------------------------------------------------------
@@ -180,10 +232,14 @@ def payment_post_save(sender, instance, created, **kwargs):
             instance.order.status = Order.OrderStatus.FAILED
             instance.order.save(update_fields=["status", "updated_at"])
 
-        broadcast_message(
-            brand_id=instance.brand_id,
-            user_ids=[instance.user.telegram_id],
-            text="Your payment failed.",
+        transaction.on_commit(
+            lambda brand_id=instance.brand_id, telegram_id=instance.user.telegram_id: (
+                broadcast_message(
+                    brand_id=brand_id,
+                    user_ids=[telegram_id],
+                    text="Your payment failed.",
+                )
+            )
         )
 
     # ---------------------------------------------------------------
@@ -203,18 +259,13 @@ def payment_post_save(sender, instance, created, **kwargs):
             instance.order.save(update_fields=["status", "updated_at"])
 
         if instance.wallet:
-            wallet = instance.wallet
-
-            WalletTransaction.objects.create(
-                wallet=wallet,
+            _apply_payment_wallet_delta(
+                instance,
+                delta=(instance.amount if instance.order_id else -instance.amount),
                 transaction_type=WalletTransaction.TransactionType.REFUND,
-                amount=instance.amount,
-                balance_before=wallet.balance,
-                balance_after=wallet.balance + instance.amount,
-                reference_id=str(instance.payment_id),
-                description=f"Refund for payment {instance.payment_id}",
+                key=f"payment:{instance.payment_id}:refunded-wallet-delta",
+                description=f"Refund/reversal for payment {instance.payment_id}",
             )
-
 
 
 # ---------------------------------------------------------------------

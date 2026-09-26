@@ -6,6 +6,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 
 from .models import (
+    ProviderRemoteSubscription,
     Subscription,
     SubscriptionConfig,
     SubscriptionNotification,
@@ -22,6 +23,11 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "name",
         "brand",
         "plan_type",
+        "vpn_provider",
+        "upstream_plan_name",
+        "upstream_plan_id",
+        "upstream_group_name",
+        "upstream_count_of_devices",
         "price",
         "currency",
         "duration_value",
@@ -41,7 +47,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "brand",
         "created_at",
     )
-    search_fields = ("name", "description", "brand__name")
+    search_fields = ("name", "description", "brand__name", "upstream_plan_id")
     list_editable = ("is_active", "is_visible", "is_featured", "display_order")
 
     def get_queryset(self, request):
@@ -59,6 +65,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
         "user",
         "plan",
         "vpn_provider",
+        "remote_account_id_display",
         "vpn_user_email",
         "status",
         "owner",
@@ -90,7 +97,15 @@ class SubscriptionAdmin(admin.ModelAdmin):
     fieldsets = (
         (
             "Basic Info",
-            {"fields": ("subscription_id", "brand", "user", "plan", "order")},
+            {
+                "fields": (
+                    "subscription_id",
+                    "brand",
+                    "user",
+                    "plan",
+                    "order",
+                )
+            },
         ),
         ("VPN Provider", {"fields": ("vpn_provider", "vpn_user_email")}),
         ("Ownership", {"fields": ("owner", "is_gift", "gift_message")}),
@@ -98,13 +113,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
         ("Traffic", {"fields": ("traffic_used_gb", "traffic_limit_gb")}),
         (
             "Configuration",
-            {
-                "fields": (
-                    "subscription_url",
-                    "connectix_username",
-                    "connectix_password",
-                )
-            },
+            {"fields": ("connectix_username",)},
         ),
         (
             "Auto Renewal",
@@ -139,11 +148,55 @@ class SubscriptionAdmin(admin.ModelAdmin):
 
     traffic_percentage_used.short_description = "Traffic Used"
 
+    def remote_account_id_display(self, obj):
+        remote_account = getattr(obj, "remote_account", None)
+        return remote_account.remote_id if remote_account else "-"
+
+    remote_account_id_display.short_description = "Provider Remote ID"
+
     def get_queryset(self, request):
-        qs = super().get_queryset(request)
+        qs = super().get_queryset(request).select_related("remote_account")
         if not request.user.is_superuser:
             return qs.filter(brand__in=request.user.admin_brands.all())
         return qs
+
+
+@admin.register(ProviderRemoteSubscription)
+class ProviderRemoteSubscriptionAdmin(admin.ModelAdmin):
+    list_display = (
+        "subscription",
+        "provider",
+        "remote_id",
+        "username",
+        "state",
+        "remote_status",
+        "last_synced_at",
+    )
+    list_filter = ("provider", "state", "remote_status")
+    search_fields = ("remote_id", "username", "subscription__subscription_id")
+    readonly_fields = tuple(
+        field.name for field in ProviderRemoteSubscription._meta.fields
+    )
+    exclude = ("subscription_url", "metadata")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        queryset = (
+            super().get_queryset(request).select_related("subscription", "provider")
+        )
+        if not request.user.is_superuser:
+            queryset = queryset.filter(
+                subscription__brand__in=request.user.admin_brands.all()
+            )
+        return queryset
 
 
 @admin.register(SubscriptionUsage)

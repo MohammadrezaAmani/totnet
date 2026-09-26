@@ -4,6 +4,7 @@ Enhanced with Hiddify integration
 """
 
 from asgiref.sync import async_to_sync
+from django import forms
 from django.contrib import admin, messages
 from django.urls import reverse
 from django.utils import timezone
@@ -19,6 +20,21 @@ from .models import (
     VPNServer,
 )
 from .services.hiddify import HiddifyProvider
+
+
+class VPNProviderAdminForm(forms.ModelForm):
+    api_key = forms.CharField(widget=forms.PasswordInput, required=False)
+    public_api_key = forms.CharField(widget=forms.PasswordInput, required=False)
+
+    class Meta:
+        model = VPNProvider
+        fields = "__all__"
+
+    def clean_api_key(self):
+        return self.cleaned_data.get("api_key") or self.instance.api_key
+
+    def clean_public_api_key(self):
+        return self.cleaned_data.get("public_api_key") or self.instance.public_api_key
 
 
 @admin.register(HiddifyAdmin)
@@ -77,7 +93,7 @@ class HiddifyAdminAdmin(admin.ModelAdmin):
         """Sync selected admins from Hiddify panel"""
         from .signals import sync_hiddify_admins
 
-        for admin in queryset:
+        for admin in queryset:  # noqa: F402
             if admin.provider and admin.provider.provider_type == "hiddify":
                 try:
                     async_to_sync(sync_hiddify_admins)(admin.provider)
@@ -95,7 +111,7 @@ class HiddifyAdminAdmin(admin.ModelAdmin):
 
     def create_in_panel(self, request, queryset):
         """Create selected admins in Hiddify panel"""
-        for admin in queryset:
+        for admin in queryset:  # noqa: F402
             if not admin.provider or admin.provider.provider_type != "hiddify":
                 messages.warning(
                     request, f"{admin.name} is not linked to a Hiddify provider"
@@ -143,7 +159,7 @@ class HiddifyAdminAdmin(admin.ModelAdmin):
 
     def delete_from_panel(self, request, queryset):
         """Delete selected admins from Hiddify panel"""
-        for admin in queryset:
+        for admin in queryset:  # noqa: F402
             if not admin.uuid:
                 messages.warning(request, f"{admin.name} has no UUID")
                 continue
@@ -175,6 +191,7 @@ class HiddifyAdminAdmin(admin.ModelAdmin):
 
 @admin.register(VPNProvider)
 class VPNProviderAdmin(admin.ModelAdmin):
+    form = VPNProviderAdminForm
     list_display = (
         "name",
         "provider_type",
@@ -186,6 +203,7 @@ class VPNProviderAdmin(admin.ModelAdmin):
         "is_default",
         "priority",
         "last_health_check",
+        "last_sync",
         "hiddify_admins_count",
     )
     list_filter = (
@@ -201,6 +219,7 @@ class VPNProviderAdmin(admin.ModelAdmin):
         "current_users",
         "total_subscriptions",
         "last_health_check",
+        "last_sync",
         "health_status",
         "response_time",
         "created_at",

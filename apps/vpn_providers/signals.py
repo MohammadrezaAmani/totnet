@@ -11,7 +11,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.orders.models import Order, Payment, Wallet, WalletTransaction
+from apps.orders.models import Order
 from apps.subscriptions.models import Subscription
 from utils.message import broadcast_message
 
@@ -20,7 +20,6 @@ from .models import HiddifyAdmin, VPNProvider
 logger = logging.getLogger(__name__)
 
 
-@receiver(post_save, sender=VPNProvider)
 def vpn_provider_created_or_updated(sender, instance, created, **kwargs):
     """Handle VPN Provider creation/update - sync admins"""
     if (
@@ -40,7 +39,6 @@ def vpn_provider_created_or_updated(sender, instance, created, **kwargs):
             logger.error(f"Error syncing Hiddify admins: {e}")
 
 
-@receiver(post_save, sender=Subscription)
 def subscription_created(sender, instance, created, **kwargs):
     """Handle subscription creation - create user in VPN panel"""
     if (
@@ -111,34 +109,6 @@ def subscription_created(sender, instance, created, **kwargs):
 #         )
 
 
-@receiver(post_save, sender=Order)
-def order_status_changed(sender, instance: Order, created, **kwargs):
-    if (
-        instance.status == Order.OrderStatus.COMPLETED
-        and not instance.subscriptions.exists()
-    ):
-        Subscription.objects.create(
-            brand=instance.brand,
-            user=instance.user,
-            plan=instance.plan,
-            order=instance,
-            vpn_provider=VPNProvider.objects.filter(
-                brand=instance.brand, provider_type=VPNProvider.ProviderType.HIDDIFY
-            ).first(),
-            owner=instance.user,
-            status=Subscription.SubscriptionStatus.ACTIVE,
-            starts_at=datetime.now(),
-        )
-        broadcast_message(
-            brand_id=instance.brand_id,
-            user_ids=[instance.user.telegram_id],
-            text="واریزی شما برای پلن {} تایید شد.\nاکنون می‌توانید با مراجعه به بخش پلن‌های من کانفیگ‌های ساخته شده استفاده کنید.",
-            buttons_data=[
-                [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
-            ],
-        )
-
-@receiver(pre_save, sender=Subscription)
 def subscription_status_change(sender, instance, **kwargs):
     """Handle subscription status changes - enable/disable in VPN panel"""
     if instance.pk:
@@ -162,7 +132,6 @@ def subscription_status_change(sender, instance, **kwargs):
             pass
 
 
-@receiver(post_delete, sender=Subscription)
 def subscription_deleted(sender, instance, **kwargs):
     """Handle subscription deletion - remove user from VPN panel"""
     if (
@@ -182,7 +151,6 @@ def subscription_deleted(sender, instance, **kwargs):
             logger.error(f"Error deleting Hiddify user: {e}")
 
 
-@receiver(post_save, sender=User)
 def user_created(sender, instance, created, **kwargs):
     """Handle user creation - check if they're a Hiddify admin"""
     if created and instance.telegram_id:

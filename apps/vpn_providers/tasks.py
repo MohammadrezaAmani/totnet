@@ -1,208 +1,248 @@
-"""
-Celery tasks for VPN Provider operations
-"""
+"""Synchronous Celery entry points for asynchronous provider clients."""
 
 import logging
 from datetime import timedelta
 
+from asgiref.sync import async_to_sync
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
 
 from apps.subscriptions.models import Subscription
 
 from .models import VPNProvider, VPNProviderHealthCheck, VPNProviderStats
-from .services.base import VPNProviderFactory
+from .services.base import VPNProviderFactory, VPNUser
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=3)
-async def sync_vpn_users(self, provider_id: int):
-    """Sync users for a specific VPN provider"""
-    try:
-        provider = VPNProvider.objects.get(id=provider_id)
-
-        vpn_service = VPNProviderFactory.create(
+def _client(provider):
+    if provider.provider_type == VPNProvider.ProviderType.CONNECTIX:
+        return VPNProviderFactory.create(
             provider.provider_type,
-            base_url=provider.base_url,
-            api_key=provider.api_key,
-            **provider.configuration,
+            base_url=provider.base_url or settings.CONNECTIX_API_BASE_URL,
+            username=settings.CONNECTIX_USERNAME,
+            password=settings.CONNECTIX_PASSWORD,
+            timeout_seconds=settings.CONNECTIX_TIMEOUT_SECONDS,
         )
+    configuration = dict(provider.configuration or {})
+    configuration.update(
+        base_url=provider.base_url,
+        api_key=provider.api_key,
+        public_api_key=provider.public_api_key,
+        proxy_path=provider.proxy_path,
+    )
+    return VPNProviderFactory.create(provider.provider_type, **configuration)
 
-        subscriptions = Subscription.objects.filter(
-            vpn_provider=provider, status=Subscription.SubscriptionStatus.ACTIVE
-        ).select_related("user", "plan")
 
-        from .services.base import VPNUser
+@shared_task(bind=True, max_retries=3)
+def sync_vpn_users(self, provider_id: int):
+    """Synchronize active subscriptions to one supported provider."""
+    try:
+        provider = VPNProvider.objects.get(pk=provider_id)
+    except VPNProvider.DoesNotExist:
+        logger.warning("Provider sync skipped: provider %s does not exist", provider_id)
+        return False
 
-        vpn_users = []
+    client = _client(provider)
+    if not hasattr(client, "sync_users"):
+        logger.info(
+            "Provider %s does not support bulk user synchronization", provider.pk
+        )
+        async_to_sync(client.close)()
+        return False
+    subscriptions = Subscription.objects.filter(
+        vpn_provider=provider, status=Subscription.SubscriptionStatus.ACTIVE
+    ).select_related("user", "plan")
+    users = [
+        VPNUser(
+            email=subscription.vpn_user_email or str(subscription.subscription_id),
+            proxies={},
+            inbounds=["main"],
+            traffic_limit=(
+                subscription.traffic_limit_gb * 1024**3
+                if subscription.traffic_limit_gb
+                else None
+            ),
+            expire_time=subscription.expires_at,
+            enable=True,
+        )
+        for subscription in subscriptions
+    ]
 
-        for sub in subscriptions:
-            vpn_user = VPNUser(
-                email=sub.vpn_user_email,
-                proxies={},
-                inbounds=["main"],
-                traffic_limit=(
-                    sub.traffic_limit_gb * 1024**3 if sub.traffic_limit_gb else None
-                ),
-                expire_time=sub.expires_at,
-                enable=True,
-            )
-            vpn_users.append(vpn_user)
-
-        success = await vpn_service.sync_users(vpn_users)
-
+    try:
+        success = async_to_sync(client.sync_users)(users)
         if success:
             provider.last_sync = timezone.now()
-            provider.save()
-            logger.info(
-                f"Successfully synced {len(vpn_users)} users for provider {provider.name}"
-            )
+            provider.save(update_fields=["last_sync", "updated_at"])
         else:
-            logger.error(f"Failed to sync users for provider {provider.name}")
-
-        await vpn_service.close()
-        return success
-
-    except VPNProvider.DoesNotExist:
-        logger.error(f"VPN Provider with id {provider_id} not found")
-    except Exception as e:
-        logger.error(f"Error syncing VPN users for provider {provider_id}: {e}")
-
-        raise self.retry(exc=e, countdown=60 * (2**self.request.retries))
+            logger.warning(
+                "Provider sync returned failure for provider %s", provider.pk
+            )
+        return bool(success)
+    except Exception as exc:
+        logger.error(
+            "Provider sync failed for provider %s (%s)", provider.pk, type(exc).__name__
+        )
+        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
+    finally:
+        async_to_sync(client.close)()
 
 
 @shared_task
 def sync_all_vpn_users():
-    """Sync users for all active VPN providers"""
-    active_providers = VPNProvider.objects.filter(
+    """Queue synchronization for active providers that have adapters."""
+    for provider in VPNProvider.objects.filter(
         status=VPNProvider.ProviderStatus.ACTIVE
-    )
-
-    for provider in active_providers:
-        sync_vpn_users.delay(provider.id)
+    ):
+        try:
+            client = _client(provider)
+        except ValueError:
+            logger.warning(
+                "Provider %s (%s) is active but has no registered adapter",
+                provider.pk,
+                provider.provider_type,
+            )
+            continue
+        if not hasattr(client, "sync_users"):
+            async_to_sync(client.close)()
+            logger.info(
+                "Provider %s does not support bulk synchronization", provider.pk
+            )
+            continue
+        async_to_sync(client.close)()
+        sync_vpn_users.delay(provider.pk)
 
 
 @shared_task(bind=True, max_retries=3)
-async def check_provider_health(self, provider_id: int):
-    """Check health of a specific VPN provider"""
+def check_provider_health(self, provider_id: int):
+    """Run an authenticated provider health check without changing activation."""
     try:
-        provider = VPNProvider.objects.get(id=provider_id)
+        provider = VPNProvider.objects.get(pk=provider_id)
+    except VPNProvider.DoesNotExist:
+        logger.warning("Health check skipped: provider %s does not exist", provider_id)
+        return False
 
-        vpn_service = VPNProviderFactory.create(
-            provider.provider_type,
-            base_url=provider.base_url,
-            api_key=provider.api_key,
-            **provider.configuration,
-        )
-
-        health_result = await vpn_service.health_check()
+    client = _client(provider)
+    try:
+        result = async_to_sync(client.health_check)()
+        checked_at = timezone.now()
+        server_info = result.get("server_info")
+        version = getattr(server_info, "version", None)
+        response_ms = max(0, int(result.get("response_time_ms", 0)))
+        error = result.get("error")
 
         VPNProviderHealthCheck.objects.create(
             provider=provider,
-            check_time=timezone.now(),
-            is_healthy=health_result["healthy"],
-            response_time=health_result.get("response_time_ms", 0),
-            api_accessible=health_result["healthy"],
-            error_message=health_result.get("error"),
-            version=(
-                health_result.get("server_info", {}).get("version")
-                if health_result.get("server_info")
-                else None
-            ),
+            check_time=checked_at,
+            is_healthy=bool(result.get("healthy")),
+            response_time=response_ms,
+            api_accessible=bool(result.get("healthy")),
+            error_message=(str(error)[:1000] if error else None),
+            version=version,
         )
-
-        if health_result["healthy"]:
-            provider.health_status = "healthy"
-            provider.response_time = health_result.get("response_time_ms", 0)
-        else:
-            provider.health_status = "unhealthy"
-            if provider.status == VPNProvider.ProviderStatus.ACTIVE:
-                provider.status = VPNProvider.ProviderStatus.ERROR
-
-        provider.last_health_check = timezone.now()
-        provider.save()
-
-        await vpn_service.close()
-        return health_result["healthy"]
-
-    except VPNProvider.DoesNotExist:
-        logger.error(f"VPN Provider with id {provider_id} not found")
-    except Exception as e:
-        logger.error(f"Error checking health for provider {provider_id}: {e}")
-        raise self.retry(exc=e, countdown=60 * (2**self.request.retries))
+        provider.health_status = "healthy" if result.get("healthy") else "unhealthy"
+        provider.response_time = response_ms
+        provider.last_health_check = checked_at
+        provider.save(
+            update_fields=[
+                "health_status",
+                "response_time",
+                "last_health_check",
+                "updated_at",
+            ]
+        )
+        return bool(result.get("healthy"))
+    except Exception as exc:
+        logger.error(
+            "Provider health check failed for provider %s (%s)",
+            provider.pk,
+            type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
+    finally:
+        async_to_sync(client.close)()
 
 
 @shared_task
 def check_all_providers_health():
-    """Check health of all VPN providers"""
-    providers = VPNProvider.objects.all()
-
-    for provider in providers:
-        check_provider_health.delay(provider.id)
+    """Queue health checks for active providers."""
+    for provider in VPNProvider.objects.filter(
+        status=VPNProvider.ProviderStatus.ACTIVE
+    ):
+        try:
+            client = _client(provider)
+        except ValueError:
+            logger.warning(
+                "Provider %s (%s) has no registered adapter",
+                provider.pk,
+                provider.provider_type,
+            )
+            continue
+        async_to_sync(client.close)()
+        check_provider_health.delay(provider.pk)
 
 
 @shared_task(bind=True, max_retries=3)
-async def collect_provider_stats(self, provider_id: int):
-    """Collect statistics from a VPN provider"""
+def collect_provider_stats(self, provider_id: int):
+    """Collect provider statistics when the adapter exposes those operations."""
     try:
-        provider = VPNProvider.objects.get(id=provider_id)
-
-        vpn_service = VPNProviderFactory.create(
-            provider.provider_type,
-            base_url=provider.base_url,
-            api_key=provider.api_key,
-            **provider.configuration,
-        )
-
-        backend_stats = await vpn_service.get_backend_stats()
-        system_stats = await vpn_service.get_system_stats()
-        online_users = await vpn_service.get_online_users()
-
-        if backend_stats and system_stats:
-            VPNProviderStats.objects.create(
-                provider=provider,
-                collected_at=timezone.now(),
-                total_users=len(online_users),
-                online_users=len(online_users),
-                cpu_usage=system_stats.get("cpu_usage", 0),
-                memory_usage=system_stats.get("memory_usage", 0),
-                disk_usage=system_stats.get("disk_usage", 0),
-                additional_metrics={
-                    "backend_stats": backend_stats,
-                    "system_stats": system_stats,
-                },
-            )
-
-            provider.current_users = len(online_users)
-            provider.save()
-
-        await vpn_service.close()
-
+        provider = VPNProvider.objects.get(pk=provider_id)
     except VPNProvider.DoesNotExist:
-        logger.error(f"VPN Provider with id {provider_id} not found")
-    except Exception as e:
-        logger.error(f"Error collecting stats for provider {provider_id}: {e}")
-        raise self.retry(exc=e, countdown=60 * (2**self.request.retries))
+        logger.warning(
+            "Stats collection skipped: provider %s does not exist", provider_id
+        )
+        return False
+
+    client = _client(provider)
+    methods = ("get_backend_stats", "get_system_stats")
+    if not all(hasattr(client, method) for method in methods):
+        logger.info("Provider %s does not expose system statistics", provider.pk)
+        async_to_sync(client.close)()
+        return False
+
+    try:
+        backend_stats = async_to_sync(client.get_backend_stats)()
+        system_stats = async_to_sync(client.get_system_stats)()
+        online_users = async_to_sync(client.get_online_users)()
+        if not backend_stats or not system_stats:
+            return False
+        VPNProviderStats.objects.create(
+            provider=provider,
+            collected_at=timezone.now(),
+            total_users=provider.current_users,
+            online_users=len(online_users),
+            cpu_usage=system_stats.get("cpu_usage", 0),
+            memory_usage=system_stats.get("memory_usage", 0),
+            disk_usage=system_stats.get("disk_usage", 0),
+            additional_metrics={
+                "backend_stats": backend_stats,
+                "system_stats": system_stats,
+            },
+        )
+        return True
+    except Exception as exc:
+        logger.error(
+            "Provider stats collection failed for provider %s (%s)",
+            provider.pk,
+            type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
+    finally:
+        async_to_sync(client.close)()
 
 
 @shared_task
 def cleanup_old_health_checks():
-    """Clean up old health check records"""
-    cutoff_date = timezone.now() - timedelta(days=30)
+    cutoff = timezone.now() - timedelta(days=30)
     deleted_count = VPNProviderHealthCheck.objects.filter(
-        check_time__lt=cutoff_date
+        check_time__lt=cutoff
     ).delete()[0]
-
-    logger.info(f"Cleaned up {deleted_count} old health check records")
+    logger.info("Removed %s old provider health checks", deleted_count)
 
 
 @shared_task
 def cleanup_old_stats():
-    """Clean up old statistics records"""
-    cutoff_date = timezone.now() - timedelta(days=90)
-    deleted_count = VPNProviderStats.objects.filter(
-        collected_at__lt=cutoff_date
-    ).delete()[0]
-
-    logger.info(f"Cleaned up {deleted_count} old stats records")
+    cutoff = timezone.now() - timedelta(days=90)
+    deleted_count = VPNProviderStats.objects.filter(collected_at__lt=cutoff).delete()[0]
+    logger.info("Removed %s old provider statistics records", deleted_count)

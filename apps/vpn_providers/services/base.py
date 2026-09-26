@@ -7,7 +7,9 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from importlib import import_module
+from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +19,10 @@ class VPNUser:
     """VPN User data structure"""
 
     email: str
-    proxies: Dict[str, Any]
-    inbounds: List[str]
-    traffic_limit: Optional[int] = None
-    expire_time: Optional[datetime] = None
+    proxies: dict[str, Any]
+    inbounds: list[str]
+    traffic_limit: int | None = None
+    expire_time: datetime | None = None
     enable: bool = True
 
 
@@ -41,7 +43,7 @@ class VPNServerInfo:
     version: str
     started: bool
     users_count: int
-    traffic_stats: Dict[str, Any]
+    traffic_stats: dict[str, Any]
 
 
 @dataclass
@@ -49,8 +51,8 @@ class VPNConfig:
     """VPN Configuration data structure"""
 
     subscription_url: str
-    configs: Dict[str, str]
-    qr_codes: List[str]
+    configs: dict[str, str]
+    qr_codes: list[str]
 
 
 class BaseVPNProvider(ABC):
@@ -68,61 +70,48 @@ class BaseVPNProvider(ABC):
     @abstractmethod
     async def test_connection(self) -> bool:
         """Test connection to VPN provider"""
-        pass
 
     @abstractmethod
     async def get_server_info(self) -> VPNServerInfo:
         """Get server information"""
-        pass
 
     @abstractmethod
     async def create_user(self, user: VPNUser) -> bool:
         """Create a new VPN user"""
-        pass
 
     @abstractmethod
     async def update_user(self, user: VPNUser) -> bool:
         """Update existing VPN user"""
-        pass
 
     @abstractmethod
     async def delete_user(self, email: str) -> bool:
         """Delete VPN user"""
-        pass
 
     @abstractmethod
-    async def get_user_stats(
-        self, email: str, reset: bool = False
-    ) -> Optional[VPNStats]:
+    async def get_user_stats(self, email: str, reset: bool = False) -> VPNStats | None:
         """Get user traffic statistics"""
-        pass
 
     @abstractmethod
-    async def get_user_config(self, email: str) -> Optional[VPNConfig]:
+    async def get_user_config(self, email: str) -> VPNConfig | None:
         """Get user connection configuration"""
-        pass
 
     @abstractmethod
-    async def sync_users(self, users: List[VPNUser]) -> bool:
+    async def sync_users(self, users: list[VPNUser]) -> bool:
         """Sync multiple users at once"""
-        pass
 
     @abstractmethod
-    async def get_online_users(self) -> List[str]:
+    async def get_online_users(self) -> list[str]:
         """Get list of online user emails"""
-        pass
 
     @abstractmethod
     async def start_backend(self) -> bool:
         """Start VPN backend service"""
-        pass
 
     @abstractmethod
     async def stop_backend(self) -> bool:
         """Stop VPN backend service"""
-        pass
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Perform health check"""
         try:
             start_time = datetime.now()
@@ -147,11 +136,11 @@ class BaseVPNProvider(ABC):
         except Exception as e:
             return {
                 "healthy": False,
-                "error": str(e),
+                "error": type(e).__name__,
                 "timestamp": datetime.now().isoformat(),
             }
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         """Get HTTP headers with authentication"""
         return {
             "Authorization": f"Bearer {self.api_key}",
@@ -161,24 +150,21 @@ class BaseVPNProvider(ABC):
 
     def _log_request(self, method: str, url: str, data: Any = None):
         """Log API request"""
-        logger.debug(f"VPN API Request: {method} {url}")
-        if data:
-            logger.debug(f"Request data: {data}")
+        logger.debug("VPN API request: %s %s", method, urlsplit(url).path)
 
     def _log_response(self, url: str, status_code: int, response_data: Any = None):
         """Log API response"""
-        logger.debug(f"VPN API Response: {url} - Status: {status_code}")
-        if response_data:
-            logger.debug(f"Response data: {response_data}")
+        logger.debug("VPN API response: %s status=%s", urlsplit(url).path, status_code)
 
     def _log_error(self, operation: str, error: Exception):
         """Log operation error"""
-        logger.error(f"VPN Provider Error ({operation}): {error}")
+        logger.error(
+            "VPN provider operation %s failed (%s)", operation, type(error).__name__
+        )
 
     @abstractmethod
     async def get_token(self) -> str | None:
         """Login and get token from provider"""
-        pass
 
 
 class VPNProviderFactory:
@@ -192,14 +178,32 @@ class VPNProviderFactory:
         cls._providers[provider_type] = provider_class
 
     @classmethod
-    def create(cls, provider_type: str, **kwargs) -> BaseVPNProvider:
+    def create(cls, provider_type: str, **kwargs):
         """Create provider instance"""
+        # Registration must not depend on an unrelated module being imported first.
         if provider_type not in cls._providers:
-            raise ValueError(f"Unknown provider type: {provider_type}")
+            modules = {
+                "hiddify": "apps.vpn_providers.services.hiddify",
+                "pasarguard": "apps.vpn_providers.services.pasarguard",
+                "connectix": "apps.vpn_providers.services.connectix",
+            }
+            module = modules.get(provider_type)
+            if module:
+                import_module(module)
+        if provider_type not in cls._providers:
+            raise ValueError(
+                f"Provider type '{provider_type}' is not implemented or registered"
+            )
 
         return cls._providers[provider_type](**kwargs)
 
     @classmethod
-    def get_available_providers(cls) -> List[str]:
+    def get_available_providers(cls) -> list[str]:
         """Get list of available provider types"""
+        for module in (
+            "apps.vpn_providers.services.hiddify",
+            "apps.vpn_providers.services.pasarguard",
+            "apps.vpn_providers.services.connectix",
+        ):
+            import_module(module)
         return list(cls._providers.keys())

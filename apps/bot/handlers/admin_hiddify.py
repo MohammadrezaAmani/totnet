@@ -794,7 +794,6 @@ class HiddifyAdminHandler(BaseHandler):
             if not order:
                 text = "❌ سفارش یافت نشد"
             else:
-                old_status = order.status
                 order.status = new_status
                 await order.asave()
 
@@ -3612,22 +3611,6 @@ UUID:  <code>{u.uuid}</code>
     # ═══════════════════════════════════════════════
     #  PAYMENT SEARCH
     # ═══════════════════════════════════════════════
-
-    async def start_search_payment(self, callback: types.CallbackQuery):
-        """Set state for searching payments/orders"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        await self.update_user_state(
-            user,
-            BotState.StateType.ADMIN_ACTION,
-            {"action": "search_payment"},
-        )
-        text = (
-            "🔍  <b>جستجوی سفارش/پرداخت</b>\n\n"
-            "شماره سفارش، نام کاربری یا شناسه تراکنش را وارد کنید:"
-        )
-        keyboard = self.get_back_keyboard("admin_orders")
-        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
-        await callback.answer()
 
     async def _handle_search_payment(self, message: types.Message, user: User, state: BotState):
         """Execute payment/order search"""

@@ -5,10 +5,12 @@ Subscription Management Handler for Multi-Tenant VPN Bot
 import io
 import logging
 from datetime import datetime, timedelta
+from html import escape
 
 import qrcode
 from aiogram import types
 from aiogram.types import BufferedInputFile
+from django.db.models import Q
 
 from apps.subscriptions.models import Subscription, SubscriptionConfig
 
@@ -26,7 +28,9 @@ class SubscriptionHandler(BaseHandler):
 
         subscriptions = []
         async for sub in (
-            Subscription.objects.filter(user=user, brand=self.brand)
+            Subscription.objects.filter(
+                (Q(user=user) | Q(owner=user)), brand=self.brand
+            )
             .select_related("plan", "vpn_provider")
             .order_by("-created_at")
         ):
@@ -114,9 +118,11 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            subscription = await Subscription.objects.select_related(
-                "plan", "vpn_provider"
-            ).aget(id=subscription_id, user=user, brand=self.brand)
+            subscription = (
+                await Subscription.objects.select_related("plan", "vpn_provider")
+                .filter(Q(user=user) | Q(owner=user))
+                .aget(id=subscription_id, brand=self.brand)
+            )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
@@ -224,16 +230,29 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            subscription = await Subscription.objects.select_related(
-                "vpn_provider", "plan"
-            ).aget(
-                id=subscription_id,
-                user=user,
-                brand=self.brand,
-                status=Subscription.SubscriptionStatus.ACTIVE,
+            subscription = (
+                await Subscription.objects.select_related("vpn_provider", "plan")
+                .filter(Q(user=user) | Q(owner=user))
+                .aget(
+                    id=subscription_id,
+                    brand=self.brand,
+                    status=Subscription.SubscriptionStatus.ACTIVE,
+                )
             )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک فعال یافت نشد.", show_alert=True)
+            return
+
+        provider_type = subscription.vpn_provider.provider_type
+
+        if provider_type == "connectix":
+            try:
+                config = await SubscriptionConfig.objects.aget(
+                    subscription=subscription
+                )
+            except SubscriptionConfig.DoesNotExist:
+                config = None
+            await self.send_connectix_config(callback, subscription, config)
             return
 
         try:
@@ -246,37 +265,36 @@ class SubscriptionHandler(BaseHandler):
                 "❌ خطا در دریافت کانفیگ. با پشتیبانی تماس بگیرید.", show_alert=True
             )
             return
-
-        provider_type = subscription.vpn_provider.provider_type
-
-        if provider_type == "connectix":
-            await self.send_connectix_config(callback, subscription, config)
-        else:
-            await self.send_standard_config(callback, subscription, config)
+        await self.send_standard_config(callback, subscription, config)
 
     async def send_connectix_config(
         self,
         callback: types.CallbackQuery,
         subscription: Subscription,
-        config: SubscriptionConfig,
+        config: SubscriptionConfig | None,
     ):
-        """Send Connectix-style configuration (username/password + QR)"""
+        """Send the verified Connectix subscription link and its QR code."""
+        subscription_url = subscription.subscription_url or (
+            config.subscription_url if config else ""
+        )
+        if not subscription_url:
+            await callback.answer(
+                "اشتراک هنوز از Connectix آماده نشده است.", show_alert=True
+            )
+            return
+
         text = f"""
 📱 اطلاعات اتصال - {subscription.plan.name}
 
 👤 نام کاربری: `{subscription.connectix_username}`
-🔑 کلمه عبور: `{subscription.connectix_password}`
 
-📱 نحوه اتصال:
-1️⃣ اپلیکیشن کانکتیکس را نصب کنید
-2️⃣ نام کاربری و کلمه عبور را وارد کنید
-3️⃣ روی اتصال کلیک کنید
+🔗 لینک اشتراک:
+<code>{escape(subscription_url)}</code>
 
-یا از QR Code زیر استفاده کنید:
+لینک اشتراک یا QR را در برنامه VPN مورد نظرتان وارد کنید.
         """
 
-        qr_data = f"connectix://{subscription.connectix_username}:{subscription.connectix_password}"
-        qr_image = self.generate_qr_code(qr_data)
+        qr_image = self.generate_qr_code(subscription_url)
 
         await self.bot.send_message(callback.message.chat.id, text, parse_mode="HTML")
 
@@ -393,8 +411,10 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            subscription = await Subscription.objects.select_related("plan").aget(
-                id=subscription_id, user=user, brand=self.brand
+            subscription = (
+                await Subscription.objects.select_related("plan")
+                .filter(Q(user=user) | Q(owner=user))
+                .aget(id=subscription_id, brand=self.brand)
             )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
@@ -537,13 +557,14 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            subscription = await Subscription.objects.select_related(
-                "plan", "vpn_provider"
-            ).aget(
-                id=subscription_id,
-                user=user,
-                brand=self.brand,
-                status=Subscription.SubscriptionStatus.ACTIVE,
+            subscription = (
+                await Subscription.objects.select_related("plan", "vpn_provider")
+                .filter(Q(user=user) | Q(owner=user))
+                .aget(
+                    id=subscription_id,
+                    brand=self.brand,
+                    status=Subscription.SubscriptionStatus.ACTIVE,
+                )
             )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک فعال یافت نشد.", show_alert=True)
@@ -618,13 +639,14 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            subscription = await Subscription.objects.select_related(
-                "plan", "vpn_provider"
-            ).aget(
-                id=subscription_id,
-                user=user,
-                brand=self.brand,
-                status=Subscription.SubscriptionStatus.ACTIVE,
+            subscription = (
+                await Subscription.objects.select_related("plan", "vpn_provider")
+                .filter(Q(user=user) | Q(owner=user))
+                .aget(
+                    id=subscription_id,
+                    brand=self.brand,
+                    status=Subscription.SubscriptionStatus.ACTIVE,
+                )
             )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک فعال یافت نشد.", show_alert=True)
@@ -663,13 +685,14 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            subscription = await Subscription.objects.select_related(
-                "plan", "vpn_provider"
-            ).aget(
-                id=subscription_id,
-                user=user,
-                brand=self.brand,
-                status=Subscription.SubscriptionStatus.ACTIVE,
+            subscription = (
+                await Subscription.objects.select_related("plan", "vpn_provider")
+                .filter(Q(user=user) | Q(owner=user))
+                .aget(
+                    id=subscription_id,
+                    brand=self.brand,
+                    status=Subscription.SubscriptionStatus.ACTIVE,
+                )
             )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک فعال یافت نشد.", show_alert=True)
@@ -742,13 +765,14 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            subscription = await Subscription.objects.select_related(
-                "plan", "vpn_provider"
-            ).aget(
-                id=subscription_id,
-                user=user,
-                brand=self.brand,
-                status=Subscription.SubscriptionStatus.ACTIVE,
+            subscription = (
+                await Subscription.objects.select_related("plan", "vpn_provider")
+                .filter(Q(user=user) | Q(owner=user))
+                .aget(
+                    id=subscription_id,
+                    brand=self.brand,
+                    status=Subscription.SubscriptionStatus.ACTIVE,
+                )
             )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک فعال یافت نشد.", show_alert=True)

@@ -392,7 +392,7 @@ class PasarGuardProvider(BaseVPNProvider):
         if not self.client:
             self.client = httpx.AsyncClient(
                 timeout=self.session_timeout,
-                verify=False,
+                verify=True,
             )
         return self.client
 
@@ -960,7 +960,7 @@ class PasarGuardProvider(BaseVPNProvider):
             result = await self._node_request("GET", "/stats/latency", params=params)
             if result:
                 if isinstance(result, list):
-                    return [LatencyInfo.from_dict(l) for l in result]
+                    return [LatencyInfo.from_dict(item) for item in result]
                 return [LatencyInfo.from_dict(result)]
             return None
         except Exception as e:

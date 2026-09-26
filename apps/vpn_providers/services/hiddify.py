@@ -439,7 +439,7 @@ class HiddifyProvider(BaseVPNProvider):
         if not self.client:
             self.client = httpx.AsyncClient(
                 timeout=self.session_timeout,
-                verify=False,
+                verify=True,
             )
         return self.client
 

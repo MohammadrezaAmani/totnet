@@ -9,7 +9,6 @@ from typing import Optional
 from aiogram import types
 from aiogram.filters import Command
 from asgiref.sync import sync_to_async
-from django.db import transaction
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
@@ -53,67 +52,17 @@ class StartHandler(BaseHandler):
         """Process referral registration safely using sync_to_async for all DB ops"""
         try:
             await self._process_referral_sync(user.id, referral_code, self.brand.id)
-        except Exception as e:
-            logger.error(f"Error processing referral: {e}")
+        except Exception as exc:
+            logger.error("Referral attribution failed (%s)", type(exc).__name__)
 
     @sync_to_async
     def _process_referral_sync(self, user_id: int, referral_code: str, brand_id: int):
-        """Run all referral logic synchronously to avoid deadlock"""
-        try:
-            with transaction.atomic():
-                from apps.accounts.models import User as UserModel
-                from apps.referrals.models import Referral, ReferralLink
+        """Execute the ORM transaction outside the asynchronous bot loop."""
+        from apps.referrals.services import attribute_referral
 
-                user = UserModel.objects.select_for_update().get(
-                    id=user_id, brand_id=brand_id
-                )
-
-                # Check if already has a referrer
-                if user.referred_by:
-                    return
-
-                try:
-                    referral_link = ReferralLink.objects.select_for_update().get(
-                        code=referral_code, brand_id=brand_id, is_active=True
-                    )
-                except ReferralLink.DoesNotExist:
-                    logger.warning(f"Invalid referral code: {referral_code}")
-                    return
-
-                # Prevent self-referral
-                if referral_link.user_id == user_id:
-                    logger.warning(f"Self-referral attempt: {user_id}")
-                    return
-
-                # Create referral record
-                Referral.objects.create(
-                    referrer=referral_link.user,
-                    referee=user,
-                    brand_id=brand_id,
-                    referral_link=referral_link,
-                    status=Referral.ReferralStatus.PENDING,
-                )
-
-                # Update user
-                user.referred_by = referral_link.user
-                user.referral_count = (user.referral_count or 0) + 1
-                user.save(update_fields=["referred_by", "referral_count", "updated_at"])
-
-                # Update referral link click count
-                ReferralLink.objects.filter(id=referral_link.id).update(
-                    click_count=(referral_link.click_count or 0) + 1
-                )
-
-                logger.info(
-                    f"Referral processed: user {user.telegram_id} "
-                    f"referred by {referral_link.user.telegram_id}"
-                )
-
-        except User.DoesNotExist:
-            logger.error(f"User not found: {user_id}")
-        except Exception as e:
-            logger.error(f"Error in referral processing: {e}")
-            raise
+        return attribute_referral(
+            user_id=user_id, brand_id=brand_id, code=referral_code
+        )
 
     async def show_profile_setup(self, chat_id: int, user: User):
         """Show profile setup screen for new users"""

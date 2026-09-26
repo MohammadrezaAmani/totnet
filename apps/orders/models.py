@@ -123,8 +123,16 @@ class Payment(models.Model):
 
     payment_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
-    wallet = models.ForeignKey("Wallet", on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
+    order = models.ForeignKey(
+        Order, on_delete=models.CASCADE, related_name="payments", null=True, blank=True
+    )
+    wallet = models.ForeignKey(
+        "Wallet",
+        on_delete=models.CASCADE,
+        related_name="payments",
+        null=True,
+        blank=True,
+    )
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="payments"
     )
@@ -181,6 +189,13 @@ class Payment(models.Model):
             models.Index(fields=["user", "status"]),
             models.Index(fields=["gateway_transaction_id"]),
             models.Index(fields=["created_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["order"],
+                condition=models.Q(status="confirmed"),
+                name="uniq_confirmed_payment_per_order",
+            )
         ]
         ordering = ["-created_at"]
 
@@ -304,8 +319,8 @@ class CryptoCurrency(models.Model):
 class Wallet(models.Model):
     """User wallet for storing balance"""
 
-    user = models.OneToOneField(
-        "accounts.User", on_delete=models.CASCADE, related_name="wallet"
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="wallets"
     )
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="wallets"
@@ -329,7 +344,11 @@ class Wallet(models.Model):
 
     class Meta:
         db_table = "wallets"
-        unique_together = ["user", "brand"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "brand"], name="uniq_wallet_per_user_brand"
+            )
+        ]
 
 
 class WalletTransaction(models.Model):
@@ -355,6 +374,9 @@ class WalletTransaction(models.Model):
     balance_after = models.DecimalField(max_digits=15, decimal_places=2)
 
     reference_id = models.CharField(max_length=255, null=True, blank=True)
+    idempotency_key = models.CharField(
+        max_length=255, null=True, blank=True, unique=True
+    )
     description = models.TextField()
 
     metadata = models.JSONField(default=dict, blank=True)

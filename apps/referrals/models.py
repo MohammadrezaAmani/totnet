@@ -19,6 +19,20 @@ class ReferralProgram(models.Model):
     brand = models.OneToOneField(
         "brands.Brand", on_delete=models.CASCADE, related_name="referral_program"
     )
+    reference_service = models.ForeignKey(
+        "RewardService",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="active_programs",
+    )
+    lifetime_reference_service = models.ForeignKey(
+        "RewardService",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="lifetime_programs",
+    )
 
     is_active = models.BooleanField(default=True)
     name = models.CharField(max_length=100, default="Referral Program")
@@ -80,6 +94,10 @@ class ReferralLevel(models.Model):
     name = models.CharField(max_length=100)
 
     min_referrals = models.PositiveIntegerField()
+    min_lifetime_points = models.DecimalField(
+        max_digits=20, decimal_places=8, default=0
+    )
+    badge = models.CharField(max_length=24, blank=True)
     min_conversion_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
 
     reward_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
@@ -168,10 +186,10 @@ class Referral(models.Model):
     converted_at = models.DateTimeField(null=True, blank=True)
 
     referrer_reward_amount = models.DecimalField(
-        max_digits=15, decimal_places=2, default=0
+        max_digits=20, decimal_places=8, default=0
     )
     referee_reward_amount = models.DecimalField(
-        max_digits=15, decimal_places=2, default=0
+        max_digits=20, decimal_places=8, default=0
     )
     rewarded_at = models.DateTimeField(null=True, blank=True)
 
@@ -180,7 +198,11 @@ class Referral(models.Model):
 
     class Meta:
         db_table = "referrals"
-        unique_together = ["referrer", "referee", "brand"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["referee", "brand"], name="uniq_referral_attribution_per_brand"
+            )
+        ]
         indexes = [
             models.Index(fields=["referrer", "status"]),
             models.Index(fields=["referee", "brand"]),
@@ -203,6 +225,13 @@ class ReferralReward(models.Model):
     referral = models.ForeignKey(
         Referral, on_delete=models.CASCADE, related_name="rewards"
     )
+    order = models.ForeignKey(
+        "orders.Order",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="referral_rewards",
+    )
     user = models.ForeignKey(
         "accounts.User", on_delete=models.CASCADE, related_name="referral_rewards"
     )
@@ -211,7 +240,7 @@ class ReferralReward(models.Model):
     )
 
     reward_type = models.CharField(max_length=20)
-    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    amount = models.DecimalField(max_digits=20, decimal_places=8)
     currency = models.CharField(max_length=3, default="USD")
 
     status = models.CharField(
@@ -233,6 +262,13 @@ class ReferralReward(models.Model):
 
     class Meta:
         db_table = "referral_rewards"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["order"],
+                condition=models.Q(order__isnull=False),
+                name="uniq_referral_reward_per_order",
+            )
+        ]
         indexes = [
             models.Index(fields=["user", "status"]),
             models.Index(fields=["brand", "created_at"]),
@@ -352,6 +388,155 @@ class LoyaltyProgram(models.Model):
 
     class Meta:
         db_table = "loyalty_programs"
+
+
+class RewardService(models.Model):
+    """A plan with a configured cost/profit basis and point-box layout."""
+
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="reward_services"
+    )
+    plan = models.ForeignKey(
+        "subscriptions.SubscriptionPlan",
+        on_delete=models.PROTECT,
+        related_name="reward_service_configs",
+    )
+    free_points = models.DecimalField(max_digits=20, decimal_places=8, default=10)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "reward_services"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["brand", "plan"], name="uniq_reward_service_plan"
+            )
+        ]
+
+    @property
+    def point_value(self):
+        return self.plan.price - self.plan.upstream_cost
+
+    def clean(self):
+        super().clean()
+        if self.plan_id and self.brand_id and self.plan.brand_id != self.brand_id:
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError("Reward service plan must belong to the same brand")
+
+
+class RewardBoxCapacity(models.Model):
+    service = models.ForeignKey(
+        RewardService, on_delete=models.CASCADE, related_name="box_capacities"
+    )
+    sequence = models.PositiveSmallIntegerField()
+    capacity = models.DecimalField(max_digits=20, decimal_places=8)
+
+    class Meta:
+        db_table = "reward_box_capacities"
+        ordering = ["sequence"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["service", "sequence"], name="uniq_reward_box_sequence"
+            ),
+            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_box_capacity_positive"),
+        ]
+
+
+class RewardAccount(models.Model):
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="reward_accounts"
+    )
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="reward_accounts"
+    )
+    reference_service = models.ForeignKey(
+        RewardService,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="accounts",
+    )
+    liquid_points = models.DecimalField(max_digits=20, decimal_places=8, default=0)
+    lifetime_points = models.DecimalField(max_digits=20, decimal_places=8, default=0)
+    lifetime_profit = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    next_box_cycle = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "reward_accounts"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "brand"], name="uniq_reward_account_user_brand"
+            )
+        ]
+
+
+class RewardPointBox(models.Model):
+    class State(models.TextChoices):
+        OPEN = "open", "Open"
+        COMPLETE = "complete", "Complete"
+        CONVERTED = "converted", "Converted"
+
+    account = models.ForeignKey(
+        RewardAccount, on_delete=models.CASCADE, related_name="boxes"
+    )
+    service = models.ForeignKey(
+        RewardService, on_delete=models.PROTECT, related_name="point_boxes"
+    )
+    cycle = models.PositiveIntegerField(default=1)
+    sequence = models.PositiveSmallIntegerField()
+    capacity = models.DecimalField(max_digits=20, decimal_places=8)
+    filled = models.DecimalField(max_digits=20, decimal_places=8, default=0)
+    point_value_snapshot = models.DecimalField(max_digits=20, decimal_places=2)
+    state = models.CharField(max_length=16, choices=State.choices, default=State.OPEN)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "reward_point_boxes"
+        ordering = ["cycle", "sequence"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "service", "cycle", "sequence"],
+                name="uniq_reward_point_box_cycle",
+            ),
+            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_point_box_capacity_positive"),
+            models.CheckConstraint(condition=models.Q(filled__gte=0), name="reward_point_box_filled_nonnegative"),
+        ]
+
+
+class RewardPointLedger(models.Model):
+    class EntryType(models.TextChoices):
+        EARNED = "earned", "Earned"
+        BOX_COMPLETED = "box_completed", "Box Completed"
+        SERVICE_REBASE = "service_rebase", "Service Rebase"
+        CONVERTED_TO_WALLET = "converted_to_wallet", "Converted to Wallet"
+
+    account = models.ForeignKey(
+        RewardAccount, on_delete=models.CASCADE, related_name="ledger_entries"
+    )
+    service = models.ForeignKey(
+        RewardService, on_delete=models.PROTECT, related_name="ledger_entries"
+    )
+    order = models.ForeignKey(
+        "orders.Order", on_delete=models.PROTECT, null=True, blank=True
+    )
+    referral_reward = models.ForeignKey(
+        ReferralReward, on_delete=models.PROTECT, null=True, blank=True
+    )
+    entry_type = models.CharField(max_length=24, choices=EntryType.choices)
+    points_delta = models.DecimalField(max_digits=20, decimal_places=8)
+    value_delta = models.DecimalField(max_digits=20, decimal_places=2)
+    point_value_snapshot = models.DecimalField(max_digits=20, decimal_places=2)
+    idempotency_key = models.CharField(max_length=255, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "reward_point_ledger"
+        indexes = [models.Index(fields=["account", "created_at"])]
 
 
 class MarketingMaterial(models.Model):

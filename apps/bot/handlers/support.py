@@ -5,8 +5,6 @@ Handles support tickets, FAQ, ratings, and customer service operations.
 
 import logging
 import math
-from datetime import timedelta
-from typing import List, Optional
 
 from aiogram import types
 from aiogram.types import InlineKeyboardMarkup

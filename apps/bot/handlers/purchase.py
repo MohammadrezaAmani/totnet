@@ -8,13 +8,15 @@ import uuid
 from datetime import timedelta
 
 from aiogram import types
+from asgiref.sync import sync_to_async
 from django.utils import timezone
 
 from apps.bot.models import BotState
-from apps.orders.models import Order, Payment, WalletTransaction
+from apps.orders.models import Order, Payment, Wallet
+from apps.orders.services import WalletCheckoutError, pay_order_with_wallet
 from apps.subscriptions.models import Subscription, SubscriptionPlan
 from apps.vpn_providers.models import VPNProvider
-from asgiref.sync import sync_to_async
+
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ class PurchaseStep:
 
 class PurchaseHandler(BaseHandler):
     """Handle subscription purchase flow"""
+
     async def get_plans(self, user):
         plans = []
         async for plan in SubscriptionPlan.objects.filter(
@@ -78,6 +81,7 @@ class PurchaseHandler(BaseHandler):
             )
             keyboard = self.create_keyboard(keyboard_buttons)
             return text, keyboard
+
     async def show_subscription_plans(self, callback: types.CallbackQuery):
         """Show available subscription plans"""
         user, _ = await self.get_or_create_user(callback.from_user)
@@ -246,24 +250,24 @@ class PurchaseHandler(BaseHandler):
             )
 
         user, _ = await self.get_or_create_user(callback.from_user)
-        try:
-            wallet = await WalletTransaction.objects.filter(
-                wallet__user=user, wallet__brand=self.brand
-            ).afirst()
-            if wallet:
-                wallet_obj = wallet.wallet
-                if wallet_obj.balance >= order.final_price:
-                    keyboard_buttons.insert(
-                        0,
-                        [
-                            {
-                                "text": f"💰 پرداخت از کیف پول ({self.format_price(wallet_obj.balance, order.currency)})",
-                                "callback_data": f"payment_wallet_{order.order_id}",
-                            }
-                        ],
-                    )
-        except Exception as _:
-            pass
+        wallet = await Wallet.objects.filter(
+            user=user,
+            brand=self.brand,
+            is_active=True,
+            is_frozen=False,
+            currency=order.currency,
+            balance__gte=order.final_price,
+        ).afirst()
+        if wallet:
+            keyboard_buttons.insert(
+                0,
+                [
+                    {
+                        "text": f"💰 پرداخت از کیف پول ({self.format_price(wallet.balance, order.currency)})",
+                        "callback_data": f"payment_wallet_{order.order_id}",
+                    }
+                ],
+            )
 
         keyboard_buttons.append(
             [{"text": "❌ انصراف", "callback_data": "purchase_subscription"}]
@@ -282,49 +286,25 @@ class PurchaseHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            order = await Order.objects.aget(
-                order_id=order_id, user=user, brand=self.brand
+            result = await sync_to_async(pay_order_with_wallet)(
+                order_id=order_id, user_id=user.pk, brand_id=self.brand.pk
             )
-        except Order.DoesNotExist:
-            await callback.answer("❌ سفارش یافت نشد.", show_alert=True)
+        except WalletCheckoutError as exc:
+            messages = {
+                "Order was not found": "❌ سفارش یافت نشد.",
+                "Insufficient wallet balance": "❌ موجودی کیف پول کافی نیست.",
+                "Wallet currency does not match order currency": "❌ ارز کیف پول با سفارش یکسان نیست.",
+                "Wallet is unavailable": "❌ کیف پول در دسترس نیست.",
+            }
+            await callback.answer(
+                messages.get(str(exc), "❌ پرداخت از کیف پول انجام نشد."),
+                show_alert=True,
+            )
             return
 
-        from apps.orders.models import Wallet
-
-        try:
-            wallet = await Wallet.objects.aget(user=user, brand=self.brand)
-            if wallet.balance < order.final_price:
-                await callback.answer("❌ موجودی کیف پول کافی نیست.", show_alert=True)
-                return
-        except Wallet.DoesNotExist:
-            await callback.answer("❌ کیف پول یافت نشد.", show_alert=True)
-            return
-
-        _ = await Payment.objects.acreate(
-            order=order,
-            brand=self.brand,
-            user=user,
-            payment_method=Payment.PaymentMethod.WALLET,
-            amount=order.final_price,
-            currency=order.currency,
-            status=Payment.PaymentStatus.CONFIRMED,
-        )
-
-        wallet.balance -= order.final_price
-        await wallet.asave()
-
-        await WalletTransaction.objects.acreate(
-            wallet=wallet,
-            transaction_type=WalletTransaction.TransactionType.PAYMENT,
-            amount=-order.final_price,
-            balance_before=wallet.balance + order.final_price,
-            balance_after=wallet.balance,
-            reference_id=str(order.order_id),
-            description=f"پرداخت سفارش {order.order_number}",
-        )
-
-        order.status = Order.OrderStatus.PAID
-        await order.asave()
+        order = await Order.objects.select_related(
+            "brand", "user", "recipient", "plan", "plan__vpn_provider"
+        ).aget(order_id=order_id, user=user, brand=self.brand)
 
         await self.create_subscription(order)
 
@@ -348,7 +328,11 @@ class PurchaseHandler(BaseHandler):
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
-        await callback.answer("✅ پرداخت با موفقیت انجام شد!")
+        await callback.answer(
+            "✅ این سفارش قبلاً پرداخت شده است."
+            if result.already_paid
+            else "✅ پرداخت با موفقیت انجام شد!"
+        )
 
     async def show_card_transfer_payment(
         self, callback: types.CallbackQuery, order_id: str
@@ -434,25 +418,51 @@ class PurchaseHandler(BaseHandler):
         await callback.answer()
 
     async def create_subscription(self, order: Order):
-        """Create VPN subscription after successful payment with Hiddify integration"""
+        """Create or resume one order's subscription and provision supported providers."""
 
-        vpn_provider = (
-            await VPNProvider.objects.filter(
-                brand=self.brand, status=VPNProvider.ProviderStatus.ACTIVE
-            )
-            .order_by("priority", "current_users")
+        order = await Order.objects.select_related(
+            "brand", "user", "recipient", "plan", "plan__vpn_provider"
+        ).aget(pk=order.pk)
+        subscription = (
+            await Subscription.objects.filter(order=order)
+            .select_related("vpn_provider", "plan", "owner")
             .afirst()
         )
+        if (
+            subscription
+            and subscription.status == Subscription.SubscriptionStatus.ACTIVE
+        ):
+            return subscription
+
+        vpn_provider = (
+            subscription.vpn_provider
+            if subscription
+            else order.plan.vpn_provider
+            if order.plan.vpn_provider_id
+            else await VPNProvider.objects.filter(
+                brand=order.brand,
+                status=VPNProvider.ProviderStatus.ACTIVE,
+                is_default=True,
+            ).afirst()
+        )
+
+        if vpn_provider and vpn_provider.brand_id != order.brand_id:
+            logger.error("Plan provider crosses brand boundary for order %s", order.pk)
+            return
+
+        if vpn_provider and vpn_provider.status != VPNProvider.ProviderStatus.ACTIVE:
+            logger.error("Selected provider is inactive for order %s", order.pk)
+            return
 
         if not vpn_provider:
-            logger.error(f"No available VPN provider for brand {self.brand.id}")
+            logger.error("No available VPN provider for brand %s", order.brand_id)
             return
 
         vpn_email = f"user_{order.user.id}_{uuid.uuid4().hex[:8]}@{self.brand.slug}.vpn"
 
-        start_date = timezone.now()
-        end_date = None
-        if order.plan.duration_value:
+        start_date = subscription.starts_at if subscription else timezone.now()
+        end_date = subscription.expires_at if subscription else None
+        if order.plan.duration_value and not end_date:
             if order.plan.duration_unit == SubscriptionPlan.DurationUnit.DAYS:
                 end_date = start_date + timedelta(days=order.plan.duration_value)
             elif order.plan.duration_unit == SubscriptionPlan.DurationUnit.MONTHS:
@@ -460,21 +470,37 @@ class PurchaseHandler(BaseHandler):
             elif order.plan.duration_unit == SubscriptionPlan.DurationUnit.YEARS:
                 end_date = start_date + timedelta(days=order.plan.duration_value * 365)
 
-        subscription = await Subscription.objects.acreate(
-            brand=self.brand,
-            user=order.user,
-            plan=order.plan,
-            order=order,
-            vpn_provider=vpn_provider,
-            vpn_user_email=vpn_email,
-            owner=order.recipient or order.user,
-            starts_at=start_date,
-            expires_at=end_date,
-            traffic_limit_gb=order.plan.traffic_limit_gb,
-            status=Subscription.SubscriptionStatus.PENDING,
-        )
+        if not subscription:
+            subscription = await Subscription.objects.acreate(
+                brand=order.brand,
+                user=order.user,
+                plan=order.plan,
+                order=order,
+                vpn_provider=vpn_provider,
+                vpn_user_email=vpn_email,
+                owner=order.recipient or order.user,
+                starts_at=start_date,
+                expires_at=end_date,
+                traffic_limit_gb=order.plan.traffic_limit_gb,
+                status=Subscription.SubscriptionStatus.PENDING,
+            )
+        else:
+            changed_fields = []
+            if not subscription.expires_at and end_date:
+                subscription.expires_at = end_date
+                changed_fields.append("expires_at")
+            if not subscription.vpn_user_email:
+                subscription.vpn_user_email = vpn_email
+                changed_fields.append("vpn_user_email")
+            if subscription.status != Subscription.SubscriptionStatus.PENDING:
+                subscription.status = Subscription.SubscriptionStatus.PENDING
+                changed_fields.append("status")
+            if changed_fields:
+                changed_fields.append("updated_at")
+                await subscription.asave(update_fields=changed_fields)
 
         if vpn_provider.provider_type == VPNProvider.ProviderType.HIDDIFY:
+            hiddify = None
             try:
                 from apps.vpn_providers.services.hiddify import (
                     HiddifyLanguage,
@@ -528,23 +554,43 @@ class PurchaseHandler(BaseHandler):
                     logger.error(
                         f"Failed to create Hiddify user for subscription {subscription.subscription_id}"
                     )
-                    subscription.status = Subscription.SubscriptionStatus.SUSPENDED
-                    await subscription.asave()
-
-                await hiddify.close()
 
             except Exception as e:
-                logger.error(f"Error creating Hiddify user: {e}")
-                subscription.status = Subscription.SubscriptionStatus.SUSPENDED
-                await subscription.asave()
+                logger.error(
+                    "Hiddify provisioning failed for subscription %s (%s)",
+                    subscription.pk,
+                    type(e).__name__,
+                )
+            finally:
+                if hiddify:
+                    await hiddify.close()
         else:
-            subscription.status = Subscription.SubscriptionStatus.ACTIVE
-            await subscription.asave()
+            if vpn_provider.provider_type == VPNProvider.ProviderType.CONNECTIX:
+                from apps.subscriptions.services import provision_connectix_subscription
 
-        order.status = Order.OrderStatus.COMPLETED
+                try:
+                    await provision_connectix_subscription(subscription)
+                except Exception as e:
+                    logger.error(
+                        "Connectix provisioning failed for subscription %s (%s)",
+                        subscription.pk,
+                        type(e).__name__,
+                    )
+            else:
+                logger.warning(
+                    "Provider type %s has no purchase provisioning adapter; subscription %s stays pending",
+                    vpn_provider.provider_type,
+                    subscription.pk,
+                )
+
+        order.status = (
+            Order.OrderStatus.COMPLETED
+            if subscription.status == Subscription.SubscriptionStatus.ACTIVE
+            else Order.OrderStatus.PROCESSING
+        )
         await order.asave()
 
-        logger.info(f"Subscription created: {subscription.subscription_id}")
+        logger.info("Subscription %s is %s", subscription.pk, subscription.status)
         return subscription
 
     async def payment_done(self, callback: types.CallbackQuery, order_id: str):

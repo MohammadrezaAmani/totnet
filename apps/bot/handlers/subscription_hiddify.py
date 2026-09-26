@@ -492,7 +492,6 @@ UUID کاربر در پنل یافت نشد.
                 await callback.answer("❌ اشتراک یافت نشد", show_alert=True)
                 return
 
-            secret_uuid = sub.connection_configs.get("secret_uuid")
             provider = await self.get_hiddify_provider()
 
             if not provider:

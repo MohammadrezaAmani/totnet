@@ -4,14 +4,25 @@ Django settings for Multi-Tenant VPN Platform
 
 import os
 from pathlib import Path
+from urllib.parse import unquote
 
 from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def parse_debug(value):
+    """Accept deployment labels as well as boolean DEBUG values."""
+    normalized = str(value).strip().lower()
+    if normalized in {"release", "production", "prod", "false", "0", "no", "off"}:
+        return False
+    if normalized in {"debug", "development", "dev", "true", "1", "yes", "on"}:
+        return True
+    raise ValueError("DEBUG must be a boolean or an environment label such as release")
+
+
 SECRET_KEY = config("SECRET_KEY", default="django-insecure-change-this-in-production")
-DEBUG = config("DEBUG", default=True, cast=bool)
+DEBUG = config("DEBUG", default=True, cast=parse_debug)
 ALLOWED_HOSTS = config(
     "ALLOWED_HOSTS",
     default="localhost,127.0.0.1",
@@ -84,10 +95,18 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASE_URL = config("DATABASE_URL", default="sqlite:///db.sqlite3")
 
 if DATABASE_URL.startswith("sqlite"):
+    database_path = unquote(DATABASE_URL[len("sqlite:///") :].split("?", 1)[0])
+    database_name = (
+        ":memory:"
+        if database_path == ":memory:"
+        else Path(database_path or "db.sqlite3")
+    )
+    if isinstance(database_name, Path) and not database_name.is_absolute():
+        database_name = BASE_DIR / database_name
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "NAME": database_name,
         }
     }
 elif DATABASE_URL.startswith("postgresql"):
@@ -130,9 +149,7 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_DIRS = [
-    BASE_DIR / "static",
-]
+STATICFILES_DIRS = [BASE_DIR / "static"] if (BASE_DIR / "static").is_dir() else []
 
 
 MEDIA_URL = "media/"
@@ -143,6 +160,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 REDIS_URL = config("REDIS_URL", default="redis://localhost:6379/0")
+CONNECTIX_API_BASE_URL = (
+    config("CONNECTIX_BASE_URL", default="https://api.connectix.vip")
+    or "https://api.connectix.vip"
+).rstrip("/")
+CONNECTIX_USERNAME = config("CONNECTIX_USERNAME", default="")
+CONNECTIX_PASSWORD = config("CONNECTIX_PASSWORD", default="")
+CONNECTIX_TIMEOUT_SECONDS = config("CONNECTIX_TIMEOUT_SECONDS", default=20, cast=int)
 
 
 CELERY_BROKER_URL = config("CELERY_BROKER_URL", default=REDIS_URL)

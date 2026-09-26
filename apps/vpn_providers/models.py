@@ -48,6 +48,7 @@ class VPNProvider(models.Model):
     priority = models.PositiveIntegerField(default=1)
 
     last_health_check = models.DateTimeField(null=True, blank=True)
+    last_sync = models.DateTimeField(null=True, blank=True)
     health_status = models.CharField(max_length=20, default="unknown")
     response_time = models.PositiveIntegerField(null=True, blank=True)
 
