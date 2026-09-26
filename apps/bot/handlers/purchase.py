@@ -396,6 +396,19 @@ class PurchaseHandler(BaseHandler):
         if answer_callback:
             await callback.answer()
 
+    async def show_payment_methods_for_order(
+        self, callback: types.CallbackQuery, order_id: str
+    ):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        try:
+            order = await Order.objects.select_related("plan").aget(
+                order_id=order_id, user=user, brand=self.brand
+            )
+        except Order.DoesNotExist:
+            await callback.answer("❌ سفارش یافت نشد.", show_alert=True)
+            return
+        await self.show_payment_methods(callback, order)
+
     async def _payment_methods_keyboard(self, user, order):
         keyboard_buttons = []
         async for method in self.brand.payment_methods.filter(is_enabled=True).order_by(

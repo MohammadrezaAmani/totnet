@@ -422,13 +422,21 @@ class MultiBrandDispatcher:
                 if len(parts) >= 3:
                     order_id = parts[3]
                     await handlers["purchase"].payment_not_done(callback, order_id)
+            elif data.startswith("payment_methods_"):
+                order_id = data.removeprefix("payment_methods_")
+                await handlers["purchase"].show_payment_methods_for_order(
+                    callback, order_id
+                )
+            elif data.startswith("payment_wallet_"):
+                order_id = data.removeprefix("payment_wallet_")
+                await handlers["purchase"].process_wallet_payment(
+                    callback, order_id
+                )
             elif data.startswith("payment_"):
-                parts = data.split("_")
-                if len(parts) >= 3:
-                    order_id = parts[3]
-                    await handlers["purchase"].show_card_transfer_payment(
-                        callback, order_id
-                    )
+                order_id = data.rsplit("_", 1)[-1]
+                await handlers["purchase"].show_card_transfer_payment(
+                    callback, order_id
+                )
             elif data.startswith("select_card_"):
                 parts = data.split("_")
                 if len(parts) >= 3:

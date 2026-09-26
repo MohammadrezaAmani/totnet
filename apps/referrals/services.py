@@ -6,7 +6,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, localcontext
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import F, Sum
 from django.utils import timezone
 
@@ -75,13 +75,32 @@ def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = N
     if visitor_id is not None:
         if not User.objects.filter(pk=visitor_id, brand_id=brand_id).exists():
             return False
-        try:
-            with transaction.atomic():
-                ReferralClick.objects.create(
-                    link=link, visitor_id=visitor_id, brand_id=brand_id
-                )
-        except IntegrityError:
-            return False
+        table = connection.ops.quote_name(ReferralClick._meta.db_table)
+        link_column = connection.ops.quote_name(
+            ReferralClick._meta.get_field("link").column
+        )
+        visitor_column = connection.ops.quote_name(
+            ReferralClick._meta.get_field("visitor").column
+        )
+        brand_column = connection.ops.quote_name(
+            ReferralClick._meta.get_field("brand").column
+        )
+        created_column = connection.ops.quote_name(
+            ReferralClick._meta.get_field("created_at").column
+        )
+        constraint = connection.ops.quote_name("uniq_referral_visit_per_user")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"INSERT INTO {table} "
+                f"({link_column}, {visitor_column}, {brand_column}, {created_column}) "
+                f"VALUES (%s, %s, %s, %s) "
+                f"ON CONFLICT ON CONSTRAINT {constraint} DO NOTHING RETURNING id",
+                [link.pk, visitor_id, brand_id, timezone.now()],
+            )
+            if cursor.fetchone() is None:
+                # Repeated starts are expected; avoid raising a uniqueness error
+                # just to determine that this visitor was already counted.
+                return False
     updated = ReferralLink.objects.filter(pk=link.pk).update(
         click_count=F("click_count") + 1
     )
