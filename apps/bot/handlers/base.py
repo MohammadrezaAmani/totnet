@@ -7,6 +7,7 @@ import logging
 from aiogram import Bot, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from django.core.cache import cache
+from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
@@ -98,6 +99,24 @@ class BaseHandler:
         except Exception as exc:
             logger.warning("Admin access lookup failed for user %s: %s", user.pk, exc)
             return False
+
+    def get_brand_admin_recipients(self):
+        """Return Telegram-reachable admins whose current grants include this brand."""
+        brand_admin_scope = Q(
+            Q(
+                brand_id=self.brand.pk,
+                user_type__in=(User.UserType.BRAND_MANAGER, User.UserType.BRAND_ADMIN),
+            )
+            | Q(admin_brands__pk=self.brand.pk)
+        )
+        return (
+            User.objects.filter(
+                Q(is_staff=True) | Q(is_superuser=True) | brand_admin_scope,
+                telegram_id__isnull=False,
+            )
+            .exclude(telegram_id=0)
+            .distinct()
+        )
 
     def create_keyboard(self, buttons_data: list) -> InlineKeyboardMarkup:
         """Create inline keyboard from button data"""

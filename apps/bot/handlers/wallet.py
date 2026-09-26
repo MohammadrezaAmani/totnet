@@ -699,9 +699,17 @@ class WalletHandler(BaseHandler):
 
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
-        await self._notify_admin_receipt(wallet, payment, file_id)
+        notified = await self._notify_admin_receipt(wallet, payment, file_id)
+        if not notified:
+            await self.send_message_with_keyboard(
+                message.chat.id,
+                "⚠️ رسید ذخیره شد، اما اعلان برای ادمین ارسال نشد. لطفاً با پشتیبانی تماس بگیرید.",
+                keyboard,
+            )
 
-    async def _notify_admin_receipt(self, wallet: Wallet, payment: Payment, file_id: str):
+    async def _notify_admin_receipt(
+        self, wallet: Wallet, payment: Payment, file_id: str
+    ) -> bool:
         """ارسال رسید به ادمین برای تأیید/رد"""
         admin_text = (
             f"🧾شارژ کیف پول\n"
@@ -724,7 +732,8 @@ class WalletHandler(BaseHandler):
             ]
         )
 
-        async for user in self.brand.admin_users.all():
+        notified = 0
+        async for user in self.get_brand_admin_recipients():
             try:
                 await self.bot.send_photo(
                     chat_id=user.telegram_id,
@@ -732,8 +741,25 @@ class WalletHandler(BaseHandler):
                     caption=admin_text,
                     reply_markup=admin_kb,
                 )
-            except Exception as e:
-                logger.error(f"Failed to notify admin {user.telegram_id}: {e}")
+                notified += 1
+            except Exception:
+                logger.exception(
+                    "Failed to send wallet receipt notification to admin %s", user.pk
+                )
+        if notified:
+            logger.info(
+                "Sent wallet receipt notification to %s admin(s) for brand %s, payment %s",
+                notified,
+                self.brand.pk,
+                payment.pk,
+            )
+        else:
+            logger.error(
+                "No Telegram admin received wallet receipt notification for brand %s, payment %s",
+                self.brand.pk,
+                payment.pk,
+            )
+        return notified > 0
 
     async def admin_confirm_payment(
         self,
@@ -742,8 +768,13 @@ class WalletHandler(BaseHandler):
     ):
         """Confirm payment."""
 
+        user, _ = await self.get_or_create_user(callback.from_user, use_cache=False)
+        if not await self.has_admin_access(user):
+            await callback.answer("⛔ دسترسی ادمین ندارید.", show_alert=True)
+            return
+
         try:
-            payment = await Payment.objects.aget(id=int(payment_id))
+            payment = await Payment.objects.aget(id=int(payment_id), brand=self.brand)
         except Payment.DoesNotExist:
             await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
             return
@@ -763,8 +794,13 @@ class WalletHandler(BaseHandler):
     ):
         """Reject payment."""
 
+        user, _ = await self.get_or_create_user(callback.from_user, use_cache=False)
+        if not await self.has_admin_access(user):
+            await callback.answer("⛔ دسترسی ادمین ندارید.", show_alert=True)
+            return
+
         try:
-            payment = await Payment.objects.aget(id=int(payment_id))
+            payment = await Payment.objects.aget(id=int(payment_id), brand=self.brand)
         except Payment.DoesNotExist:
             await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
             return
