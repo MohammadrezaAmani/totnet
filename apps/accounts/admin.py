@@ -6,7 +6,9 @@ from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.forms import ReadOnlyPasswordHashField
+from django.db.models import OuterRef, Subquery
 
+from apps.referrals.models import RewardAccount
 from .models import AuditLog, Permission, Role, User, UserProfile, UserRole, UserSession
 
 
@@ -158,9 +160,8 @@ class UserAdmin(BaseUserAdmin):
         "full_name",
         "user_type",
         "brand",
-        "level",
         "wallet_balance",
-        "reward_points",
+        "account_lifetime_points",
         "is_verified",
         "is_active",
         "created_at",
@@ -203,8 +204,6 @@ class UserAdmin(BaseUserAdmin):
             {
                 "fields": (
                     "wallet_balance",
-                    "reward_points",
-                    "level",
                     "experience_points",
                 )
             },
@@ -246,7 +245,6 @@ class UserAdmin(BaseUserAdmin):
         "referral_code",
         "referral_count",
         "wallet_balance",
-        "reward_points",
         "experience_points",
         "total_purchases",
         "total_spent",
@@ -262,10 +260,21 @@ class UserAdmin(BaseUserAdmin):
         "verify_users",
         "unverify_users",
         "reset_passwords",
-        "add_reward_points",
-        "clear_wallet",
         "export_users_csv",
     ]
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            qs = qs.filter(brand__in=request.user.admin_brands.all())
+        reward_points = RewardAccount.objects.filter(
+            user_id=OuterRef("pk"), brand_id=OuterRef("brand_id")
+        ).values("lifetime_points")[:1]
+        return qs.annotate(account_lifetime_points=Subquery(reward_points))
+
+    @admin.display(description="Lifetime reward points", ordering="account_lifetime_points")
+    def account_lifetime_points(self, obj):
+        return obj.account_lifetime_points or 0
 
     def activate_users(self, request, queryset):
         """Activate selected users"""
@@ -318,40 +327,6 @@ class UserAdmin(BaseUserAdmin):
 
     reset_passwords.short_description = "Reset passwords for selected users"
 
-    def add_reward_points(self, request, queryset):
-        """Add reward points to selected users"""
-        from django import forms
-
-        class PointsForm(forms.Form):
-            points = forms.IntegerField(min_value=1, label="Points to add")
-
-        form = PointsForm(request.POST) if request.POST.get("points") else None
-
-        if form and form.is_valid():
-            points = form.cleaned_data["points"]
-            updated = 0
-            for user in queryset:
-                user.reward_points += points
-                user.save()
-                updated += 1
-            self.message_user(
-                request, f"Added {points} points to {updated} users.", messages.SUCCESS
-            )
-            return
-
-        self.message_user(request, "Points added successfully.", messages.SUCCESS)
-
-    add_reward_points.short_description = "Add reward points to selected users"
-
-    def clear_wallet(self, request, queryset):
-        """Clear wallet balance for selected users"""
-        updated = queryset.update(wallet_balance=0)
-        self.message_user(
-            request, f"Cleared wallet for {updated} users.", messages.SUCCESS
-        )
-
-    clear_wallet.short_description = "Clear wallet balance"
-
     def export_users_csv(self, request, queryset):
         """Export selected users to CSV"""
         import csv
@@ -387,13 +362,6 @@ class UserAdmin(BaseUserAdmin):
         return response
 
     export_users_csv.short_description = "Export selected users to CSV"
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if not request.user.is_superuser:
-            return qs.filter(brand__in=request.user.admin_brands.all())
-        return qs
-
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):

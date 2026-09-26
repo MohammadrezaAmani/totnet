@@ -28,4 +28,6 @@ dependencies = [
     "gunicorn>=21.2.0",
     "ipython>=9.14.1",
     "aiohttp-socks>=0.11.0",
+    "dj-database-url>=2.3",
+    "psycopg[binary]>=3.2",
 ]

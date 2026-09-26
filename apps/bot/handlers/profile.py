@@ -7,10 +7,12 @@ import logging
 import re
 
 from aiogram import types
+from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
 from apps.subscriptions.models import Subscription
+from apps.referrals.selectors import reward_summary
 
 from .base import BaseHandler
 
@@ -24,8 +26,9 @@ class ProfileHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         subscription_count = await Subscription.objects.filter(
-            user=user, brand=self.brand, status="active"
+            (Q(user=user) | Q(owner=user)), brand=self.brand, status="active"
         ).acount()
+        rewards = await reward_summary(user_id=user.pk, brand_id=self.brand.pk)
 
         from apps.orders.models import Wallet
 
@@ -47,8 +50,9 @@ class ProfileHandler(BaseHandler):
 📊 وضعیت:
 • اشتراک‌های فعال: {subscription_count}
 • موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
-• سطح کاربری: {user.level}
-• امتیازات: {user.reward_points}
+• سطح کاربری: {rewards['level_title']}
+• امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
+• امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
         """
 
         keyboard = self.create_keyboard(

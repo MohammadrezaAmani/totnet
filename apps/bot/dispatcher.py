@@ -125,6 +125,13 @@ class MultiBrandDispatcher:
                 await handlers["profile"].handle_profile_field_message(
                     message, user, state
                 )
+            elif (
+                state.current_state == BotState.StateType.PURCHASE_FLOW
+                and (state.state_data or {}).get("step") == "gift_recipient"
+            ):
+                await handlers["purchase"].handle_gift_recipient_message(
+                    message, user, state
+                )
 
             # elif state.current_state == BotState.StateType.SUPPORT_TICKET:
             #     step = (state.state_data or {}).get("step")
@@ -178,6 +185,11 @@ class MultiBrandDispatcher:
                     "لطفاً از منوی زیر استفاده کنید:",
                     reply_markup=await handlers["start"].get_main_menu_keyboard(user),
                 )
+
+        @router.message(F.contact)
+        async def handle_contact_message(message: Message):
+            user, _ = await handlers["start"].get_or_create_user(message.from_user)
+            await handlers["start"].handle_contact_message(message, user)
 
 
 
@@ -419,20 +431,20 @@ class MultiBrandDispatcher:
                 await handlers["wallet"].show_wallet_history(callback)
 
             elif data == "my_subscriptions":
-                await handlers["subscription_hiddify"].show_my_subscriptions(callback)
+                await handlers["subscriptions"].show_my_subscriptions(callback)
             elif data.startswith("subscription_details_"):
                 sub_id = int(data.split("_")[2])
-                await handlers["subscription_hiddify"].show_subscription_details(
+                await handlers["subscriptions"].show_subscription_details(
                     callback, sub_id
                 )
             elif data.startswith("get_config_"):
                 sub_id = int(data.split("_")[2])
-                await handlers["subscription_hiddify"].get_subscription_config(
+                await handlers["subscriptions"].get_subscription_config(
                     callback, sub_id
                 )
             elif data.startswith("usage_stats_"):
                 sub_id = int(data.split("_")[2])
-                await handlers["subscription_hiddify"].show_usage_statistics(
+                await handlers["subscriptions"].show_usage_statistics(
                     callback, sub_id
                 )
             elif data.startswith("renew_"):
@@ -627,6 +639,8 @@ class MultiBrandDispatcher:
                 await callback.answer()
             elif data == "rewards":
                 await handlers["rewards"].show_rewards(callback)
+            elif data.startswith("claim_reward:"):
+                await handlers["rewards"].redeem_reward(callback, data.partition(":")[2])
             elif data == "how_to_earn":
                 await handlers["rewards"].show_how_to_earn(callback)
             elif data == "leaderboard":

@@ -165,7 +165,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                     is_default=True,
                 ).first()
             if provider:
-                Subscription.objects.get_or_create(
+                subscription, _ = Subscription.objects.get_or_create(
                     order=order,
                     defaults={
                         "brand": order.brand,
@@ -177,6 +177,11 @@ def payment_post_save(sender, instance, created, **kwargs):
                         "starts_at": timezone.now(),
                         "traffic_limit_gb": order.plan.traffic_limit_gb,
                     },
+                )
+                transaction.on_commit(
+                    lambda subscription_id=subscription.pk: _enqueue_order_provisioning(
+                        subscription_id
+                    )
                 )
             else:
                 logger.error(
@@ -203,6 +208,11 @@ def payment_post_save(sender, instance, created, **kwargs):
                         )
                     )
                 )
+            # Referral rewards run outside the payment transaction. The task is
+            # idempotent and a periodic recovery task covers enqueue failures.
+            transaction.on_commit(
+                lambda payment_id=instance.payment_id: _enqueue_referral_reward(payment_id)
+            )
         if instance.wallet_id and not instance.order_id:
             _apply_payment_wallet_delta(
                 instance,
@@ -266,6 +276,28 @@ def payment_post_save(sender, instance, created, **kwargs):
                 key=f"payment:{instance.payment_id}:refunded-wallet-delta",
                 description=f"Refund/reversal for payment {instance.payment_id}",
             )
+
+
+def _enqueue_referral_reward(payment_id):
+    from apps.referrals.tasks import process_referral_reward
+
+    process_referral_reward.delay(str(payment_id))
+
+
+def _enqueue_order_provisioning(subscription_id):
+    from apps.subscriptions.tasks import provision_paid_order
+
+    try:
+        order_id = Subscription.objects.values_list("order_id", flat=True).get(
+            pk=subscription_id
+        )
+        provision_paid_order.delay(order_id)
+    except Exception as exc:
+        logger.error(
+            "Could not queue provisioning for order %s (%s)",
+            order_id,
+            type(exc).__name__,
+        )
 
 
 # ---------------------------------------------------------------------

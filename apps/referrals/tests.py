@@ -1,11 +1,30 @@
 import uuid
+from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 
 from apps.accounts.models import User
 from apps.brands.models import Brand
-from apps.referrals.models import Referral, ReferralLink
-from apps.referrals.services import attribute_referral
+from apps.orders.models import Order, Payment, Wallet
+from apps.referrals.models import (
+    Referral,
+    ReferralLink,
+    ReferralProgram,
+    ReferralReward,
+    RewardAccount,
+    RewardBoxCapacity,
+    RewardPointBox,
+    RewardPointLedger,
+    RewardService,
+)
+from apps.referrals.services import (
+    attribute_referral,
+    award_level_one_referral_for_payment,
+    set_active_reference_service,
+)
+from apps.subscriptions.models import SubscriptionPlan
+from apps.vpn_providers.models import VPNProvider
 
 
 class ReferralAttributionTests(TestCase):
@@ -66,3 +85,271 @@ class ReferralAttributionTests(TestCase):
             )
         )
         self.assertFalse(Referral.objects.exists())
+
+
+class ReferralProfitPointTests(TestCase):
+    def setUp(self):
+        self.brand = Brand.objects.create(
+            name="Points Test",
+            slug=f"points-test-{uuid.uuid4().hex[:8]}",
+            contact_email="points@example.invalid",
+            bot_token=f"token-{uuid.uuid4().hex}",
+            currency="USD",
+        )
+        self.referrer = User.objects.create_user(
+            username=f"points-referrer-{uuid.uuid4().hex[:8]}", brand=self.brand
+        )
+        self.referee = User.objects.create_user(
+            username=f"points-referee-{uuid.uuid4().hex[:8]}", brand=self.brand
+        )
+        self.provider = VPNProvider.objects.create(
+            name="Reward Provider",
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            base_url="https://api.example.invalid",
+            api_key="masked-test-value",
+            brand=self.brand,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+            is_default=True,
+        )
+        self.link = ReferralLink.objects.create(
+            user=self.referrer, brand=self.brand, code=f"p-{uuid.uuid4().hex[:8]}"
+        )
+        self.assertTrue(
+            attribute_referral(
+                user_id=self.referee.pk, brand_id=self.brand.pk, code=self.link.code
+            )
+        )
+        self.purchase_plan = SubscriptionPlan.objects.create(
+            brand=self.brand,
+            name="Purchase",
+            price=Decimal("15.00"),
+            upstream_cost=Decimal("5.00"),
+            currency="USD",
+            duration_value=30,
+            duration_unit=SubscriptionPlan.DurationUnit.DAYS,
+        )
+        self.reference_plan = SubscriptionPlan.objects.create(
+            brand=self.brand,
+            name="Reference",
+            price=Decimal("5.00"),
+            upstream_cost=Decimal("1.00"),
+            currency="USD",
+            duration_value=30,
+            duration_unit=SubscriptionPlan.DurationUnit.DAYS,
+        )
+        self.lifetime_plan = SubscriptionPlan.objects.create(
+            brand=self.brand,
+            name="Lifetime Reference",
+            price=Decimal("10.00"),
+            upstream_cost=Decimal("5.00"),
+            currency="USD",
+            duration_value=30,
+            duration_unit=SubscriptionPlan.DurationUnit.DAYS,
+        )
+        self.service = RewardService.objects.create(
+            brand=self.brand, plan=self.reference_plan, free_points=Decimal("1")
+        )
+        self.lifetime_service = RewardService.objects.create(
+            brand=self.brand, plan=self.lifetime_plan
+        )
+        RewardBoxCapacity.objects.create(
+            service=self.service, sequence=1, capacity=Decimal("1")
+        )
+        RewardBoxCapacity.objects.create(
+            service=self.service, sequence=2, capacity=Decimal("2")
+        )
+        RewardBoxCapacity.objects.create(
+            service=self.lifetime_service, sequence=1, capacity=Decimal("1")
+        )
+        self.program = ReferralProgram.objects.create(
+            brand=self.brand,
+            reference_service=self.service,
+            lifetime_reference_service=self.lifetime_service,
+        )
+        self.order = Order.objects.create(
+            brand=self.brand,
+            user=self.referee,
+            plan=self.purchase_plan,
+            original_price=Decimal("15.00"),
+            final_price=Decimal("15.00"),
+            currency="USD",
+            status=Order.OrderStatus.PAID,
+        )
+        self.payment = Payment.objects.create(
+            order=self.order,
+            brand=self.brand,
+            user=self.referee,
+            payment_method=Payment.PaymentMethod.CARD_TRANSFER,
+            status=Payment.PaymentStatus.CONFIRMED,
+            amount=Decimal("15.00"),
+            currency="USD",
+        )
+
+    def test_confirmed_order_awards_fractional_level_one_points_once(self):
+        self.purchase_plan.upstream_cost = Decimal("8.00")
+        self.purchase_plan.save(update_fields=["upstream_cost"])
+        points = award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
+        duplicate = award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
+        account = RewardAccount.objects.get(user=self.referrer, brand=self.brand)
+        referral = Referral.objects.get(referee=self.referee, brand=self.brand)
+
+        self.assertEqual(points, Decimal("2.50000000"))
+        self.assertEqual(duplicate, Decimal("0"))
+        self.assertEqual(account.lifetime_profit, Decimal("10.00"))
+        self.assertEqual(account.lifetime_points, Decimal("2.00000000"))
+        self.assertEqual(account.liquid_points, Decimal("1.00000000"))
+        self.assertEqual(
+            list(RewardPointBox.objects.filter(account=account).values_list("filled", flat=True)),
+            [Decimal("1.00000000"), Decimal("1.50000000")],
+        )
+        self.assertEqual(ReferralReward.objects.filter(order=self.order).count(), 1)
+        self.assertEqual(RewardPointLedger.objects.filter(order=self.order, entry_type="earned").count(), 1)
+        self.assertEqual(referral.status, Referral.ReferralStatus.REWARDED)
+
+    def test_recovery_task_only_queues_unrewarded_referred_purchases(self):
+        from apps.referrals.tasks import recover_pending_referral_rewards
+
+        with patch("apps.referrals.tasks.process_referral_reward.delay") as queue:
+            count = recover_pending_referral_rewards.run(limit=10)
+
+        self.assertEqual(count, 1)
+        queue.assert_called_once_with(str(self.payment.payment_id))
+
+    def test_direct_referral_earns_again_on_later_profitable_orders(self):
+        first_points = award_level_one_referral_for_payment(
+            payment_id=str(self.payment.payment_id)
+        )
+        later_order = Order.objects.create(
+            brand=self.brand,
+            user=self.referee,
+            plan=self.purchase_plan,
+            original_price=Decimal("8.00"),
+            final_price=Decimal("8.00"),
+            currency="USD",
+            status=Order.OrderStatus.PAID,
+        )
+        later_payment = Payment.objects.create(
+            order=later_order,
+            brand=self.brand,
+            user=self.referee,
+            payment_method=Payment.PaymentMethod.CARD_TRANSFER,
+            status=Payment.PaymentStatus.CONFIRMED,
+            amount=Decimal("8.00"),
+            currency="USD",
+        )
+        later_points = award_level_one_referral_for_payment(
+            payment_id=str(later_payment.payment_id)
+        )
+
+        account = RewardAccount.objects.get(user=self.referrer, brand=self.brand)
+        referral = Referral.objects.get(referee=self.referee, brand=self.brand)
+        self.assertEqual(first_points, Decimal("2.50000000"))
+        self.assertEqual(later_points, Decimal("0.75000000"))
+        self.assertEqual(account.lifetime_profit, Decimal("13.00"))
+        self.assertEqual(account.lifetime_points, Decimal("2.60000000"))
+        self.assertEqual(ReferralReward.objects.filter(referral=referral).count(), 2)
+        self.assertEqual(referral.conversion_order_id, self.order.pk)
+
+    def test_reference_change_converts_completed_points_and_rebases_partial_box(self):
+        award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
+        new_plan = SubscriptionPlan.objects.create(
+            brand=self.brand,
+            name="New Reference",
+            price=Decimal("8.00"),
+            upstream_cost=Decimal("1.00"),
+            currency="USD",
+            duration_value=30,
+            duration_unit=SubscriptionPlan.DurationUnit.DAYS,
+        )
+        new_service = RewardService.objects.create(brand=self.brand, plan=new_plan)
+        RewardBoxCapacity.objects.create(
+            service=new_service, sequence=1, capacity=Decimal("2")
+        )
+        set_active_reference_service(brand_id=self.brand.pk, service_id=new_service.pk)
+
+        account = RewardAccount.objects.get(user=self.referrer, brand=self.brand)
+        wallet = Wallet.objects.get(user=self.referrer, brand=self.brand)
+        self.assertEqual(wallet.balance, Decimal("4.00000005"))
+        self.assertEqual(account.reference_service_id, new_service.pk)
+        self.assertEqual(account.liquid_points, Decimal("0"))
+        new_boxes = list(
+            RewardPointBox.objects.filter(account=account, service=new_service).order_by("cycle")
+        )
+        self.assertEqual(len(new_boxes), 1)
+        self.assertEqual(new_boxes[0].filled, Decimal("0.85714285"))
+        self.assertEqual(new_boxes[0].state, RewardPointBox.State.OPEN)
+
+    def test_configured_point_valuations_are_snapshotted(self):
+        self.reference_plan.price = Decimal("9.00")
+        self.reference_plan.save(update_fields=["price"])
+        self.lifetime_plan.upstream_cost = Decimal("8.00")
+        self.lifetime_plan.save(update_fields=["upstream_cost"])
+        self.service.refresh_from_db()
+        self.program.refresh_from_db()
+
+        self.assertEqual(self.service.point_value, Decimal("4.00"))
+        self.assertEqual(self.program.lifetime_point_value, Decimal("5.00"))
+
+    def test_reward_redemption_debits_points_and_is_idempotent(self):
+        from apps.referrals.services import redeem_reward_service
+
+        award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
+        account = RewardAccount.objects.get(user=self.referrer, brand=self.brand)
+        key = account.redemption_nonce
+        order, replay = redeem_reward_service(
+            user_id=self.referrer.pk, brand_id=self.brand.pk, request_key=key
+        )
+        duplicate, was_replay = redeem_reward_service(
+            user_id=self.referrer.pk, brand_id=self.brand.pk, request_key=key
+        )
+
+        account.refresh_from_db()
+        self.assertFalse(replay)
+        self.assertTrue(was_replay)
+        self.assertEqual(order.pk, duplicate.pk)
+        self.assertEqual(order.order_type, Order.OrderType.REWARD_REDEMPTION)
+        self.assertEqual(order.status, Order.OrderStatus.PAID)
+        self.assertEqual(order.final_price, Decimal("0"))
+        self.assertEqual(order.subscriptions.count(), 1)
+        self.assertEqual(account.liquid_points, Decimal("0"))
+        self.assertEqual(RewardPointLedger.objects.filter(order=order, entry_type="redeemed").count(), 1)
+
+    def test_reference_change_does_not_convert_already_spent_box_points(self):
+        from apps.referrals.services import redeem_reward_service
+
+        award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
+        account = RewardAccount.objects.get(user=self.referrer, brand=self.brand)
+        redeem_reward_service(
+            user_id=self.referrer.pk,
+            brand_id=self.brand.pk,
+            request_key=account.redemption_nonce,
+        )
+        old_completed_box = RewardPointBox.objects.get(
+            account=account,
+            service=self.service,
+            state=RewardPointBox.State.COMPLETE,
+        )
+        self.assertEqual(old_completed_box.spent_points, Decimal("1.00000000"))
+
+        new_plan = SubscriptionPlan.objects.create(
+            brand=self.brand,
+            name="Post-redemption Reference",
+            price=Decimal("3.00"),
+            upstream_cost=Decimal("1.00"),
+            currency="USD",
+            duration_value=30,
+            duration_unit=SubscriptionPlan.DurationUnit.DAYS,
+        )
+        new_service = RewardService.objects.create(brand=self.brand, plan=new_plan)
+        RewardBoxCapacity.objects.create(
+            service=new_service, sequence=1, capacity=Decimal("2")
+        )
+        set_active_reference_service(brand_id=self.brand.pk, service_id=new_service.pk)
+
+        account.refresh_from_db()
+        old_completed_box.refresh_from_db()
+        self.assertEqual(account.liquid_points, Decimal("2.00000000"))
+        self.assertEqual(old_completed_box.state, RewardPointBox.State.CONVERTED)
+        self.assertEqual(
+            Wallet.objects.filter(user=self.referrer, brand=self.brand).count(), 0
+        )

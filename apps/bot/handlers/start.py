@@ -9,6 +9,7 @@ from typing import Optional
 from aiogram import types
 from aiogram.filters import Command
 from asgiref.sync import sync_to_async
+from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
@@ -38,10 +39,10 @@ class StartHandler(BaseHandler):
         # Get or create user (with proper cache key fix in BaseHandler)
         user, created = await self.get_or_create_user(telegram_user)
 
+        if referral_code:
+            await self.process_referral_safely(user, referral_code)
+
         if created:
-            # Process referral in a separate transaction to avoid deadlocks
-            if referral_code and not user.referred_by:
-                await self.process_referral_safely(user, referral_code)
             # Show profile setup for new users
             # await self.show_profile_setup(chat_id, user)
             await self.show_main_menu(chat_id, user)
@@ -60,6 +61,9 @@ class StartHandler(BaseHandler):
         """Execute the ORM transaction outside the asynchronous bot loop."""
         from apps.referrals.services import attribute_referral
 
+        from apps.referrals.services import track_referral_click
+
+        track_referral_click(code=referral_code, brand_id=brand_id, visitor_id=user_id)
         return attribute_referral(
             user_id=user_id, brand_id=brand_id, code=referral_code
         )
@@ -119,14 +123,28 @@ class StartHandler(BaseHandler):
         except BrandConfiguration.DoesNotExist:
             config = None
 
-        # Get counts safely
-        subscription_count = await self._get_subscription_count(user.id, self.brand.id)
+        from apps.orders.models import Wallet
+        from apps.referrals.selectors import reward_summary
+        from apps.subscriptions.models import Subscription
+
+        subscription_count = await Subscription.objects.filter(
+            (Q(user_id=user.id) | Q(owner_id=user.id)),
+            brand_id=self.brand.id,
+            status=Subscription.SubscriptionStatus.ACTIVE,
+        ).acount()
+        try:
+            wallet = await Wallet.objects.aget(user_id=user.id, brand_id=self.brand.id)
+            wallet_balance = wallet.balance
+        except Wallet.DoesNotExist:
+            wallet_balance = 0
+        rewards = await reward_summary(user_id=user.id, brand_id=self.brand.id)
         referral_count = user.referral_count or 0
-        wallet_balance = user.wallet_balance or 0
 
         context = {
             "name": user.full_name or user.first_name or "کاربر",
-            "level": user.level or "عادی",
+            "level": rewards["level_title"],
+            "lifetime_points": rewards["lifetime_points"],
+            "liquid_points": rewards["liquid_points"],
             "wallet": self.format_price(wallet_balance, self.brand.currency),
             "subscriptions": subscription_count,
             "referrals": referral_count,
@@ -167,27 +185,57 @@ class StartHandler(BaseHandler):
         else:
             await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
 
-    @sync_to_async
-    def _get_subscription_count(self, user_id: int, brand_id: int) -> int:
-        """Get active subscription count synchronously"""
-        from apps.subscriptions.models import Subscription
-
-        return Subscription.objects.filter(
-            user_id=user_id, brand_id=brand_id, status="active"
-        ).count()
-
     async def handle_profile_setup_callback(self, callback: types.CallbackQuery):
         """Handle profile setup callback"""
         user, _ = await self.get_or_create_user(callback.from_user)
 
         if callback.data == "setup_profile":
             await self.start_profile_setup(callback.message.chat.id, user)
+        elif callback.data == "request_phone":
+            await self.request_phone_contact(callback.message.chat.id)
         elif callback.data == "skip_profile":
             await self.show_main_menu(callback.message.chat.id, user)
         elif callback.data == "main_menu":
             await self.show_main_menu(callback.message.chat.id, user)
 
         await callback.answer()
+
+    async def request_phone_contact(self, chat_id: int):
+        """Ask Telegram to share the current user's own phone number."""
+        keyboard = types.ReplyKeyboardMarkup(
+            keyboard=[
+                [
+                    types.KeyboardButton(
+                        text="📱 ارسال شماره تلفن من", request_contact=True
+                    )
+                ]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await self.bot.send_message(
+            chat_id,
+            "برای ثبت شماره، دکمه زیر را بزنید تا شماره خودتان از تلگرام ارسال شود.",
+            reply_markup=keyboard,
+        )
+
+    async def handle_contact_message(self, message: types.Message, user: User):
+        contact = message.contact
+        if not contact or contact.user_id != message.from_user.id:
+            await message.reply("لطفاً شماره تماس خودتان را از تلگرام ارسال کنید.")
+            return
+        phone = self._normalize_phone(contact.phone_number)
+        if not self._is_valid_iranian_phone(phone):
+            await message.reply(
+                "شماره ارسال‌شده معتبر نیست. شماره موبایل ایران باید ۱۱ رقم باشد."
+            )
+            return
+        await self._update_user_phone(user.id, phone)
+        user.phone_number = phone
+        await message.answer(
+            "✅ شماره تلفن ثبت شد.", reply_markup=types.ReplyKeyboardRemove()
+        )
+        await self.show_main_menu(message.chat.id, user)
 
     async def start_profile_setup(self, chat_id: int, user: User):
         """Start profile setup process"""

@@ -113,7 +113,7 @@ class ConnectixProvider:
             "password": password,
             "phone": None,
             "chat_id": None,
-            "telegram_id": None,
+            "telegram_id": request.telegram_id,
             "group_id": request.group_id,
             "plan_id": request.plan_id,
             "enable_plan_after_first_login": True,

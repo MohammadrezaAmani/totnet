@@ -1,5 +1,6 @@
 from decimal import Decimal
 import uuid
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -60,7 +61,12 @@ class WalletCheckoutTests(TestCase):
         )
 
     def test_wallet_order_payment_debits_once_and_is_idempotent(self):
-        with self.captureOnCommitCallbacks(execute=False):
+        with (
+            patch("apps.orders.signals.broadcast_message"),
+            patch("apps.subscriptions.tasks.provision_paid_order.delay") as provision_delay,
+            patch("apps.referrals.tasks.process_referral_reward.delay") as reward_delay,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             first = pay_order_with_wallet(
                 order_id=str(self.order.order_id),
                 user_id=self.user.pk,
@@ -88,6 +94,8 @@ class WalletCheckoutTests(TestCase):
         self.assertEqual(
             WalletTransaction.objects.filter(wallet=self.wallet).count(), 1
         )
+        provision_delay.assert_called_once_with(self.order.pk)
+        reward_delay.assert_called_once()
 
     def test_insufficient_balance_changes_nothing(self):
         self.wallet.balance = Decimal("9.99")

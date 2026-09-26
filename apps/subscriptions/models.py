@@ -151,6 +151,23 @@ class Subscription(models.Model):
         choices=SubscriptionStatus.choices,
         default=SubscriptionStatus.PENDING,
     )
+    provisioning_started_at = models.DateTimeField(null=True, blank=True)
+    provisioning_attempts = models.PositiveSmallIntegerField(default=0)
+    provisioning_state = models.CharField(
+        max_length=24,
+        choices=[
+            ("queued", "Queued"),
+            ("in_progress", "In progress"),
+            ("retryable_error", "Retryable error"),
+            ("needs_review", "Needs review"),
+            ("unsupported", "Unsupported"),
+            ("active", "Active"),
+        ],
+        default="queued",
+    )
+    provisioning_error_code = models.CharField(max_length=80, blank=True)
+    provisioning_error = models.TextField(blank=True)
+    provisioning_retryable = models.BooleanField(default=False)
 
     starts_at = models.DateTimeField()
     expires_at = models.DateTimeField(null=True, blank=True)

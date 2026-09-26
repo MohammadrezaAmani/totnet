@@ -6,7 +6,10 @@ Handles user statistics and detailed analytics
 import logging
 
 from aiogram import types
+from django.db.models import Q
 
+from apps.accounts.models import User
+from apps.referrals.selectors import reward_summary
 from apps.subscriptions.models import Subscription
 
 from .base import BaseHandler
@@ -22,8 +25,16 @@ class StatsHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         subscription_count = await Subscription.objects.filter(
-            user=user, brand=self.brand, status="active"
+            (Q(user=user) | Q(owner=user)), brand=self.brand, status="active"
         ).acount()
+        rewards = await reward_summary(user_id=user.pk, brand_id=self.brand.pk)
+        referred_by = (
+            await User.objects.filter(pk=user.referred_by_id).values_list(
+                "username", flat=True
+            ).afirst()
+            if user.referred_by_id
+            else "خودتان"
+        )
 
         from apps.orders.models import Wallet
 
@@ -41,10 +52,11 @@ class StatsHandler(BaseHandler):
 📅 تاریخ عضویت: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
 
 اشتراک‌های فعال: {subscription_count}
-معرفی شده توسط: {user.referred_by.username if user.referred_by else "خودتان"}
+معرفی شده توسط: {referred_by}
 تعداد معرفی‌ها: {user.referral_count}
-امتیازات: {user.reward_points}
-سطح: {user.level}
+امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
+امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
+سطح: {rewards['level_title']}
 
 💰 موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
         """
@@ -74,7 +86,7 @@ class StatsHandler(BaseHandler):
 
         subscriptions = []
         async for subscription in Subscription.objects.filter(
-            user=user, brand=self.brand
+            (Q(user=user) | Q(owner=user)), brand=self.brand
         ):
             subscriptions.append(subscription)
 
@@ -100,6 +112,7 @@ class StatsHandler(BaseHandler):
             wallet_balance = wallet.balance
         except Wallet.DoesNotExist:
             wallet_balance = 0
+        rewards = await reward_summary(user_id=user.pk, brand_id=self.brand.pk)
 
         text = f"""
 📈 آمار جامع شما
@@ -120,8 +133,9 @@ class StatsHandler(BaseHandler):
 
 👥 معرفی:
 • تعداد کل معرفی‌ها: {user.referral_count}
-• امتیازات کسب شده: {user.reward_points}
-• سطح فعلی: {user.level}
+• امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
+• امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
+• سطح فعلی: {rewards['level_title']}
 
 💰 مالی:
 • موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
@@ -152,7 +166,7 @@ class StatsHandler(BaseHandler):
 
         subscriptions = []
         async for subscription in Subscription.objects.filter(
-            user=user, brand=self.brand
+            (Q(user=user) | Q(owner=user)), brand=self.brand
         ):
             subscriptions.append(subscription)
 
@@ -172,8 +186,8 @@ class StatsHandler(BaseHandler):
             )
 
             try:
-                traffic_used = getattr(sub, "traffic_used", 0)
-                traffic_limit = getattr(sub, "traffic_limit", 0)
+                traffic_used = sub.traffic_used_gb
+                traffic_limit = sub.traffic_limit_gb or 0
                 traffic_info = (
                     f"\n  ترافیک: {self.format_traffic(traffic_used)} / {self.format_traffic(traffic_limit)}"
                     if traffic_limit
@@ -187,7 +201,7 @@ class StatsHandler(BaseHandler):
                     sub.created_at.strftime("%Y/%m/%d") if sub.created_at else "نامشخص"
                 )
                 expire_date = (
-                    sub.expire_at.strftime("%Y/%m/%d") if sub.expire_at else "نامشخص"
+                    sub.expires_at.strftime("%Y/%m/%d") if sub.expires_at else "نامشخص"
                 )
                 date_info = f"\n  شروع: {start_date}\n  انقضا: {expire_date}"
             except Exception:

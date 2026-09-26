@@ -8,10 +8,14 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
-from apps.subscriptions.models import Subscription
+from apps.subscriptions.models import (
+    ProviderRemoteSubscription,
+    Subscription,
+)
 
 from .models import VPNProvider, VPNProviderHealthCheck, VPNProviderStats
 from .services.base import VPNProviderFactory, VPNUser
+from .services.connectix import ConnectixProvider
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,12 @@ def sync_vpn_users(self, provider_id: int):
     except VPNProvider.DoesNotExist:
         logger.warning("Provider sync skipped: provider %s does not exist", provider_id)
         return False
+
+    if provider.provider_type == VPNProvider.ProviderType.CONNECTIX:
+        try:
+            return sync_connectix_status(provider)
+        except Exception as exc:
+            raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
 
     client = _client(provider)
     if not hasattr(client, "sync_users"):
@@ -89,12 +99,108 @@ def sync_vpn_users(self, provider_id: int):
         async_to_sync(client.close)()
 
 
+def sync_connectix_status(provider):
+    """Refresh saved Connectix identities using the observed paginated client list."""
+    client = _client(provider)
+    if not isinstance(client, ConnectixProvider):
+        return False
+
+    async def fetch_all():
+        records = {}
+        try:
+            page_number = 1
+            while page_number <= 200:
+                page = await client.client.get_clients(page=page_number)
+                records.update({record.remote_id: record for record in page.clients})
+                if page_number >= page.last_page:
+                    return records
+                page_number += 1
+            raise ValueError(
+                "Connectix client listing exceeded the pagination safety limit"
+            )
+        finally:
+            await client.close()
+
+    try:
+        remote_clients = async_to_sync(fetch_all)()
+    except Exception as exc:
+        logger.error(
+            "Connectix status sync failed for provider %s (%s)",
+            provider.pk,
+            type(exc).__name__,
+        )
+        raise
+
+    synced_at = timezone.now()
+    remote_accounts = ProviderRemoteSubscription.objects.filter(
+        provider=provider, remote_id__isnull=False
+    ).select_related("subscription")
+    for remote_account in remote_accounts.iterator():
+        record = remote_clients.get(remote_account.remote_id)
+        if record is None:
+            continue
+        remote_account.remote_status = (
+            "expired"
+            if record.is_expired
+            else "active"
+            if record.is_active
+            else "inactive"
+        )
+        remote_account.subscription_url = record.subscription_link
+        remote_account.metadata = {
+            **(remote_account.metadata or {}),
+            "plan_name": record.plan_name,
+            "group_name": record.group_name,
+            "expire_date": record.expire_date,
+            "remains_days": record.remains_days,
+            "used_traffic_raw": record.used_traffic,
+        }
+        remote_account.last_synced_at = synced_at
+        remote_account.last_error = ""
+        remote_account.save(
+            update_fields=(
+                "remote_status",
+                "subscription_url",
+                "metadata",
+                "last_synced_at",
+                "last_error",
+                "updated_at",
+            )
+        )
+
+        subscription = remote_account.subscription
+        if subscription.status in (
+            Subscription.SubscriptionStatus.CANCELLED,
+            Subscription.SubscriptionStatus.PENDING,
+        ):
+            continue
+        if record.is_expired:
+            subscription.status = Subscription.SubscriptionStatus.EXPIRED
+        elif not record.is_active:
+            subscription.status = Subscription.SubscriptionStatus.SUSPENDED
+        else:
+            subscription.status = Subscription.SubscriptionStatus.ACTIVE
+            if record.subscription_link:
+                subscription.subscription_url = record.subscription_link
+        update_fields = ["status", "updated_at"]
+        if record.is_active and not record.is_expired and record.subscription_link:
+            update_fields.append("subscription_url")
+        subscription.save(update_fields=update_fields)
+
+    provider.last_sync = synced_at
+    provider.save(update_fields=("last_sync", "updated_at"))
+    return True
+
+
 @shared_task
 def sync_all_vpn_users():
     """Queue synchronization for active providers that have adapters."""
     for provider in VPNProvider.objects.filter(
         status=VPNProvider.ProviderStatus.ACTIVE
     ):
+        if provider.provider_type == VPNProvider.ProviderType.CONNECTIX:
+            sync_vpn_users.delay(provider.pk)
+            continue
         try:
             client = _client(provider)
         except ValueError:

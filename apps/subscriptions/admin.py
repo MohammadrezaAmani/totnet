@@ -2,8 +2,11 @@
 Admin configuration for subscriptions app
 """
 
+from django import forms
 from django.contrib import admin
 from django.utils.html import format_html
+from apps.vpn_providers.models import VPNProvider
+from apps.vpn_providers.services.capabilities import capabilities_for
 
 from .models import (
     ProviderRemoteSubscription,
@@ -17,8 +20,46 @@ from .models import (
 )
 
 
+class SubscriptionPlanAdminForm(forms.ModelForm):
+    class Meta:
+        model = SubscriptionPlan
+        fields = "__all__"
+
+    def clean(self):
+        cleaned = super().clean()
+        if not cleaned.get("is_active"):
+            return cleaned
+        brand = cleaned.get("brand")
+        provider = cleaned.get("vpn_provider")
+        if provider is None and brand is not None:
+            provider = VPNProvider.objects.filter(
+                brand=brand,
+                status=VPNProvider.ProviderStatus.ACTIVE,
+                is_default=True,
+            ).first()
+        if provider is None or not capabilities_for(provider.provider_type).provision:
+            raise forms.ValidationError(
+                "An active plan must route to a provider with an implemented provisioning adapter."
+            )
+        if provider.provider_type == VPNProvider.ProviderType.CONNECTIX and not all(
+            cleaned.get(field)
+            for field in (
+                "upstream_plan_id",
+                "upstream_plan_name",
+                "upstream_group_id",
+                "upstream_group_name",
+                "upstream_count_of_devices",
+            )
+        ):
+            raise forms.ValidationError(
+                "An active Connectix plan requires mapped plan/group IDs, names, and device count."
+            )
+        return cleaned
+
+
 @admin.register(SubscriptionPlan)
 class SubscriptionPlanAdmin(admin.ModelAdmin):
+    form = SubscriptionPlanAdminForm
     list_display = (
         "name",
         "brand",
@@ -65,6 +106,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
         "user",
         "plan",
         "vpn_provider",
+        "provisioning_state",
         "remote_account_id_display",
         "vpn_user_email",
         "status",
@@ -91,7 +133,17 @@ class SubscriptionAdmin(admin.ModelAdmin):
         "user__username",
         "plan__name",
     )
-    readonly_fields = ("subscription_id", "created_at", "updated_at")
+    readonly_fields = (
+        "subscription_id",
+        "provisioning_started_at",
+        "provisioning_attempts",
+        "provisioning_state",
+        "provisioning_error_code",
+        "provisioning_error",
+        "provisioning_retryable",
+        "created_at",
+        "updated_at",
+    )
     date_hierarchy = "created_at"
 
     fieldsets = (
@@ -104,6 +156,12 @@ class SubscriptionAdmin(admin.ModelAdmin):
                     "user",
                     "plan",
                     "order",
+                    "provisioning_started_at",
+                    "provisioning_attempts",
+                    "provisioning_state",
+                    "provisioning_error_code",
+                    "provisioning_error",
+                    "provisioning_retryable",
                 )
             },
         ),

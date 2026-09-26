@@ -7,7 +7,7 @@ import logging
 
 from aiogram import types
 
-from apps.referrals.models import Referral, ReferralLink
+from apps.referrals.models import Referral, ReferralLink, ReferralProgram, RewardAccount
 
 from .base import BaseHandler
 
@@ -43,6 +43,14 @@ class ReferralsHandler(BaseHandler):
 
         bot_username = await self.get_bot_username()
         referral_url = f"https://t.me/{bot_username}?start={referral_link.code}"
+        account = await RewardAccount.objects.filter(user=user, brand=self.brand).afirst()
+        lifetime_points = account.lifetime_points if account else 0
+        program = await ReferralProgram.objects.filter(brand=self.brand, is_active=True).select_related("reference_service").afirst()
+        current_level = None
+        if program:
+            async for level in program.levels.filter(min_lifetime_points__lte=lifetime_points).order_by("-min_lifetime_points")[:1]:
+                current_level = level
+        level_label = f"{current_level.badge} {current_level.name}" if current_level else "—"
 
         text = f"""
 👥 سیستم معرفی دوستان
@@ -56,8 +64,9 @@ class ReferralsHandler(BaseHandler):
 • تعداد کل معرفی‌ها: {user.referral_count}
 
 💰 درآمد از معرفی:
-• امتیاز کسب شده: {user.reward_points}
-• سطح فعلی: {user.level}
+• امتیاز مادام‌العمر: {lifetime_points:g}
+• امتیاز کامل قابل استفاده: {account.liquid_points if account else 0:g}
+• سطح فعلی: {level_label}
 
 با معرفی دوستان خود امتیاز و جایزه کسب کنید!
         """
@@ -97,33 +106,38 @@ class ReferralsHandler(BaseHandler):
             referrals.append(referral)
 
         completed_referrals = [
-            r for r in referrals if r.status != Referral.ReferralStatus.PENDING
+            r for r in referrals if r.status == Referral.ReferralStatus.REWARDED
         ]
         pending_referrals = [
             r for r in referrals if r.status == Referral.ReferralStatus.PENDING
         ]
 
+        account = await RewardAccount.objects.filter(user=user, brand=self.brand).afirst()
+        lifetime_points = account.lifetime_points if account else 0
+        program = await ReferralProgram.objects.filter(brand=self.brand, is_active=True).select_related("reference_service").afirst()
+        level_lines = []
+        if program:
+            async for level in program.levels.order_by("level"):
+                done = lifetime_points >= level.min_lifetime_points
+                level_lines.append(f"• {level.badge} {level.name}: {level.min_lifetime_points:g} امتیاز {'✓' if done else ''}")
+        levels_text = "\n".join(level_lines) or "سطحی برای این برند تنظیم نشده است."
         text = f"""
 📈 آمار تفصیلی معرفی
 
 📊 آمار کلیک و ثبت:
 • تعداد کلیک: {referral_link.click_count or 0}
-• تعداد ثبت‌نام: {len(pending_referrals) + len(completed_referrals)}
+• تعداد ثبت‌نام: {len(referrals)}
 • نرخ تبدیل: {(len(completed_referrals) / max(referral_link.click_count or 1, 1)) * 100:.1f}%
 
 ✅ معرفی‌های تکمیل شده: {len(completed_referrals)}
 ⏳ معرفی‌های در انتظار: {len(pending_referrals)}
 
 💰 درآمد:
-• امتیازات کسب شده: {user.reward_points}
-• سطح فعلی: {user.level}
+• امتیاز مادام‌العمر: {lifetime_points:g}
+• امتیاز کامل قابل استفاده: {account.liquid_points if account else 0:g}
 
-🏆 سطح‌های بعدی:
-• سطح ۱: {user.referral_count} معرفی ✓
-• سطح ۲: ۱۰ معرفی {"✓" if user.referral_count >= 10 else ""}
-• سطح ۳: ۲۵ معرفی {"✓" if user.referral_count >= 25 else ""}
-• سطح ۴: ۵۰ معرفی {"✓" if user.referral_count >= 50 else ""}
-• سطح ۵: ۱۰۰ معرفی {"✓" if user.referral_count >= 100 else ""}
+🏆 سطح‌ها:
+{levels_text}
         """
 
         keyboard = self.create_keyboard(

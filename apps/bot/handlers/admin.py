@@ -7,10 +7,12 @@ import logging
 from enum import Enum
 
 from aiogram import types
+from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
 from apps.orders.models import Order, Wallet
+from apps.referrals.selectors import reward_summary
 from apps.subscriptions.models import Subscription
 from apps.support.models import SupportTicket
 
@@ -547,8 +549,11 @@ class AdminHandler(BaseHandler):
                     return
 
                 subs_count = await Subscription.objects.filter(
-                    user=search_user, brand=self.brand
+                    (Q(user=search_user) | Q(owner=search_user)), brand=self.brand
                 ).acount()
+                rewards = await reward_summary(
+                    user_id=search_user.pk, brand_id=self.brand.pk
+                )
 
                 try:
                     wallet = await Wallet.objects.aget(
@@ -570,8 +575,9 @@ class AdminHandler(BaseHandler):
 📊 وضعیت:
 • اشتراک‌های فعال: {subs_count}
 • موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
-• سطح: {search_user.level}
-• امتیازات: {search_user.reward_points}
+• سطح: {rewards['level_title']}
+• امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
+• امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
 
 🔄 عملیات:
                 """

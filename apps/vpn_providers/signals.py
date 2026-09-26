@@ -4,16 +4,11 @@ Handles automatic sync with Hiddify panel
 """
 
 import logging
-from datetime import datetime
 
-from django.db.models.signals import post_delete, post_save, pre_save
-from django.dispatch import receiver
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.orders.models import Order
 from apps.subscriptions.models import Subscription
-from utils.message import broadcast_message
 
 from .models import HiddifyAdmin, VPNProvider
 

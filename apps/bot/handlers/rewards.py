@@ -4,10 +4,13 @@ Handles loyalty program, achievements, and levels
 """
 
 import logging
+import uuid
 
 from aiogram import types
+from asgiref.sync import sync_to_async
 
-from apps.referrals.models import Referral
+from apps.referrals.models import Referral, ReferralProgram, RewardAccount
+from apps.referrals.services import RewardRedemptionError, redeem_reward_service
 
 from .base import BaseHandler
 
@@ -17,79 +20,72 @@ logger = logging.getLogger(__name__)
 class RewardsHandler(BaseHandler):
     """Handle rewards, achievements, and loyalty programs"""
 
-    LEVEL_THRESHOLDS = {
-        1: {"referrals": 0, "points": 0, "title": "🌱 تازه‌کار", "badge": "👶"},
-        2: {"referrals": 5, "points": 100, "title": "🌿 نوآموز", "badge": "🌱"},
-        3: {"referrals": 10, "points": 300, "title": "🌾 معرفی‌کننده", "badge": "🌾"},
-        4: {"referrals": 25, "points": 750, "title": "🎯 سفیر", "badge": "⭐"},
-        5: {"referrals": 50, "points": 1500, "title": "👑 پادشاه", "badge": "👑"},
-        6: {"referrals": 100, "points": 3000, "title": "💎 الماسی", "badge": "💎"},
-    }
-
     async def show_rewards(self, callback: types.CallbackQuery):
         """Show rewards and achievements"""
         user, _ = await self.get_or_create_user(callback.from_user)
-
-        referral_count = await Referral.objects.filter(
-            referrer=user, brand=self.brand, status="completed"
+        account = await RewardAccount.objects.filter(
+            user=user, brand=self.brand
+        ).select_related("reference_service__plan").afirst()
+        program = await ReferralProgram.objects.filter(
+            brand=self.brand, is_active=True
+        ).select_related("reference_service__plan").afirst()
+        lifetime_points = account.lifetime_points if account else 0
+        liquid_points = account.liquid_points if account else 0
+        referrals = await Referral.objects.filter(
+            referrer=user, brand=self.brand
         ).acount()
-
-        current_level = self._get_user_level(referral_count, user.reward_points)
-        next_level = current_level + 1
-
-        current_threshold = self.LEVEL_THRESHOLDS.get(current_level, {})
-        next_threshold = self.LEVEL_THRESHOLDS.get(next_level, {})
-
+        levels = []
+        if program:
+            async for level in program.levels.order_by("min_lifetime_points", "level"):
+                levels.append(level)
+        current = None
+        next_level = None
+        for level in levels:
+            if level.min_lifetime_points <= lifetime_points:
+                current = level
+            elif next_level is None:
+                next_level = level
+        service = program.reference_service if program else None
+        point_value = service.point_value if service else None
+        open_box = None
+        if account and service:
+            open_box = await account.boxes.filter(
+                service=service, state="open"
+            ).order_by("cycle", "sequence").afirst()
         progress = 0
-        if next_level <= 6:
-            next_referrals = next_threshold.get("referrals", 0)
-            current_referrals = current_threshold.get("referrals", 0)
-            if next_referrals > current_referrals:
-                progress = int(
-                    (
-                        (referral_count - current_referrals)
-                        / (next_referrals - current_referrals)
-                    )
-                    * 100
-                )
-                progress = min(progress, 100)
-
-        progress_bar = self._create_progress_bar(progress)
-
+        if open_box and open_box.capacity:
+            progress = min(100, int(open_box.filled * 100 / open_box.capacity))
+        filled_display = f"{open_box.filled:g}/{open_box.capacity:g}" if open_box else "—"
+        remaining_box = open_box.capacity - open_box.filled if open_box else 0
+        level_name = f"{current.badge} {current.name}" if current else "—"
+        next_text = (
+            f"{next_level.badge} {next_level.name}: {next_level.min_lifetime_points:g}"
+            if next_level else "بالاترین سطح"
+        )
+        point_value_text = f"{point_value:g} {self.brand.currency}" if point_value else "تنظیم نشده"
+        free_points = service.free_points if service else 0
+        free_progress = (
+            min(100, int(liquid_points * 100 / free_points)) if free_points else 0
+        )
         text = f"""
 🎁 جایزه‌ها و امتیازات
 
-👤 <b>سطح شما:</b>
-{current_threshold.get("badge", "🌱")} {current_threshold.get("title", "نامشخص")}
+👤 <b>سطح شما:</b> {level_name}
+📊 امتیاز مادام‌العمر: {lifetime_points:g}
+💰 امتیازهای کامل و قابل استفاده: {liquid_points:g}
+👥 معرفی‌ها: {referrals}
 
-📊 <b>آمار شما:</b>
-• امتیازات: {user.reward_points} نقطه
-• معرفی‌های تکمیل‌شده: {referral_count}
-• سطح فعلی: {current_level}/6
-
-🎯 <b>سطح بعدی:</b>
-{next_threshold.get("badge", "??")} {next_threshold.get("title", "نامشخص")}
-• نیاز: {next_threshold.get("referrals", 0)} معرفی
-• امتیازات: {next_threshold.get("points", 0)} نقطه
-
-{progress_bar} {progress}%
-
-💡 <b>نکات:</b>
-• هر معرفی: ۵۰ نقطه
-• معرفی اول: ۱۰۰ نقطه
-• استفاده اشتراک دوست: ۲۵ نقطه
-
-🎁 <b>جوایز سطح‌ها:</b>
-1. تازه‌کار 👶: شروع سفر
-2. نوآموز 🌱: ۱۰% تخفیف
-3. معرفی‌کننده 🌾: ۲۰% تخفیف + اولویت پشتیبانی
-4. سفیر ⭐: ۳۰% تخفیف + مشاوره رایگان
-5. پادشاه 👑: ۴۰% تخفیف + اعتبار ماهانه
-6. الماسی 💎: ۵۰% تخفیف + VIP پشتیبانی
+📦 <b>جعبه امتیاز جاری:</b> {filled_display} (باقی‌مانده {remaining_box:g}، {progress}%)
+🎯 <b>سطح بعدی:</b> {next_text}
+🔁 <b>خدمت مرجع:</b> {service.plan.name if service else 'تنظیم نشده'}
+💵 ارزش هر امتیاز مرجع: {point_value_text}
+🎁 پیشرفت خدمت رایگان: {liquid_points:g}/{free_points:g} امتیاز قابل استفاده ({free_progress}%)
         """
 
         keyboard = self.create_keyboard(
-            [
+            ([
+                [{"text": "🎁 دریافت اشتراک رایگان", "callback_data": f"claim_reward:{account.redemption_nonce.hex}"}],
+            ] if account and service and liquid_points >= free_points > 0 else []) + [
                 [{"text": "📈 جزئیات معرفی‌های من", "callback_data": "referral_stats"}],
                 [{"text": "🏆 جدول امتیازات", "callback_data": "leaderboard"}],
                 [{"text": "🎯 نحوه کسب امتیاز", "callback_data": "how_to_earn"}],
@@ -109,53 +105,53 @@ class RewardsHandler(BaseHandler):
 
         await callback.answer()
 
+    async def redeem_reward(self, callback: types.CallbackQuery, request_key: str):
+        """Redeem completed points once and start provisioning the reward order."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        try:
+            key = uuid.UUID(hex=request_key)
+            await sync_to_async(redeem_reward_service)(
+                user_id=user.pk, brand_id=self.brand.pk, request_key=key
+            )
+        except (ValueError, RewardRedemptionError) as exc:
+            await callback.answer(str(exc) if isinstance(exc, RewardRedemptionError) else "درخواست نامعتبر است.", show_alert=True)
+            return
+        except Exception as exc:
+            logger.error("Reward redemption failed (%s)", type(exc).__name__)
+            await callback.answer("❌ دریافت جایزه انجام نشد.", show_alert=True)
+            return
+
+        await callback.answer("✅ امتیازها ثبت شد؛ اشتراک در حال فعال‌سازی است.")
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id,
+            callback.message.message_id,
+            "✅ جایزه ثبت شد و اشتراک در صف فعال‌سازی قرار گرفت. وضعیت را از بخش «اشتراک‌های من» ببینید.",
+            self.create_keyboard([[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}], [{"text": "🎁 امتیازها", "callback_data": "rewards"}]]),
+        )
+
     async def show_how_to_earn(self, callback: types.CallbackQuery):
         """Show how to earn rewards"""
-        text = """
-🎯 نحوه کسب امتیازات و جوایز
-
-📌 <b>راه‌های کسب امتیاز:</b>
-
-1️⃣ <b>معرفی دوستان:</b>
-   • هر معرفی: ۵۰ نقطه
-   • معرفی اول: ۱۰۰ نقطه (۲ برابر!)
-   • معرفی کسی که اشتراک بخره: ۲۰۰ نقطه
-
-2️⃣ <b>استفاده از اشتراک:</b>
-   • اشتراک ۱ ماهه: ۲۵ نقطه
-   • اشتراک ۳ ماهه: ۱۰۰ نقطه
-   • اشتراک ۱ سال: ۵۰۰ نقطه
-
-3️⃣ <b>فعالیت‌های ویژه:</b>
-   • ترک نظر: ۱۰ نقطه
-   • تکمیل پروفایل: ۲۵ نقطه
-   • تصدیق شماره موبایل: ۵۰ نقطه
-
-🏆 <b>سطح‌های پاداش:</b>
-
-سطح ۱ 👶 - تازه‌کار
-└─ 0 معرفی | هدایای رایگان
-
-سطح ۲ 🌱 - نوآموز
-└─ 5 معرفی | 10% تخفیف
-
-سطح ۳ 🌾 - معرفی‌کننده
-└─ 10 معرفی | 20% تخفیف + اولویت پشتیبانی
-
-سطح ۴ ⭐ - سفیر
-└─ 25 معرفی | 30% تخفیف + مشاوره رایگان
-
-سطح ۵ 👑 - پادشاه
-└─ 50 معرفی | 40% تخفیف + اعتبار ماهانه
-
-سطح ۶ 💎 - الماسی
-└─ 100 معرفی | 50% تخفیف + VIP پشتیبانی
-
-💡 <b>نکات مهم:</b>
-• امتیازات هرگز حذف نمی‌شوند
-• سطح‌ها بر اساس امتیاز محاسبه می‌شوند
-• شما می‌توانید از جوایز خود استفاده کنید
-        """
+        program = await ReferralProgram.objects.filter(
+            brand=self.brand, is_active=True
+        ).afirst()
+        levels = []
+        if program:
+            async for level in program.levels.order_by("level"):
+                levels.append(level)
+        level_text = "\n".join(
+            f"{level.badge} {level.name} — {level.min_lifetime_points:g} امتیاز مادام‌العمر"
+            for level in levels
+        ) or "سطحی برای این برند تنظیم نشده است."
+        service = program.reference_service if program else None
+        if service:
+            explanation = (
+                f"هر خرید سودآورِ کاربر معرفی‌شده، یک‌بار و فقط برای معرف مستقیم امتیاز ایجاد می‌کند. "
+                f"امتیاز بر اساس سود خرید و ارزش مرجع «{service.plan.name}» محاسبه می‌شود. "
+                "امتیازها در جعبه‌های قابل تنظیم جمع می‌شوند؛ با تکمیل جعبه به موجودی قابل استفاده می‌روند."
+            )
+        else:
+            explanation = "روش امتیازدهی برای این برند هنوز تنظیم نشده است."
+        text = f"🎯 نحوه کسب امتیاز\n\n{explanation}\n\n🏆 سطح‌های پاداش:\n{level_text}"
 
         keyboard = self.create_keyboard(
             [
@@ -179,18 +175,12 @@ class RewardsHandler(BaseHandler):
 
     async def show_leaderboard(self, callback: types.CallbackQuery):
         """Show top users leaderboard"""
-        from apps.accounts.models import User as UserModel
-
-        try:
-            top_users = await UserModel.objects.filter(brand=self.brand).order_by(
-                "-reward_points"
-            )[:10]
-        except Exception as e:
-            logger.error(f"Error fetching leaderboard: {e}")
-            await callback.answer("❌ خطا در بارگذاری جدول")
-            return
-
         user, _ = await self.get_or_create_user(callback.from_user)
+        account = await RewardAccount.objects.filter(user=user, brand=self.brand).afirst()
+        user_points = account.lifetime_points if account else 0
+        top_accounts = []
+        async for item in RewardAccount.objects.filter(brand=self.brand).select_related("user").order_by("-lifetime_points")[:10]:
+            top_accounts.append(item)
 
         text = """
 🏆 جدول امتیازات
@@ -198,14 +188,14 @@ class RewardsHandler(BaseHandler):
 <b>۱۰ نفر برتر:</b>
 """
 
-        for idx, top_user in enumerate(top_users, 1):
+        for idx, top_account in enumerate(top_accounts, 1):
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, f"{idx}️⃣")
-            is_you = " (شما)" if top_user.id == user.id else ""
-            text += f"\n{medal} {top_user.username}{is_you}\n"
-            text += f"   📊 {top_user.reward_points} نقطه\n"
+            is_you = " (شما)" if top_account.user_id == user.id else ""
+            text += f"\n{medal} {top_account.user.username}{is_you}\n"
+            text += f"   📊 {top_account.lifetime_points:g} امتیاز\n"
 
-        user_position = await UserModel.objects.filter(
-            brand=self.brand, reward_points__gt=user.reward_points
+        user_position = await RewardAccount.objects.filter(
+            brand=self.brand, lifetime_points__gt=user_points
         ).acount()
         user_position += 1
 
@@ -213,7 +203,7 @@ class RewardsHandler(BaseHandler):
 
 👤 <b>شما:</b>
 📍 رتبه: {user_position}
-📊 امتیازات: {user.reward_points}
+📊 امتیاز مادام‌العمر: {user_points:g}
 
 💡 نکته: جدول هر ساعت به‌روز می‌شود
         """
@@ -236,17 +226,6 @@ class RewardsHandler(BaseHandler):
             )
 
         await callback.answer()
-
-    def _get_user_level(self, referral_count: int, reward_points: int) -> int:
-        """Determine user level based on referrals and points"""
-        for level in range(6, 0, -1):
-            threshold = self.LEVEL_THRESHOLDS[level]
-            if (
-                referral_count >= threshold["referrals"]
-                and reward_points >= threshold["points"]
-            ):
-                return level
-        return 1
 
     def _create_progress_bar(self, percentage: int, length: int = 10) -> str:
         """Create a visual progress bar"""

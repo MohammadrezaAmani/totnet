@@ -39,6 +39,10 @@ app.conf.beat_schedule = {
         "task": "apps.vpn_providers.tasks.cleanup_old_stats",
         "schedule": 86400.0,
     },
+    "recover-pending-referral-rewards": {
+        "task": "apps.referrals.tasks.recover_pending_referral_rewards",
+        "schedule": 300.0,
+    },
 }
 
 app.conf.timezone = "UTC"

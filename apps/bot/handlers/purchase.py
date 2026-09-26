@@ -4,18 +4,15 @@ Handles subscription purchases, plan selection, and payment processing
 """
 
 import logging
-import uuid
-from datetime import timedelta
 
 from aiogram import types
 from asgiref.sync import sync_to_async
-from django.utils import timezone
 
+from apps.accounts.models import User
 from apps.bot.models import BotState
 from apps.orders.models import Order, Payment, Wallet
 from apps.orders.services import WalletCheckoutError, pay_order_with_wallet
-from apps.subscriptions.models import Subscription, SubscriptionPlan
-from apps.vpn_providers.models import VPNProvider
+from apps.subscriptions.models import SubscriptionPlan
 
 from .base import BaseHandler
 
@@ -44,6 +41,7 @@ class PurchaseHandler(BaseHandler):
         if not plans:
             text = "❌ در حال حاضر پلن فعالی موجود نیست."
             keyboard = self.get_back_keyboard("main_menu")
+            return text, keyboard
         else:
             text = f"""
 🛒 پلن‌های اشتراک {self.brand.name}
@@ -186,13 +184,32 @@ class PurchaseHandler(BaseHandler):
             await callback.answer("❌ پلن یافت نشد.", show_alert=True)
             return
 
+        if purchase_type in ("gift", "other"):
+            await self.update_user_state(
+                user,
+                BotState.StateType.PURCHASE_FLOW,
+                {
+                    "step": "gift_recipient",
+                    "plan_id": plan.pk,
+                    "purchase_type": purchase_type,
+                },
+            )
+            await self.send_message_with_keyboard(
+                callback.message.chat.id,
+                "برای چه کسی می‌خواهید خرید کنید؟ نام کاربری تلگرام گیرنده را با @ بفرستید.\n"
+                "گیرنده باید قبلاً ربات را شروع کرده باشد.",
+                self.get_back_keyboard("purchase_subscription"),
+            )
+            await callback.answer()
+            return
+
         order = await Order.objects.acreate(
             brand=self.brand,
             user=user,
             plan=plan,
             order_type=(
                 Order.OrderType.GIFT
-                if purchase_type == "gift"
+                if purchase_type in ("gift", "other")
                 else Order.OrderType.NEW_SUBSCRIPTION
             ),
             original_price=plan.price,
@@ -214,6 +231,61 @@ class PurchaseHandler(BaseHandler):
 
         await self.show_payment_methods(callback, order)
 
+    async def handle_gift_recipient_message(self, message: types.Message, user, state):
+        """Resolve a same-brand Telegram account before creating a gift order."""
+        data = state.state_data or {}
+        plan_id = data.get("plan_id")
+        username = (message.text or "").strip().lstrip("@").strip()
+        if not username or not plan_id:
+            await message.reply("نام کاربری معتبر را با @ بفرستید.")
+            return
+        try:
+            plan = await SubscriptionPlan.objects.aget(
+                pk=plan_id,
+                brand=self.brand,
+                is_active=True,
+                is_visible=True,
+            )
+            recipient = await User.objects.aget(
+                brand=self.brand,
+                username__iexact=username,
+                is_active=True,
+            )
+        except (SubscriptionPlan.DoesNotExist, User.DoesNotExist):
+            await message.reply(
+                "گیرنده پیدا نشد. او باید ابتدا همین ربات را شروع کند؛ سپس نام کاربری را دوباره بفرستید."
+            )
+            return
+        if recipient.pk == user.pk:
+            await message.reply("برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید.")
+            return
+
+        order = await Order.objects.acreate(
+            brand=self.brand,
+            user=user,
+            recipient=recipient,
+            plan=plan,
+            order_type=Order.OrderType.GIFT,
+            original_price=plan.price,
+            discount_amount=plan.price - plan.discounted_price,
+            final_price=plan.discounted_price,
+            currency=plan.currency,
+            status=Order.OrderStatus.PENDING,
+        )
+        await self.update_user_state(
+            user,
+            BotState.StateType.PURCHASE_FLOW,
+            {"step": PurchaseStep.PAYMENT_METHOD, "order_id": str(order.order_id)},
+        )
+        text = (
+            f"🎁 گیرنده: {recipient.full_name or recipient.username}\n"
+            f"پلن: {plan.name}\n"
+            f"مبلغ قابل پرداخت: {self.format_price(order.final_price, order.currency)}\n\n"
+            "برای ادامه، روش پرداخت را انتخاب کنید."
+        )
+        keyboard = await self._payment_methods_keyboard(user, order)
+        await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+
     async def show_payment_methods(self, callback: types.CallbackQuery, order: Order):
         """Show available payment methods"""
         text = f"""
@@ -231,25 +303,27 @@ class PurchaseHandler(BaseHandler):
             BotState.StateType.PURCHASE_FLOW,
             {"step": PurchaseStep.PAYMENT_METHOD, "order_id": str(order.order_id)},
         )
-        keyboard_buttons = []
+        keyboard = await self._payment_methods_keyboard(user, order)
 
-        payment_methods = []
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def _payment_methods_keyboard(self, user, order):
+        keyboard_buttons = []
         async for method in self.brand.payment_methods.filter(is_enabled=True).order_by(
             "display_order"
         ):
-            payment_methods.append(method)
-
-        for method in payment_methods:
             keyboard_buttons.append(
                 [
                     {
-                        "text": f"{method.name}",
+                        "text": method.name,
                         "callback_data": f"payment_{method.payment_type}_{order.order_id}",
                     }
                 ]
             )
 
-        user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await Wallet.objects.filter(
             user=user,
             brand=self.brand,
@@ -272,12 +346,7 @@ class PurchaseHandler(BaseHandler):
         keyboard_buttons.append(
             [{"text": "❌ انصراف", "callback_data": "purchase_subscription"}]
         )
-        keyboard = self.create_keyboard(keyboard_buttons)
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
-        )
-        await callback.answer()
+        return self.create_keyboard(keyboard_buttons)
 
     async def process_wallet_payment(
         self, callback: types.CallbackQuery, order_id: str
@@ -306,8 +375,6 @@ class PurchaseHandler(BaseHandler):
             "brand", "user", "recipient", "plan", "plan__vpn_provider"
         ).aget(order_id=order_id, user=user, brand=self.brand)
 
-        await self.create_subscription(order)
-
         text = f"""
 ✅ پرداخت موفق!
 
@@ -315,7 +382,7 @@ class PurchaseHandler(BaseHandler):
 شماره سفارش: {order.order_number}
 مبلغ پرداختی: {self.format_price(order.final_price, order.currency)}
 
-اشتراک شما به زودی فعال خواهد شد.
+اشتراک شما در صف فعال‌سازی قرار گرفت.
         """
 
         keyboard = self.create_keyboard(
@@ -418,180 +485,10 @@ class PurchaseHandler(BaseHandler):
         await callback.answer()
 
     async def create_subscription(self, order: Order):
-        """Create or resume one order's subscription and provision supported providers."""
+        """Delegate provisioning to the provider-aware subscription service."""
+        from apps.subscriptions.services import provision_order_subscription
 
-        order = await Order.objects.select_related(
-            "brand", "user", "recipient", "plan", "plan__vpn_provider"
-        ).aget(pk=order.pk)
-        subscription = (
-            await Subscription.objects.filter(order=order)
-            .select_related("vpn_provider", "plan", "owner")
-            .afirst()
-        )
-        if (
-            subscription
-            and subscription.status == Subscription.SubscriptionStatus.ACTIVE
-        ):
-            return subscription
-
-        vpn_provider = (
-            subscription.vpn_provider
-            if subscription
-            else order.plan.vpn_provider
-            if order.plan.vpn_provider_id
-            else await VPNProvider.objects.filter(
-                brand=order.brand,
-                status=VPNProvider.ProviderStatus.ACTIVE,
-                is_default=True,
-            ).afirst()
-        )
-
-        if vpn_provider and vpn_provider.brand_id != order.brand_id:
-            logger.error("Plan provider crosses brand boundary for order %s", order.pk)
-            return
-
-        if vpn_provider and vpn_provider.status != VPNProvider.ProviderStatus.ACTIVE:
-            logger.error("Selected provider is inactive for order %s", order.pk)
-            return
-
-        if not vpn_provider:
-            logger.error("No available VPN provider for brand %s", order.brand_id)
-            return
-
-        vpn_email = f"user_{order.user.id}_{uuid.uuid4().hex[:8]}@{self.brand.slug}.vpn"
-
-        start_date = subscription.starts_at if subscription else timezone.now()
-        end_date = subscription.expires_at if subscription else None
-        if order.plan.duration_value and not end_date:
-            if order.plan.duration_unit == SubscriptionPlan.DurationUnit.DAYS:
-                end_date = start_date + timedelta(days=order.plan.duration_value)
-            elif order.plan.duration_unit == SubscriptionPlan.DurationUnit.MONTHS:
-                end_date = start_date + timedelta(days=order.plan.duration_value * 30)
-            elif order.plan.duration_unit == SubscriptionPlan.DurationUnit.YEARS:
-                end_date = start_date + timedelta(days=order.plan.duration_value * 365)
-
-        if not subscription:
-            subscription = await Subscription.objects.acreate(
-                brand=order.brand,
-                user=order.user,
-                plan=order.plan,
-                order=order,
-                vpn_provider=vpn_provider,
-                vpn_user_email=vpn_email,
-                owner=order.recipient or order.user,
-                starts_at=start_date,
-                expires_at=end_date,
-                traffic_limit_gb=order.plan.traffic_limit_gb,
-                status=Subscription.SubscriptionStatus.PENDING,
-            )
-        else:
-            changed_fields = []
-            if not subscription.expires_at and end_date:
-                subscription.expires_at = end_date
-                changed_fields.append("expires_at")
-            if not subscription.vpn_user_email:
-                subscription.vpn_user_email = vpn_email
-                changed_fields.append("vpn_user_email")
-            if subscription.status != Subscription.SubscriptionStatus.PENDING:
-                subscription.status = Subscription.SubscriptionStatus.PENDING
-                changed_fields.append("status")
-            if changed_fields:
-                changed_fields.append("updated_at")
-                await subscription.asave(update_fields=changed_fields)
-
-        if vpn_provider.provider_type == VPNProvider.ProviderType.HIDDIFY:
-            hiddify = None
-            try:
-                from apps.vpn_providers.services.hiddify import (
-                    HiddifyLanguage,
-                    HiddifyProvider,
-                    HiddifyUser,
-                    HiddifyUserMode,
-                )
-
-                hiddify = HiddifyProvider(
-                    base_url=vpn_provider.base_url,
-                    api_key=vpn_provider.api_key,
-                    proxy_path=vpn_provider.proxy_path or "",
-                    public_api_key=vpn_provider.public_api_key,
-                )
-
-                hiddify_user = HiddifyUser(
-                    name=f"user_{order.user.telegram_id}_{subscription.id}",
-                    telegram_id=order.user.telegram_id,
-                    usage_limit_GB=order.plan.traffic_limit_gb,
-                    package_days=(end_date - start_date).days if end_date else None,
-                    start_date=start_date.date(),
-                    mode=HiddifyUserMode.NO_RESET,
-                    enable=True,
-                    is_active=True,
-                    lang=HiddifyLanguage.FA,
-                    comment=f"Subscription {subscription.subscription_id}",
-                )
-
-                created_user = await hiddify.create_hiddify_user(hiddify_user)
-
-                if created_user and created_user.uuid:
-                    subscription.connection_configs = {
-                        "secret_uuid": str(created_user.uuid),
-                        "hiddify_uuid": str(created_user.uuid),
-                        "created_at": timezone.now().isoformat(),
-                    }
-                    subscription.vpn_user_email = (
-                        f"{created_user.uuid}@{self.brand.slug}.vpn"
-                    )
-                    subscription.status = Subscription.SubscriptionStatus.ACTIVE
-                    await subscription.asave()
-
-                    vpn_provider.current_users += 1
-                    vpn_provider.total_subscriptions += 1
-                    await vpn_provider.asave()
-
-                    logger.info(
-                        f"Created Hiddify user: {created_user.uuid} for subscription {subscription.subscription_id}"
-                    )
-                else:
-                    logger.error(
-                        f"Failed to create Hiddify user for subscription {subscription.subscription_id}"
-                    )
-
-            except Exception as e:
-                logger.error(
-                    "Hiddify provisioning failed for subscription %s (%s)",
-                    subscription.pk,
-                    type(e).__name__,
-                )
-            finally:
-                if hiddify:
-                    await hiddify.close()
-        else:
-            if vpn_provider.provider_type == VPNProvider.ProviderType.CONNECTIX:
-                from apps.subscriptions.services import provision_connectix_subscription
-
-                try:
-                    await provision_connectix_subscription(subscription)
-                except Exception as e:
-                    logger.error(
-                        "Connectix provisioning failed for subscription %s (%s)",
-                        subscription.pk,
-                        type(e).__name__,
-                    )
-            else:
-                logger.warning(
-                    "Provider type %s has no purchase provisioning adapter; subscription %s stays pending",
-                    vpn_provider.provider_type,
-                    subscription.pk,
-                )
-
-        order.status = (
-            Order.OrderStatus.COMPLETED
-            if subscription.status == Subscription.SubscriptionStatus.ACTIVE
-            else Order.OrderStatus.PROCESSING
-        )
-        await order.asave()
-
-        logger.info("Subscription %s is %s", subscription.pk, subscription.status)
-        return subscription
+        return await provision_order_subscription(order_id=order.pk)
 
     async def payment_done(self, callback: types.CallbackQuery, order_id: str):
         user, _ = await self.get_or_create_user(callback.from_user)

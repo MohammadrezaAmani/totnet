@@ -42,4 +42,37 @@
 
 ### Not yet repaired
 
-The broader payment/wallet lifecycle, referral point boxes, provider-neutral management actions, gift ownership across every subscription bot handler, and safe import/claim flows still need dedicated work. The captured Connectix contract has no verified renewal, suspend, deletion, traffic adjustment, or direct lookup operation, so those actions are not implemented. No live Connectix account was used for mutation testing.
+The captured Connectix contract has no verified renewal, suspend, deletion, traffic adjustment, or direct lookup operation, so those actions are not implemented. No live Connectix account was used for mutation testing.
+
+## Additional implementation
+
+- Wallet checkout is now row-locked and idempotent. Wallets are unique per user and brand, confirmed order payments are unique, and wallet ledger transactions have idempotency keys. Wallet and reward-value balances now retain fractional conversion precision.
+- Referral attribution is immutable per referee and brand, rejects self-referrals, and updates referrer registration counters. Valid referral-link opens increment click counts.
+- Confirmed profitable purchases can award Decimal-based level-one points once. The purchased order snapshots upstream cost so later plan edits do not change the recorded margin.
+- Added configurable reward services, immutable point-value snapshots, lifetime point valuation, ordered fractional point boxes, an auditable ledger, and transactional reference-service changes. Completed boxes convert to wallet value; incomplete boxes retain value when rebased, including sub-point precision.
+- Added replay-safe point redemption. It atomically spends liquid points and creates one zero-price order and pending subscription. Reward and normal paid orders now enter a Celery provisioning task; duplicate task delivery is gated by a short database lease.
+- Reward, referral, and point-box bot views now read configured lifetime levels and point-box state rather than displaying invented fixed reward amounts. Admin tools configure reference services, point-box layouts, and lifetime valuation; reward records are read-only and scoped by brand.
+- Profile, statistics, start-menu, and admin user summaries now read lifetime/liquid reward points from `RewardAccount`; legacy user reward fields are no longer used for display or updates.
+- Added a periodic recovery task for confirmed referral rewards whose enqueue or processing failed.
+- Moved provisioning orchestration from the Telegram purchase handler into `apps/subscriptions/services.py`. Paid orders enqueue provisioning after commit; task delivery uses a short database lease and successful activation notifies the purchaser and beneficiary.
+- Routed the shared subscription screens through a provider-aware handler. Connectix returns its verified subscription URL, Hiddify keeps its actual config retrieval, and unknown providers no longer receive fabricated VLESS URLs. Purchasers and beneficiaries can view shared subscriptions.
+- Added explicit provider capability declarations. Admin rejects activation of providers without a provisioning adapter and rejects active Connectix plans without the observed plan/group/device mapping.
+- Provisioning now records a durable state, sanitized error code/message, and whether retry is safe. A create with an ambiguous outcome is paused for review; reconciliation is retryable when a remote identity was saved.
+- Connected the scheduled provider sync to Connectix's observed paginated client list. It refreshes local active/suspended/expired status and saved subscription links for known remote IDs. Usage remains raw metadata because the panel's unit is not established.
+- Added migrations for reward ledgers/redemptions, money precision, upstream-cost snapshots, and provisioning leases. Existing order snapshots are backfilled from the plan cost available when migration runs.
+
+### Current verification
+
+- `python manage.py check`: passes.
+- `python manage.py test`: 26 tests pass, including mocked Connectix API and status-sync tests, referral, point-box, redemption, wallet idempotency, provisioning retry, gift ownership, and Connectix order-routing tests.
+- `ruff check .`: passes.
+- `makemigrations --check --dry-run`: no model changes missing migrations.
+- `ruff format --check .` reports formatting differences in 44 existing/touched files; no repository-wide formatting was applied as part of this work.
+- The test runner applied all migrations to an ephemeral test database. The existing local/release database was not migrated.
+
+### Remaining work
+
+- Connectix traffic values are retained raw; reliable numeric usage synchronization requires confirming the seller panel's traffic unit and date semantics. Connectix create calls cannot be blindly retried because panel idempotency was not verified.
+- Subscription management actions, renewals, expiry notifications, subscription import/claim verification, and the full onboarding/profile flow need further repair. Gift checkout now resolves a registered same-brand recipient, and phone sharing uses Telegram's contact request.
+- Legacy `User.reward_points` and `User.level` columns remain in the database for compatibility, but are no longer used by the bot or admin summaries. They can be removed after confirming no external integrations read them.
+- The panel's seller-plan read request returned HTTP 500 during read-only verification. Plan mappings must be entered from seller-panel metadata until Connectix corrects that endpoint. No remote account was created or modified.

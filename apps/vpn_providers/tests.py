@@ -13,9 +13,20 @@ from apps.vpn_providers.services.connectix_client import (
     ConnectixUpstreamError,
 )
 from apps.vpn_providers.services.connectix import ConnectixProvisioningRequest
+from apps.vpn_providers.services.capabilities import capabilities_for
 
 
 class VPNProviderFactoryTests(SimpleTestCase):
+    def test_capabilities_fail_closed_and_match_verified_connectix_surface(self):
+        connectix = capabilities_for("connectix")
+        self.assertTrue(connectix.provision)
+        self.assertTrue(connectix.reconcile)
+        self.assertTrue(connectix.sync_status)
+        self.assertFalse(connectix.sync_usage)
+        self.assertFalse(connectix.renew)
+        self.assertFalse(connectix.suspend)
+        self.assertFalse(capabilities_for("marzban").provision)
+
     def test_implemented_providers_are_constructible(self):
         for provider_type, kwargs in (
             (

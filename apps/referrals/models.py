@@ -3,6 +3,8 @@ Referral System Models for Multi-Tenant VPN Platform
 Configurable per brand with flexible reward rules
 """
 
+import uuid
+
 from django.db import models
 
 
@@ -32,6 +34,9 @@ class ReferralProgram(models.Model):
         null=True,
         blank=True,
         related_name="lifetime_programs",
+    )
+    lifetime_point_value = models.DecimalField(
+        max_digits=15, decimal_places=2, null=True, blank=True
     )
 
     is_active = models.BooleanField(default=True)
@@ -76,11 +81,38 @@ class ReferralProgram(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def save(self, *args, **kwargs):
+        if self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values(
+                "lifetime_reference_service_id", "lifetime_point_value"
+            ).first()
+            if previous and previous["lifetime_reference_service_id"]:
+                self.lifetime_reference_service_id = previous[
+                    "lifetime_reference_service_id"
+                ]
+                self.lifetime_point_value = previous["lifetime_point_value"]
+        if self.lifetime_reference_service_id and self.lifetime_point_value is None:
+            service = self.lifetime_reference_service
+            self.lifetime_point_value = service.point_value
+        super().save(*args, **kwargs)
+
     class Meta:
         db_table = "referral_programs"
 
     def __str__(self):
         return f"{self.brand.name} - {self.name}"
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+
+        for service_id in (self.reference_service_id, self.lifetime_reference_service_id):
+            if service_id and RewardService.objects.filter(pk=service_id).exclude(
+                brand_id=self.brand_id
+            ).exists():
+                raise ValidationError("Reference services must belong to this brand")
+        if self.lifetime_point_value is not None and self.lifetime_point_value <= 0:
+            raise ValidationError({"lifetime_point_value": "Point value must be positive"})
 
 
 class ReferralLevel(models.Model):
@@ -402,6 +434,9 @@ class RewardService(models.Model):
         related_name="reward_service_configs",
     )
     free_points = models.DecimalField(max_digits=20, decimal_places=8, default=10)
+    point_value_snapshot = models.DecimalField(
+        max_digits=15, decimal_places=2, null=True, blank=True
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -416,7 +451,20 @@ class RewardService(models.Model):
 
     @property
     def point_value(self):
+        if self.point_value_snapshot is not None:
+            return self.point_value_snapshot
         return self.plan.price - self.plan.upstream_cost
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values_list(
+                "point_value_snapshot", flat=True
+            ).first()
+            if previous is not None:
+                self.point_value_snapshot = previous
+        if self.point_value_snapshot is None and self.plan_id:
+            self.point_value_snapshot = self.plan.price - self.plan.upstream_cost
+        super().save(*args, **kwargs)
 
     def clean(self):
         super().clean()
@@ -462,6 +510,7 @@ class RewardAccount(models.Model):
     lifetime_points = models.DecimalField(max_digits=20, decimal_places=8, default=0)
     lifetime_profit = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     next_box_cycle = models.PositiveIntegerField(default=1)
+    redemption_nonce = models.UUIDField(default=uuid.uuid4, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -472,6 +521,13 @@ class RewardAccount(models.Model):
                 fields=["user", "brand"], name="uniq_reward_account_user_brand"
             )
         ]
+
+    def clean(self):
+        super().clean()
+        if self.user_id and self.brand_id and self.user.brand_id != self.brand_id:
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError("Reward accounts must match the user's brand")
 
 
 class RewardPointBox(models.Model):
@@ -490,6 +546,7 @@ class RewardPointBox(models.Model):
     sequence = models.PositiveSmallIntegerField()
     capacity = models.DecimalField(max_digits=20, decimal_places=8)
     filled = models.DecimalField(max_digits=20, decimal_places=8, default=0)
+    spent_points = models.DecimalField(max_digits=20, decimal_places=8, default=0)
     point_value_snapshot = models.DecimalField(max_digits=20, decimal_places=2)
     state = models.CharField(max_length=16, choices=State.choices, default=State.OPEN)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -505,6 +562,9 @@ class RewardPointBox(models.Model):
             ),
             models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_point_box_capacity_positive"),
             models.CheckConstraint(condition=models.Q(filled__gte=0), name="reward_point_box_filled_nonnegative"),
+            models.CheckConstraint(condition=models.Q(filled__lte=models.F("capacity")), name="reward_point_box_filled_within_capacity"),
+            models.CheckConstraint(condition=models.Q(spent_points__gte=0), name="reward_point_box_spent_nonnegative"),
+            models.CheckConstraint(condition=models.Q(spent_points__lte=models.F("filled")), name="reward_point_box_spent_within_filled"),
         ]
 
 
@@ -514,6 +574,7 @@ class RewardPointLedger(models.Model):
         BOX_COMPLETED = "box_completed", "Box Completed"
         SERVICE_REBASE = "service_rebase", "Service Rebase"
         CONVERTED_TO_WALLET = "converted_to_wallet", "Converted to Wallet"
+        REDEEMED = "redeemed", "Redeemed"
 
     account = models.ForeignKey(
         RewardAccount, on_delete=models.CASCADE, related_name="ledger_entries"
@@ -529,7 +590,7 @@ class RewardPointLedger(models.Model):
     )
     entry_type = models.CharField(max_length=24, choices=EntryType.choices)
     points_delta = models.DecimalField(max_digits=20, decimal_places=8)
-    value_delta = models.DecimalField(max_digits=20, decimal_places=2)
+    value_delta = models.DecimalField(max_digits=26, decimal_places=10)
     point_value_snapshot = models.DecimalField(max_digits=20, decimal_places=2)
     idempotency_key = models.CharField(max_length=255, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -537,6 +598,24 @@ class RewardPointLedger(models.Model):
     class Meta:
         db_table = "reward_point_ledger"
         indexes = [models.Index(fields=["account", "created_at"])]
+
+
+class RewardRedemption(models.Model):
+    """An idempotent claim of one configured reward service."""
+
+    account = models.ForeignKey(
+        RewardAccount, on_delete=models.PROTECT, related_name="redemptions"
+    )
+    service = models.ForeignKey(RewardService, on_delete=models.PROTECT)
+    order = models.OneToOneField(
+        "orders.Order", on_delete=models.PROTECT, related_name="reward_redemption"
+    )
+    points_spent = models.DecimalField(max_digits=20, decimal_places=8)
+    idempotency_key = models.UUIDField(unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "reward_redemptions"
 
 
 class MarketingMaterial(models.Model):

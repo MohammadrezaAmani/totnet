@@ -19,6 +19,7 @@ from .models import (
     VPNProviderStats,
     VPNServer,
 )
+from .services.capabilities import capabilities_for
 from .services.hiddify import HiddifyProvider
 
 
@@ -35,6 +36,18 @@ class VPNProviderAdminForm(forms.ModelForm):
 
     def clean_public_api_key(self):
         return self.cleaned_data.get("public_api_key") or self.instance.public_api_key
+
+    def clean(self):
+        cleaned = super().clean()
+        provider_type = cleaned.get("provider_type")
+        status = cleaned.get("status")
+        if status == VPNProvider.ProviderStatus.ACTIVE and not capabilities_for(
+            provider_type or ""
+        ).provision:
+            raise forms.ValidationError(
+                "This provider adapter has no implemented subscription provisioning capability."
+            )
+        return cleaned
 
 
 @admin.register(HiddifyAdmin)
@@ -263,6 +276,7 @@ class VPNProviderAdmin(admin.ModelAdmin):
             },
         ),
         ("Configuration", {"fields": ("configuration",), "classes": ("collapse",)}),
+        ("Implemented Capabilities", {"fields": ("capability_summary",)}),
         (
             "Timestamps",
             {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
@@ -282,6 +296,26 @@ class VPNProviderAdmin(admin.ModelAdmin):
     hiddify_admins_count.short_description = "Hiddify Admins"
 
     actions = ["test_connection", "sync_hiddify_admins", "check_health"]
+
+    readonly_fields = readonly_fields + ("capability_summary",)
+
+    def capability_summary(self, obj):
+        caps = capabilities_for(obj.provider_type)
+        return ", ".join(
+            label
+            for field, label in (
+                ("provision", "provision"),
+                ("reconcile", "reconcile"),
+                ("sync_status", "status sync"),
+                ("sync_usage", "usage sync"),
+                ("renew", "renew"),
+                ("suspend", "suspend"),
+                ("delete", "delete"),
+            )
+            if getattr(caps, field)
+        ) or "No implemented subscription operations"
+
+    capability_summary.short_description = "Implemented capabilities"
 
     def test_connection(self, request, queryset):
         """Test connection to selected providers"""

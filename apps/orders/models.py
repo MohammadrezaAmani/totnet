@@ -28,6 +28,7 @@ class Order(models.Model):
         RENEWAL = "renewal", "Renewal"
         UPGRADE = "upgrade", "Upgrade"
         GIFT = "gift", "Gift Purchase"
+        REWARD_REDEMPTION = "reward_redemption", "Reward Redemption"
 
     order_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     order_number = models.CharField(max_length=20, unique=True)
@@ -64,6 +65,9 @@ class Order(models.Model):
     discount_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     final_price = models.DecimalField(max_digits=15, decimal_places=2)
+    upstream_cost_snapshot = models.DecimalField(
+        max_digits=15, decimal_places=2, default=0, editable=False
+    )
     currency = models.CharField(max_length=3, default="USD")
 
     coupon_code = models.CharField(max_length=50, null=True, blank=True)
@@ -99,6 +103,8 @@ class Order(models.Model):
             date_str = datetime.now().strftime("%Y%m%d")
             random_part = str(random.randint(10000, 99999))
             self.order_number = f"ORD-{date_str}-{random_part}"
+        if self._state.adding and self.plan_id:
+            self.upstream_cost_snapshot = self.plan.upstream_cost
         super().save(*args, **kwargs)
 
 
@@ -326,7 +332,7 @@ class Wallet(models.Model):
         "brands.Brand", on_delete=models.CASCADE, related_name="wallets"
     )
 
-    balance = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    balance = models.DecimalField(max_digits=25, decimal_places=10, default=0)
     currency = models.CharField(max_length=3, default="USD")
 
     is_active = models.BooleanField(default=True)
@@ -368,10 +374,10 @@ class WalletTransaction(models.Model):
     )
 
     transaction_type = models.CharField(max_length=20, choices=TransactionType.choices)
-    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    amount = models.DecimalField(max_digits=25, decimal_places=10)
 
-    balance_before = models.DecimalField(max_digits=15, decimal_places=2)
-    balance_after = models.DecimalField(max_digits=15, decimal_places=2)
+    balance_before = models.DecimalField(max_digits=25, decimal_places=10)
+    balance_after = models.DecimalField(max_digits=25, decimal_places=10)
 
     reference_id = models.CharField(max_length=255, null=True, blank=True)
     idempotency_key = models.CharField(

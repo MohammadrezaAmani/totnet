@@ -13,6 +13,7 @@ from aiogram.types import BufferedInputFile
 from django.db.models import Q
 
 from apps.subscriptions.models import Subscription, SubscriptionConfig
+from apps.vpn_providers.models import VPNProvider
 
 from .base import BaseHandler
 
@@ -31,7 +32,7 @@ class SubscriptionHandler(BaseHandler):
             Subscription.objects.filter(
                 (Q(user=user) | Q(owner=user)), brand=self.brand
             )
-            .select_related("plan", "vpn_provider")
+            .select_related("plan", "vpn_provider", "owner")
             .order_by("-created_at")
         ):
             subscriptions.append(sub)
@@ -64,6 +65,13 @@ class SubscriptionHandler(BaseHandler):
 
             keyboard_buttons = []
             for sub in subscriptions[:10]:
+                owner_name = sub.owner.full_name or sub.owner.username
+                if sub.user_id == user.id and sub.owner_id != user.id:
+                    ownership = f" (برای {owner_name})"
+                elif sub.owner_id == user.id and sub.user_id != user.id:
+                    ownership = " (خریداری‌شده برای شما)"
+                else:
+                    ownership = ""
                 status_emoji = {
                     "active": "🟢",
                     "expired": "🔴",
@@ -82,7 +90,7 @@ class SubscriptionHandler(BaseHandler):
                     else:
                         remaining = "(منقضی شده)"
 
-                subscription_text = f"{status_emoji} {sub.plan.name} {remaining}"
+                subscription_text = f"{status_emoji} {sub.plan.name} {remaining}{ownership}"
 
                 keyboard_buttons.append(
                     [
@@ -119,7 +127,7 @@ class SubscriptionHandler(BaseHandler):
 
         try:
             subscription = (
-                await Subscription.objects.select_related("plan", "vpn_provider")
+                await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user")
                 .filter(Q(user=user) | Q(owner=user))
                 .aget(id=subscription_id, brand=self.brand)
             )
@@ -133,6 +141,8 @@ class SubscriptionHandler(BaseHandler):
 🏷️ پلن: {subscription.plan.name}
 🆔 شناسه: `{subscription.subscription_id}`
 📊 وضعیت: {self.get_status_text(subscription.status)}
+👤 خریدار: {subscription.user.full_name or subscription.user.username}
+🎁 دارنده: {subscription.owner.full_name or subscription.owner.username}
 
 ⏰ اطلاعات زمان:
 • شروع: {subscription.starts_at.strftime("%Y/%m/%d %H:%M")}
@@ -182,39 +192,18 @@ class SubscriptionHandler(BaseHandler):
                             "callback_data": f"usage_stats_{subscription_id}",
                         },
                     ],
-                    [
-                        {
-                            "text": "🔄 تمدید",
-                            "callback_data": f"renew_{subscription_id}",
-                        },
-                        {
-                            "text": "⬆️ ارتقا",
-                            "callback_data": f"upgrade_{subscription_id}",
-                        },
-                    ],
                 ]
             )
         elif subscription.status == Subscription.SubscriptionStatus.EXPIRED:
             keyboard_buttons.append(
                 [
                     {
-                        "text": "🔄 تمدید اشتراک",
-                        "callback_data": f"renew_{subscription_id}",
+                        "text": "🛒 خرید اشتراک جدید",
+                        "callback_data": "purchase_subscription",
                     }
                 ]
             )
-
-        keyboard_buttons.extend(
-            [
-                [
-                    {
-                        "text": "🎁 انتقال به دیگری",
-                        "callback_data": f"transfer_{subscription_id}",
-                    }
-                ],
-                [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
-            ]
-        )
+        keyboard_buttons.append([{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}])
 
         keyboard = self.create_keyboard(keyboard_buttons)
 
@@ -245,7 +234,7 @@ class SubscriptionHandler(BaseHandler):
 
         provider_type = subscription.vpn_provider.provider_type
 
-        if provider_type == "connectix":
+        if provider_type == VPNProvider.ProviderType.CONNECTIX:
             try:
                 config = await SubscriptionConfig.objects.aget(
                     subscription=subscription
@@ -255,10 +244,18 @@ class SubscriptionHandler(BaseHandler):
             await self.send_connectix_config(callback, subscription, config)
             return
 
+        if provider_type == VPNProvider.ProviderType.HIDDIFY:
+            from apps.bot.handlers.subscription_hiddify import SubscriptionHiddifyHandler
+
+            await SubscriptionHiddifyHandler(self.bot, self.brand).get_subscription_config(
+                callback, subscription_id
+            )
+            return
+
         try:
             config = await SubscriptionConfig.objects.aget(subscription=subscription)
         except SubscriptionConfig.DoesNotExist:
-            config = await self.generate_subscription_config(subscription)
+            config = None
 
         if not config:
             await callback.answer(
@@ -286,7 +283,7 @@ class SubscriptionHandler(BaseHandler):
         text = f"""
 📱 اطلاعات اتصال - {subscription.plan.name}
 
-👤 نام کاربری: `{subscription.connectix_username}`
+👤 نام کاربری: <code>{escape(subscription.connectix_username or '—')}</code>
 
 🔗 لینک اشتراک:
 <code>{escape(subscription_url)}</code>
@@ -508,37 +505,6 @@ class SubscriptionHandler(BaseHandler):
             return bio.getvalue()
         except Exception as e:
             logger.error(f"Error generating QR code: {e}")
-            return None
-
-    async def generate_subscription_config(self, subscription: Subscription):
-        """Generate VPN configuration for subscription"""
-
-        try:
-            vless_config = {
-                "id": str(subscription.subscription_id),
-                "add": subscription.vpn_provider.base_url.replace(
-                    "https://", ""
-                ).replace("http://", ""),
-                "port": "443",
-                "ps": f"{self.brand.name} - {subscription.plan.name}",
-                "net": "ws",
-                "type": "none",
-                "host": "",
-                "path": "/",
-                "tls": "tls",
-            }
-
-            subscription_url = f"vless://{vless_config['id']}@{vless_config['add']}:{vless_config['port']}"
-
-            config = await SubscriptionConfig.objects.acreate(
-                subscription=subscription,
-                vless_config=vless_config,
-                subscription_url=subscription_url,
-            )
-
-            return config
-        except Exception as e:
-            logger.error(f"Error generating config: {e}")
             return None
 
     def get_status_text(self, status: str) -> str:
