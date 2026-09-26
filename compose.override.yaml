@@ -1,0 +1,21 @@
+services:
+  web:
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    volumes:
+      - .:/app
+      - media_data:/data/media
+      - static_data:/data/static
+      - logs_data:/data/logs
+
+  bot:
+    volumes:
+      - .:/app
+      - media_data:/data/media
+      - logs_data:/data/logs
+
+  worker:
+    volumes:
+      - .:/app
+      - media_data:/data/media
+      - static_data:/data/static
+      - logs_data:/data/logs

@@ -28,6 +28,11 @@ ALLOWED_HOSTS = config(
     default="localhost,127.0.0.1",
     cast=lambda v: [s.strip() for s in v.split(",")],
 )
+CSRF_TRUSTED_ORIGINS = config(
+    "CSRF_TRUSTED_ORIGINS",
+    default="",
+    cast=lambda v: [origin.strip() for origin in v.split(",") if origin.strip()],
+)
 
 
 DJANGO_APPS = [
@@ -148,12 +153,12 @@ USE_TZ = True
 
 
 STATIC_URL = "static/"
-STATIC_ROOT = BASE_DIR / "staticfiles"
+STATIC_ROOT = Path(config("STATIC_ROOT", default=str(BASE_DIR / "staticfiles")))
 STATICFILES_DIRS = [BASE_DIR / "static"] if (BASE_DIR / "static").is_dir() else []
 
 
 MEDIA_URL = "media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = Path(config("MEDIA_ROOT", default=str(BASE_DIR / "media")))
 
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -257,7 +262,10 @@ LOGGING = {
         "file": {
             "level": "INFO",
             "class": "logging.FileHandler",
-            "filename": BASE_DIR / "logs" / "django.log",
+            "filename": Path(
+                config("LOG_DIR", default=str(BASE_DIR / "logs"))
+            )
+            / "django.log",
             "formatter": "verbose",
         },
         "console": {
@@ -285,7 +293,8 @@ LOGGING = {
 }
 
 
-os.makedirs(BASE_DIR / "logs", exist_ok=True)
+LOG_DIR = Path(config("LOG_DIR", default=str(BASE_DIR / "logs")))
+os.makedirs(LOG_DIR, exist_ok=True)
 
 
 USE_WEBHOOK = config("USE_WEBHOOK", default=False, cast=bool)

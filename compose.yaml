@@ -1,0 +1,171 @@
+name: ${COMPOSE_PROJECT_NAME:-totnet}
+
+x-app-env: &app-env
+  DJANGO_SETTINGS_MODULE: config.settings
+  SECRET_KEY: ${SECRET_KEY:-local-only-change-this-secret}
+  DEBUG: ${DEBUG:-true}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,web}
+  DATABASE_URL: ${DATABASE_URL:-postgresql://${DB_USER:-totnet}:${DB_PASSWORD:-totnet}@db:5432/${DB_NAME:-totnet}}
+  REDIS_URL: redis://cache:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  CONNECTIX_BASE_URL: ${CONNECTIX_BASE_URL:-https://api.connectix.vip}
+  CONNECTIX_USERNAME: ${CONNECTIX_USERNAME:-}
+  CONNECTIX_PASSWORD: ${CONNECTIX_PASSWORD:-}
+  CONNECTIX_TIMEOUT_SECONDS: ${CONNECTIX_TIMEOUT_SECONDS:-20}
+  STATIC_ROOT: /data/static
+  MEDIA_ROOT: /data/media
+  LOG_DIR: /data/logs
+  BOT_LOG_FILE: /data/logs/bot.log
+  TZ: UTC
+
+x-app-service: &app-service
+  image: totnet-app:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - path: .env
+      required: false
+  environment: *app-env
+  init: true
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    cache:
+      condition: service_healthy
+  volumes:
+    - media_data:/data/media
+    - static_data:/data/static
+    - logs_data:/data/logs
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-totnet}
+      POSTGRES_USER: ${DB_USER:-totnet}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-totnet}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:${DB_PUBLISHED_PORT:-54329}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  cache:
+    image: redis:7-alpine
+    command:
+      - sh
+      - -c
+      - redis-server --maxmemory "$${REDIS_CACHE_MAXMEMORY:-512mb}" --maxmemory-policy allkeys-lru --save "" --appendonly no
+    environment:
+      REDIS_CACHE_MAXMEMORY: ${REDIS_CACHE_MAXMEMORY:-512mb}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  web:
+    <<: *app-service
+    command:
+      - gunicorn
+      - config.wsgi:application
+      - --bind
+      - 0.0.0.0:8000
+      - --workers
+      - ${WEB_WORKERS:-3}
+      - --timeout
+      - ${WEB_TIMEOUT:-90}
+      - --access-logfile
+      - "-"
+      - --error-logfile
+      - "-"
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  bot:
+    <<: *app-service
+    command: ["python", "manage_bot.py"]
+
+  worker:
+    <<: *app-service
+    command:
+      - celery
+      - -A
+      - config
+      - worker
+      - --loglevel=${CELERY_LOG_LEVEL:-INFO}
+      - --concurrency=${CELERY_CONCURRENCY:-2}
+      - --hostname=worker@%h
+
+  beat:
+    <<: *app-service
+    command:
+      - celery
+      - -A
+      - config
+      - beat
+      - --loglevel=${CELERY_LOG_LEVEL:-INFO}
+      - --schedule=/data/celerybeat/celerybeat-schedule
+    volumes:
+      - logs_data:/data/logs
+      - celerybeat_data:/data/celerybeat
+
+  migrate:
+    <<: *app-service
+    profiles: [ops]
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    restart: "no"
+
+  adminer:
+    image: adminer:5
+    profiles: [dbadmin]
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "127.0.0.1:${ADMINER_PORT:-8081}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:
+  static_data:
+  logs_data:
+  celerybeat_data:
