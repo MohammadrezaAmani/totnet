@@ -6,9 +6,18 @@ import os
 from pathlib import Path
 from urllib.parse import unquote
 
-from decouple import config
+from decouple import AutoConfig, Config, RepositoryEmpty
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Compose injects values from its env_file. Avoid having python-decouple reopen
+# the host-mounted .env, which is commonly mode 0600 and unreadable by the
+# non-root container user. Outside Docker, retain its normal .env discovery.
+config = (
+    Config(RepositoryEmpty())
+    if os.environ.get("RUNNING_IN_DOCKER") == "1"
+    else AutoConfig()
+)
 
 
 def parse_debug(value):
