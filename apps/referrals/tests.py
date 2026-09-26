@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase
 
 from apps.accounts.models import User
@@ -32,6 +33,57 @@ from apps.referrals.services import (
 )
 from apps.subscriptions.models import SubscriptionPlan
 from apps.vpn_providers.models import VPNProvider
+
+
+class DefaultGamificationSetupTests(TestCase):
+    def test_default_program_is_complete_and_command_is_idempotent(self):
+        brand = Brand.objects.create(
+            name="Default Rewards",
+            slug=f"default-rewards-{uuid.uuid4().hex[:8]}",
+            contact_email="defaults@example.invalid",
+            bot_token=f"token-{uuid.uuid4().hex}",
+            currency="USD",
+        )
+        provider = VPNProvider.objects.create(
+            name="Default Rewards Provider",
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            base_url="https://api.example.invalid",
+            api_key="masked-test-value",
+            brand=brand,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+            is_default=True,
+        )
+        plan = SubscriptionPlan.objects.create(
+            brand=brand,
+            vpn_provider=provider,
+            upstream_group_id="mapped-group",
+            name="Profitable reward plan",
+            plan_type=SubscriptionPlan.PlanType.TIME_BASED,
+            price=Decimal("100.00"),
+            upstream_cost=Decimal("60.00"),
+            currency="USD",
+            duration_value=30,
+            duration_unit=SubscriptionPlan.DurationUnit.DAYS,
+        )
+
+        call_command("setup_default_gamification", brand=brand.slug, verbosity=0)
+        program = ReferralProgram.objects.get(brand=brand)
+        service = program.reference_service
+        self.assertTrue(program.is_active)
+        self.assertTrue(program.enable_level_rewards)
+        self.assertEqual(service.plan_id, plan.pk)
+        self.assertEqual(service.free_points, Decimal("10"))
+        self.assertEqual(
+            list(RewardBoxCapacity.objects.filter(service=service).values_list("capacity", flat=True)),
+            [Decimal("10")],
+        )
+        self.assertEqual(program.levels.count(), 3)
+        self.assertEqual(Achievement.objects.filter(brand=brand, is_active=True).count(), 7)
+
+        call_command("setup_default_gamification", brand=brand.slug, verbosity=0)
+        self.assertEqual(RewardService.objects.filter(brand=brand).count(), 1)
+        self.assertEqual(program.levels.count(), 3)
+        self.assertEqual(Achievement.objects.filter(brand=brand, is_active=True).count(), 7)
 
 
 class ReferralAttributionTests(TestCase):

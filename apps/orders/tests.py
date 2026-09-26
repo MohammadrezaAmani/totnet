@@ -134,6 +134,58 @@ class WalletCheckoutTests(TestCase):
         self.assertFalse(Payment.objects.filter(order=self.order).exists())
         self.assertFalse(WalletTransaction.objects.filter(wallet=self.wallet).exists())
 
+    def test_partial_wallet_payment_waits_for_external_remainder(self):
+        self.wallet.balance = Decimal("4.00")
+        self.wallet.save(update_fields=["balance"])
+
+        with (
+            patch("apps.orders.signals.broadcast_message"),
+            patch("apps.subscriptions.tasks.provision_paid_order.delay") as provision_delay,
+            patch("apps.referrals.tasks.process_referral_reward.delay") as reward_delay,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            result = pay_order_with_wallet(
+                order_id=str(self.order.order_id),
+                user_id=self.user.pk,
+                brand_id=self.brand.pk,
+                allow_partial=True,
+            )
+
+        self.wallet.refresh_from_db()
+        self.order.refresh_from_db()
+        wallet_payment = Payment.objects.get(payment_id=result.payment_id)
+        self.assertEqual(result.amount_applied, Decimal("4.00"))
+        self.assertEqual(result.remaining_due, Decimal("6.00"))
+        self.assertEqual(wallet_payment.amount, Decimal("4.00"))
+        self.assertEqual(self.wallet.balance, Decimal("0.00"))
+        self.assertEqual(self.order.status, Order.OrderStatus.AWAITING_PAYMENT)
+        self.assertFalse(self.order.subscriptions.exists())
+        provision_delay.assert_not_called()
+        reward_delay.assert_not_called()
+
+        with (
+            patch("apps.orders.signals.broadcast_message"),
+            patch("apps.subscriptions.tasks.provision_paid_order.delay") as provision_delay,
+            patch("apps.referrals.tasks.process_referral_reward.delay") as reward_delay,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            Payment.objects.create(
+                order=self.order,
+                brand=self.brand,
+                user=self.user,
+                payment_method=Payment.PaymentMethod.CARD_TRANSFER,
+                status=Payment.PaymentStatus.CONFIRMED,
+                amount=Decimal("6.00"),
+                currency=self.order.currency,
+                verified_at=timezone.now(),
+            )
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.OrderStatus.PAID)
+        self.assertEqual(self.order.subscriptions.count(), 1)
+        provision_delay.assert_called_once_with(self.order.pk)
+        reward_delay.assert_called_once()
+
     def test_order_lookup_is_scoped_to_user_and_brand(self):
         with self.assertRaisesRegex(WalletCheckoutError, "Order was not found"):
             pay_order_with_wallet(

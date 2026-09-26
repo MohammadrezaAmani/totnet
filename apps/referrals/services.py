@@ -173,13 +173,10 @@ def _service_value(service: RewardService) -> Decimal:
 
 def validate_reward_service_configuration(service: RewardService) -> Decimal:
     """Validate the monetary and box settings required for a reference service."""
-    brand_currency = Brand.objects.values_list("currency", flat=True).get(
-        pk=service.brand_id
-    )
     if not service.is_active or not service.plan.is_active:
         raise RewardConfigurationError("Reference service and plan must be active")
-    if service.plan.currency != brand_currency:
-        raise RewardConfigurationError("Reference service currency must match brand currency")
+    if not service.plan.currency:
+        raise RewardConfigurationError("Reference plan must have a currency")
     if service.free_points <= 0:
         raise RewardConfigurationError("Free point threshold must be positive")
     if not service.box_capacities.exists():

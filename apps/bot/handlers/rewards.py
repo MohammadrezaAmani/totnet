@@ -61,7 +61,11 @@ class RewardsHandler(BaseHandler):
                 f"{next_level.min_lifetime_points:g} امتیاز، "
                 f"نرخ تبدیل {next_level.min_conversion_rate:g}%"
             )
-        point_value_text = f"{point_value:g} {self.brand.currency}" if point_value else "تنظیم نشده"
+        point_value_text = (
+            f"{point_value:g} {service.plan.currency}"
+            if point_value and service
+            else "تنظیم نشده"
+        )
         free_points = service.free_points if service else 0
         free_progress = (
             min(100, int(liquid_points * 100 / free_points)) if free_points else 0

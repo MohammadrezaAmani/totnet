@@ -201,7 +201,8 @@ class Payment(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["order"],
-                condition=models.Q(status="confirmed"),
+                condition=models.Q(status="confirmed")
+                & ~models.Q(payment_method="wallet"),
                 name="uniq_confirmed_payment_per_order",
             )
         ]

@@ -7,6 +7,7 @@ import logging
 
 from aiogram import types
 from asgiref.sync import sync_to_async
+from django.db.models import Sum
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
@@ -360,14 +361,24 @@ class PurchaseHandler(BaseHandler):
         keyboard = await self._payment_methods_keyboard(user, order)
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
-    async def show_payment_methods(self, callback: types.CallbackQuery, order: Order):
+    async def show_payment_methods(
+        self, callback: types.CallbackQuery, order: Order, *, answer_callback: bool = True
+    ):
         """Show available payment methods"""
+        total_paid = await self._confirmed_order_payments(order)
+        remaining_due = max(order.final_price - total_paid, 0)
+        paid_line = (
+            f"مبلغ پرداخت‌شده: {self.format_price(total_paid, order.currency)}\n"
+            if total_paid
+            else ""
+        )
         text = f"""
 💳 انتخاب روش پرداخت
 
 سفارش شما: {order.order_number}
 پلن: {order.plan.name}
-مبلغ قابل پرداخت: {self.format_price(order.final_price, order.currency)}
+مبلغ کل: {self.format_price(order.final_price, order.currency)}
+{paid_line}مبلغ باقی‌مانده: {self.format_price(remaining_due, order.currency)}
 
 لطفاً روش پرداخت خود را انتخاب کنید:
         """
@@ -382,13 +393,16 @@ class PurchaseHandler(BaseHandler):
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
-        await callback.answer()
+        if answer_callback:
+            await callback.answer()
 
     async def _payment_methods_keyboard(self, user, order):
         keyboard_buttons = []
         async for method in self.brand.payment_methods.filter(is_enabled=True).order_by(
             "display_order"
         ):
+            if method.payment_type == "wallet":
+                continue
             keyboard_buttons.append(
                 [
                     {
@@ -398,20 +412,31 @@ class PurchaseHandler(BaseHandler):
                 ]
             )
 
+        total_paid = await self._confirmed_order_payments(order)
+        remaining_due = max(order.final_price - total_paid, 0)
         wallet = await Wallet.objects.filter(
             user=user,
             brand=self.brand,
             is_active=True,
             is_frozen=False,
             currency=order.currency,
-            balance__gte=order.final_price,
+            balance__gt=0,
         ).afirst()
-        if wallet:
+        if wallet and remaining_due > 0:
+            wallet_amount = min(wallet.balance, remaining_due)
+            wallet_label = (
+                "💰 پرداخت کامل از کیف پول"
+                if wallet_amount >= remaining_due
+                else (
+                    f"💰 کیف پول {self.format_price(wallet_amount, order.currency)}؛ "
+                    f"مانده {self.format_price(remaining_due - wallet_amount, order.currency)}"
+                )
+            )
             keyboard_buttons.insert(
                 0,
                 [
                     {
-                        "text": f"💰 پرداخت از کیف پول ({self.format_price(wallet.balance, order.currency)})",
+                        "text": wallet_label,
                         "callback_data": f"payment_wallet_{order.order_id}",
                     }
                 ],
@@ -422,6 +447,13 @@ class PurchaseHandler(BaseHandler):
         )
         return self.create_keyboard(keyboard_buttons)
 
+    @staticmethod
+    async def _confirmed_order_payments(order):
+        totals = await order.payments.filter(
+            status=Payment.PaymentStatus.CONFIRMED
+        ).aaggregate(total=Sum("amount"))
+        return totals["total"] or 0
+
     async def process_wallet_payment(
         self, callback: types.CallbackQuery, order_id: str
     ):
@@ -430,7 +462,10 @@ class PurchaseHandler(BaseHandler):
 
         try:
             result = await sync_to_async(pay_order_with_wallet)(
-                order_id=order_id, user_id=user.pk, brand_id=self.brand.pk
+                order_id=order_id,
+                user_id=user.pk,
+                brand_id=self.brand.pk,
+                allow_partial=True,
             )
         except WalletCheckoutError as exc:
             messages = {
@@ -448,6 +483,15 @@ class PurchaseHandler(BaseHandler):
         order = await Order.objects.select_related(
             "brand", "user", "recipient", "plan", "plan__vpn_provider"
         ).aget(order_id=order_id, user=user, brand=self.brand)
+
+        if result.remaining_due > 0:
+            await self.show_payment_methods(callback, order, answer_callback=False)
+            await callback.answer(
+                f"مبلغ {self.format_price(result.amount_applied, order.currency)} از کیف پول کسر شد؛ "
+                f"{self.format_price(result.remaining_due, order.currency)} باقی مانده است.",
+                show_alert=True,
+            )
+            return
 
         text = f"""
 ✅ پرداخت موفق!
@@ -499,6 +543,13 @@ class PurchaseHandler(BaseHandler):
             await callback.answer("❌ کارت بانکی فعالی موجود نیست.", show_alert=True)
             return
 
+        remaining_due = max(
+            order.final_price - await self._confirmed_order_payments(order), 0
+        )
+        if remaining_due <= 0:
+            await callback.answer("✅ این سفارش قبلاً تسویه شده است.", show_alert=True)
+            return
+
         await self.update_user_state(
             user,
             BotState.StateType.PAYMENT_PROCESS,
@@ -510,7 +561,7 @@ class PurchaseHandler(BaseHandler):
 
 سفارش: <code>{order.order_number}</code>
 
-مبلغ قابل پرداخت: {self.format_price(order.final_price, order.currency)}
+مبلغ قابل پرداخت: {self.format_price(remaining_due, order.currency)}
 
 💳 اطلاعات کارت‌های دریافت:
 
@@ -585,12 +636,16 @@ class PurchaseHandler(BaseHandler):
             await callback.answer("❌ درخواست نامعتبر است.", show_alert=True)
             return
 
-        if order.status != Order.OrderStatus.PENDING:
+        if order.status not in (
+            Order.OrderStatus.PENDING,
+            Order.OrderStatus.AWAITING_PAYMENT,
+        ):
             await callback.answer("❌ این سفارش قابل ادامه نیست.", show_alert=True)
             return
 
         dup = await Payment.objects.filter(
             order=order,
+            payment_method=Payment.PaymentMethod.CARD_TRANSFER,
             status__in=[Payment.PaymentStatus.PENDING, Payment.PaymentStatus.CONFIRMED],
         ).aexists()
         if dup:
@@ -607,7 +662,7 @@ class PurchaseHandler(BaseHandler):
     📤 ارسال رسید پرداخت
 
     💳 سفارش: {order.order_number}
-    💰 مبلغ: {self.format_price(order.final_price, order.currency)}
+    💰 مبلغ: {self.format_price(max(order.final_price - await self._confirmed_order_payments(order), 0), order.currency)}
 
     📸 لطفاً **عکس رسید واریز** را ارسال کنید.
 
@@ -710,7 +765,10 @@ class PurchaseHandler(BaseHandler):
             await message.answer("❌ سفارش معتبر نیست.")
             return
 
-        if order.status != Order.OrderStatus.PENDING:
+        if order.status not in (
+            Order.OrderStatus.PENDING,
+            Order.OrderStatus.AWAITING_PAYMENT,
+        ):
             await message.answer("❌ این سفارش دیگر قابل پرداخت نیست.")
             return
 
@@ -726,6 +784,13 @@ class PurchaseHandler(BaseHandler):
             await message.answer("⏳ رسید قبلاً دریافت شده و در حال بررسی است.")
             return
 
+        remaining_due = max(
+            order.final_price - await self._confirmed_order_payments(order), 0
+        )
+        if remaining_due <= 0:
+            await message.answer("✅ این سفارش قبلاً تسویه شده است.")
+            return
+
         photo = message.photo[-1]
         file_id = photo.file_id
 
@@ -734,7 +799,7 @@ class PurchaseHandler(BaseHandler):
             brand=self.brand,
             user=user,
             payment_method=Payment.PaymentMethod.CARD_TRANSFER,
-            amount=order.final_price,
+            amount=remaining_due,
             currency=order.currency,
             status=Payment.PaymentStatus.PENDING,
             receipt_file=file_id,
@@ -781,7 +846,7 @@ class PurchaseHandler(BaseHandler):
         admin_text = (
             f"🧾 رسید جدید\n"
             f"سفارش: {order.order_number}\n"
-            f"مبلغ: {self.format_price(order.final_price, order.currency)}\n"
+            f"مبلغ: {self.format_price(payment.amount, order.currency)}\n"
             f"payment_id: {payment.id}"
         )
         admin_kb = self.create_keyboard(

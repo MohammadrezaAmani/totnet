@@ -34,13 +34,15 @@ class WalletCouponError(Exception):
 class WalletCheckoutResult:
     payment_id: str
     already_paid: bool
+    amount_applied: Decimal = Decimal("0")
+    remaining_due: Decimal = Decimal("0")
 
 
 @transaction.atomic
 def pay_order_with_wallet(
-    *, order_id: str, user_id: int, brand_id: int
+    *, order_id: str, user_id: int, brand_id: int, allow_partial: bool = False
 ) -> WalletCheckoutResult:
-    """Charge a wallet and confirm an order exactly once under row locks."""
+    """Apply wallet funds to an order, optionally paying only the available part."""
     try:
         order = (
             Order.objects.select_for_update(of=("self",))
@@ -50,19 +52,25 @@ def pay_order_with_wallet(
     except Order.DoesNotExist as exc:
         raise WalletCheckoutError("Order was not found") from exc
 
-    confirmed = Payment.objects.filter(
+    confirmed_payments = Payment.objects.filter(
         order=order, status=Payment.PaymentStatus.CONFIRMED
-    ).first()
-    if confirmed:
-        return WalletCheckoutResult(str(confirmed.payment_id), already_paid=True)
+    )
+    confirmed_total = confirmed_payments.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    if order.final_price <= Decimal("0"):
+        raise WalletCheckoutError("Order amount must be positive")
+    remaining_due = max(order.final_price - confirmed_total, Decimal("0"))
+    if remaining_due <= 0:
+        confirmed = confirmed_payments.order_by("-created_at").first()
+        return WalletCheckoutResult(
+            str(confirmed.payment_id) if confirmed else "",
+            already_paid=True,
+            remaining_due=Decimal("0"),
+        )
     if order.status not in (
         Order.OrderStatus.PENDING,
         Order.OrderStatus.AWAITING_PAYMENT,
     ):
         raise WalletCheckoutError("Order cannot be paid in its current state")
-    if order.final_price <= Decimal("0"):
-        raise WalletCheckoutError("Order amount must be positive")
-
     try:
         wallet = Wallet.objects.select_for_update().get(
             user_id=user_id, brand_id=brand_id
@@ -73,7 +81,13 @@ def pay_order_with_wallet(
     if wallet.currency != order.currency:
         raise WalletCheckoutError("Wallet currency does not match order currency")
 
-    idempotency_key = f"order-wallet-payment:{order.order_id}"
+    amount_to_apply = min(wallet.balance, remaining_due)
+    if not allow_partial and amount_to_apply < remaining_due:
+        raise WalletCheckoutError("Insufficient wallet balance")
+    if amount_to_apply <= 0:
+        raise WalletCheckoutError("Insufficient wallet balance")
+
+    idempotency_key = f"order-wallet-payment:{order.order_id}:{confirmed_total}"
     existing_transaction = WalletTransaction.objects.filter(
         idempotency_key=idempotency_key
     ).first()
@@ -83,7 +97,7 @@ def pay_order_with_wallet(
     try:
         debit_wallet(
             wallet_id=wallet.pk,
-            amount=order.final_price,
+            amount=amount_to_apply,
             transaction_type=WalletTransaction.TransactionType.PAYMENT,
             description=f"Wallet payment for order {order.order_number}",
             reference_id=str(order.order_id),
@@ -98,11 +112,16 @@ def pay_order_with_wallet(
         user_id=user_id,
         payment_method=Payment.PaymentMethod.WALLET,
         status=Payment.PaymentStatus.CONFIRMED,
-        amount=order.final_price,
+        amount=amount_to_apply,
         currency=order.currency,
         verified_at=timezone.now(),
     )
-    return WalletCheckoutResult(str(payment.payment_id), already_paid=False)
+    return WalletCheckoutResult(
+        str(payment.payment_id),
+        already_paid=False,
+        amount_applied=amount_to_apply,
+        remaining_due=max(remaining_due - amount_to_apply, Decimal("0")),
+    )
 
 
 @transaction.atomic

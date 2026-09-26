@@ -1,6 +1,7 @@
 import logging
 
 from django.db import transaction
+from django.db.models import Sum
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -147,73 +148,80 @@ def payment_post_save(sender, instance, created, **kwargs):
     if instance.status == Payment.PaymentStatus.CONFIRMED:
         if instance.order:
             order = instance.order
-
-            if order.status != Order.OrderStatus.PAID:
-                order.status = Order.OrderStatus.PAID
-                order.save(update_fields=["status", "updated_at"])
-
-            provider = None
-            if order.plan.vpn_provider_id:
-                provider = VPNProvider.objects.filter(
-                    pk=order.plan.vpn_provider_id,
-                    brand=order.brand,
-                    status=VPNProvider.ProviderStatus.ACTIVE,
-                ).first()
+            confirmed_total = Payment.objects.filter(
+                order=order, status=Payment.PaymentStatus.CONFIRMED
+            ).aggregate(total=Sum("amount"))["total"] or 0
+            if confirmed_total < order.final_price:
+                if order.status != Order.OrderStatus.AWAITING_PAYMENT:
+                    order.status = Order.OrderStatus.AWAITING_PAYMENT
+                    order.save(update_fields=["status", "updated_at"])
             else:
-                provider = VPNProvider.objects.filter(
-                    brand=order.brand,
-                    status=VPNProvider.ProviderStatus.ACTIVE,
-                    is_default=True,
-                ).first()
-            if provider:
-                subscription, _ = Subscription.objects.get_or_create(
-                    order=order,
-                    defaults={
-                        "brand": order.brand,
-                        "user": order.user,
-                        "plan": order.plan,
-                        "vpn_provider": provider,
-                        "owner": order.recipient or order.user,
-                        "status": Subscription.SubscriptionStatus.PENDING,
-                        "starts_at": timezone.now(),
-                        "traffic_limit_gb": order.plan.traffic_limit_gb,
-                    },
-                )
-                transaction.on_commit(
-                    lambda subscription_id=subscription.pk: _enqueue_order_provisioning(
-                        subscription_id
+                if order.status != Order.OrderStatus.PAID:
+                    order.status = Order.OrderStatus.PAID
+                    order.save(update_fields=["status", "updated_at"])
+
+                provider = None
+                if order.plan.vpn_provider_id:
+                    provider = VPNProvider.objects.filter(
+                        pk=order.plan.vpn_provider_id,
+                        brand=order.brand,
+                        status=VPNProvider.ProviderStatus.ACTIVE,
+                    ).first()
+                else:
+                    provider = VPNProvider.objects.filter(
+                        brand=order.brand,
+                        status=VPNProvider.ProviderStatus.ACTIVE,
+                        is_default=True,
+                    ).first()
+                if provider:
+                    subscription, _ = Subscription.objects.get_or_create(
+                        order=order,
+                        defaults={
+                            "brand": order.brand,
+                            "user": order.user,
+                            "plan": order.plan,
+                            "vpn_provider": provider,
+                            "owner": order.recipient or order.user,
+                            "status": Subscription.SubscriptionStatus.PENDING,
+                            "starts_at": timezone.now(),
+                            "traffic_limit_gb": order.plan.traffic_limit_gb,
+                        },
                     )
-                )
-            else:
-                logger.error(
-                    "Payment %s confirmed for order %s, but brand %s has no active provider",
-                    instance.pk,
-                    order.pk,
-                    order.brand_id,
-                )
-            if provider:
-                transaction.on_commit(
-                    lambda brand_id=instance.brand_id, telegram_id=instance.user.telegram_id: (
-                        broadcast_message(
-                            brand_id=brand_id,
-                            user_ids=[telegram_id],
-                            text="پرداخت شما تأیید شد و سفارش برای فعال‌سازی اشتراک ثبت شد.",
-                            buttons_data=[
-                                [
-                                    {
-                                        "text": "📱 اشتراک‌های من",
-                                        "callback_data": "my_subscriptions",
-                                    }
-                                ],
-                            ],
+                    transaction.on_commit(
+                        lambda subscription_id=subscription.pk: _enqueue_order_provisioning(
+                            subscription_id
                         )
                     )
+                else:
+                    logger.error(
+                        "Payment %s confirmed for order %s, but brand %s has no active provider",
+                        instance.pk,
+                        order.pk,
+                        order.brand_id,
+                    )
+                if provider:
+                    transaction.on_commit(
+                        lambda brand_id=instance.brand_id, telegram_id=instance.user.telegram_id: (
+                            broadcast_message(
+                                brand_id=brand_id,
+                                user_ids=[telegram_id],
+                                text="پرداخت شما تأیید شد و سفارش برای فعال‌سازی اشتراک ثبت شد.",
+                                buttons_data=[
+                                    [
+                                        {
+                                            "text": "📱 اشتراک‌های من",
+                                            "callback_data": "my_subscriptions",
+                                        }
+                                    ],
+                                ],
+                            )
+                        )
+                    )
+                # Referral rewards run outside the payment transaction. The task is
+                # idempotent and a periodic recovery task covers enqueue failures.
+                transaction.on_commit(
+                    lambda payment_id=instance.payment_id: _enqueue_referral_reward(payment_id)
                 )
-            # Referral rewards run outside the payment transaction. The task is
-            # idempotent and a periodic recovery task covers enqueue failures.
-            transaction.on_commit(
-                lambda payment_id=instance.payment_id: _enqueue_referral_reward(payment_id)
-            )
         if instance.wallet_id and not instance.order_id:
             _apply_payment_wallet_delta(
                 instance,
@@ -240,7 +248,14 @@ def payment_post_save(sender, instance, created, **kwargs):
     # ---------------------------------------------------------------
     elif instance.status == Payment.PaymentStatus.FAILED:
         if instance.order:
-            instance.order.status = Order.OrderStatus.FAILED
+            confirmed_total = Payment.objects.filter(
+                order=instance.order, status=Payment.PaymentStatus.CONFIRMED
+            ).aggregate(total=Sum("amount"))["total"] or 0
+            instance.order.status = (
+                Order.OrderStatus.AWAITING_PAYMENT
+                if confirmed_total > 0
+                else Order.OrderStatus.FAILED
+            )
             instance.order.save(update_fields=["status", "updated_at"])
 
         transaction.on_commit(
@@ -258,7 +273,14 @@ def payment_post_save(sender, instance, created, **kwargs):
     # ---------------------------------------------------------------
     elif instance.status == Payment.PaymentStatus.CANCELLED:
         if instance.order:
-            instance.order.status = Order.OrderStatus.CANCELLED
+            confirmed_total = Payment.objects.filter(
+                order=instance.order, status=Payment.PaymentStatus.CONFIRMED
+            ).aggregate(total=Sum("amount"))["total"] or 0
+            instance.order.status = (
+                Order.OrderStatus.AWAITING_PAYMENT
+                if confirmed_total > 0
+                else Order.OrderStatus.CANCELLED
+            )
             instance.order.save(update_fields=["status", "updated_at"])
 
     # ---------------------------------------------------------------

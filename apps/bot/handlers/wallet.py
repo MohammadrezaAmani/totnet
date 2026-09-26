@@ -46,6 +46,7 @@ class WalletHandler(BaseHandler):
         "USD": [5, 10, 20, 50, 100, 500],
         "EUR": [5, 10, 20, 50, 100, 500],
         "GBP": [5, 10, 20, 50, 100, 500],
+        "T": [50_000, 100_000, 200_000, 500_000, 1_000_000, 5_000_000],
         "IRR": [50_000, 100_000, 200_000, 500_000, 1_000_000, 5_000_000],
         "IRT": [50_000, 100_000, 200_000, 500_000, 1_000_000, 5_000_000],
     }
@@ -55,6 +56,7 @@ class WalletHandler(BaseHandler):
         "USD": {"min": 1, "max": 10_000},
         "EUR": {"min": 1, "max": 10_000},
         "GBP": {"min": 1, "max": 10_000},
+        "T": {"min": 10_000, "max": 100_000_000},
         "IRR": {"min": 10_000, "max": 100_000_000},
         "IRT": {"min": 10_000, "max": 100_000_000},
     }
@@ -68,7 +70,7 @@ class WalletHandler(BaseHandler):
         except (InvalidOperation, TypeError, ValueError) as exc:
             raise WalletOperationError("Invalid charge amount") from exc
         limits = self.LIMITS[currency]
-        precision = Decimal("1") if currency in {"IRR", "IRT"} else Decimal("0.01")
+        precision = Decimal("1") if currency in {"T", "IRR", "IRT"} else Decimal("0.01")
         if (
             not value.is_finite()
             or value != value.quantize(precision)
@@ -1650,6 +1652,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
             "USD": "$",
             "EUR": "€",
             "GBP": "£",
+            "T": "تومان",
             "IRR": "تومان",
             "IRT": "تومان",
             "AED": "درهم",
@@ -1683,7 +1686,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 
     def _format_amount(self, amount, currency: str) -> str:
         """Format amount based on currency"""
-        if currency in ["IRR", "IRT"]:
+        if currency in ["T", "IRR", "IRT"]:
             return f"{int(amount):,}"
         return f"{amount:,.2f}"
 

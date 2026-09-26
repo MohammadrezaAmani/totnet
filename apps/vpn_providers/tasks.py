@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from asgiref.sync import async_to_sync
 from celery import shared_task
 from django.conf import settings
+from django.core.management import call_command
 from django.utils import timezone
 
 from apps.subscriptions.models import (
@@ -336,6 +337,14 @@ def sync_connectix_plans(self, provider_id: int):
     ).update(is_active=False, is_visible=False)
     provider.last_sync = timezone.now()
     provider.save(update_fields=("last_sync", "updated_at"))
+    try:
+        call_command("setup_default_gamification", brand=provider.brand.slug)
+    except Exception as exc:
+        logger.exception(
+            "Could not seed default gamification for brand %s (%s)",
+            provider.brand.slug,
+            type(exc).__name__,
+        )
     return len(synced_ids)
 
 
