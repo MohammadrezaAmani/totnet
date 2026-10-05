@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("referrals", "0004_rewardaccount_redemption_nonce_and_more"),
     ]

@@ -11,8 +11,8 @@ from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
-from apps.subscriptions.models import Subscription
 from apps.referrals.selectors import reward_summary
+from apps.subscriptions.models import Subscription
 
 from .base import BaseHandler
 
@@ -38,26 +38,33 @@ class ProfileHandler(BaseHandler):
         except Wallet.DoesNotExist:
             wallet_balance = 0
 
+        display_username = (
+            f"@{user.username}"
+            if user.username and user.username != f"user_{user.telegram_id}"
+            else "ثبت نشده"
+        )
+
         text = f"""
 👤 پروفایل من
 
 👨‍💼 نام: {user.full_name or user.first_name or "ثبت نشده"}
 📱 تلفن: {user.phone_number or "ثبت نشده"}
-👤 نام کاربری: {user.username}
-📧 ایمیل: {user.email or "ثبت نشده"}
+🆔 آیدی عددی: <code>{user.telegram_id}</code>
+👤 نام کاربری: {display_username}
 📅 تاریخ عضویت: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
 
 📊 وضعیت:
 • اشتراک‌های فعال: {subscription_count}
 • موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
-• سطح کاربری: {rewards['level_title']}
-• امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
-• امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
+• سطح کاربری: {rewards["level_title"]}
+• امتیاز مادام‌العمر: {rewards["lifetime_points"]:g}
+• امتیاز کامل قابل استفاده: {rewards["liquid_points"]:g}
         """
 
         keyboard = self.create_keyboard(
             [
                 [{"text": "✏️ ویرایش پروفایل", "callback_data": "edit_profile"}],
+                [{"text": "💰 کیف پول", "callback_data": "wallet"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
             ]
         )

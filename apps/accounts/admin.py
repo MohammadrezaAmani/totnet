@@ -9,6 +9,7 @@ from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.db.models import OuterRef, Subquery
 
 from apps.referrals.models import RewardAccount
+
 from .models import AuditLog, Permission, Role, User, UserProfile, UserRole, UserSession
 
 
@@ -272,7 +273,9 @@ class UserAdmin(BaseUserAdmin):
         ).values("lifetime_points")[:1]
         return qs.annotate(account_lifetime_points=Subquery(reward_points))
 
-    @admin.display(description="Lifetime reward points", ordering="account_lifetime_points")
+    @admin.display(
+        description="Lifetime reward points", ordering="account_lifetime_points"
+    )
     def account_lifetime_points(self, obj):
         return obj.account_lifetime_points or 0
 
@@ -362,6 +365,7 @@ class UserAdmin(BaseUserAdmin):
         return response
 
     export_users_csv.short_description = "Export selected users to CSV"
+
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):

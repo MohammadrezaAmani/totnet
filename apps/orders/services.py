@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -55,7 +56,9 @@ def pay_order_with_wallet(
     confirmed_payments = Payment.objects.filter(
         order=order, status=Payment.PaymentStatus.CONFIRMED
     )
-    confirmed_total = confirmed_payments.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    confirmed_total = confirmed_payments.aggregate(total=Sum("amount"))[
+        "total"
+    ] or Decimal("0")
     if order.final_price <= Decimal("0"):
         raise WalletCheckoutError("Order amount must be positive")
     remaining_due = max(order.final_price - confirmed_total, Decimal("0"))
@@ -148,7 +151,9 @@ def credit_wallet(
         WalletTransaction.TransactionType.ADMIN_ADJUSTMENT,
     }
     if not amount.is_finite() or amount <= 0 or transaction_type not in allowed_types:
-        raise WalletOperationError("Wallet credit must use a positive amount and credit type")
+        raise WalletOperationError(
+            "Wallet credit must use a positive amount and credit type"
+        )
 
     wallet = Wallet.objects.select_for_update().get(pk=wallet_id)
     if idempotency_key:
@@ -196,7 +201,9 @@ def debit_wallet(
         WalletTransaction.TransactionType.PAYMENT,
     }
     if not amount.is_finite() or amount <= 0 or transaction_type not in allowed_types:
-        raise WalletOperationError("Wallet debit must use a positive amount and debit type")
+        raise WalletOperationError(
+            "Wallet debit must use a positive amount and debit type"
+        )
 
     wallet = Wallet.objects.select_for_update().get(pk=wallet_id)
     if idempotency_key:
@@ -225,9 +232,15 @@ def debit_wallet(
         transaction_type__in=allowed_types,
         created_at__gte=month_start,
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-    if wallet.daily_spending_limit is not None and daily_spent + amount > wallet.daily_spending_limit:
+    if (
+        wallet.daily_spending_limit is not None
+        and daily_spent + amount > wallet.daily_spending_limit
+    ):
         raise WalletOperationError("Daily wallet spending limit exceeded")
-    if wallet.monthly_spending_limit is not None and monthly_spent + amount > wallet.monthly_spending_limit:
+    if (
+        wallet.monthly_spending_limit is not None
+        and monthly_spent + amount > wallet.monthly_spending_limit
+    ):
         raise WalletOperationError("Monthly wallet spending limit exceeded")
 
     return WalletTransaction.objects.create(
@@ -259,11 +272,15 @@ def redeem_wallet_coupon(*, user_id: int, brand_id: int, code: str):
     usage_count = CouponUsage.objects.filter(coupon=coupon).count()
     if coupon.max_uses is not None and usage_count >= coupon.max_uses:
         raise WalletCouponError("Coupon usage limit has been reached")
-    if CouponUsage.objects.filter(coupon=coupon, user_id=user_id).count() >= coupon.max_uses_per_user:
+    if (
+        CouponUsage.objects.filter(coupon=coupon, user_id=user_id).count()
+        >= coupon.max_uses_per_user
+    ):
         raise WalletCouponError("Coupon has already reached this user's limit")
-    if coupon.new_users_only and Order.objects.filter(
-        user_id=user_id, brand_id=brand_id
-    ).exists():
+    if (
+        coupon.new_users_only
+        and Order.objects.filter(user_id=user_id, brand_id=brand_id).exists()
+    ):
         raise WalletCouponError("Coupon is only available to new users")
     if (
         coupon.coupon_type != Coupon.CouponType.FIXED_AMOUNT
@@ -313,8 +330,10 @@ def validate_stars_pre_checkout(
 ) -> bool:
     """Accept only a still-valid Stars invoice matching its stored quote."""
     try:
-        payment = Payment.objects.select_for_update(of=("self",)).select_related("user").get(
-            payment_id=payment_id
+        payment = (
+            Payment.objects.select_for_update(of=("self",))
+            .select_related("user")
+            .get(payment_id=payment_id)
         )
     except Payment.DoesNotExist:
         return False

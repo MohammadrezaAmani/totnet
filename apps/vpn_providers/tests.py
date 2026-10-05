@@ -5,15 +5,17 @@ import httpx
 from django.test import SimpleTestCase
 
 from apps.vpn_providers.services.base import VPNProviderFactory
-from apps.vpn_providers.services.connectix import ConnectixProvider
+from apps.vpn_providers.services.capabilities import capabilities_for
+from apps.vpn_providers.services.connectix import (
+    ConnectixProvider,
+    ConnectixProvisioningRequest,
+)
 from apps.vpn_providers.services.connectix_client import (
     ConnectixAuthenticationError,
     ConnectixClient,
     ConnectixMalformedResponse,
     ConnectixUpstreamError,
 )
-from apps.vpn_providers.services.connectix import ConnectixProvisioningRequest
-from apps.vpn_providers.services.capabilities import capabilities_for
 
 
 class VPNProviderFactoryTests(SimpleTestCase):

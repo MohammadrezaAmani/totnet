@@ -5,6 +5,7 @@ Admin configuration for subscriptions app
 from django import forms
 from django.contrib import admin
 from django.utils.html import format_html
+
 from apps.vpn_providers.models import VPNProvider
 from apps.vpn_providers.services.capabilities import capabilities_for
 
@@ -63,6 +64,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
     list_display = (
         "name",
         "brand",
+        "service_category",
         "plan_type",
         "vpn_provider",
         "upstream_plan_name",
@@ -81,6 +83,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "display_order",
     )
     list_filter = (
+        "service_category",
         "plan_type",
         "is_active",
         "is_visible",

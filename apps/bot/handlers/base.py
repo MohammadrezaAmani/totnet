@@ -25,8 +25,8 @@ class BaseHandler:
 
     async def get_or_create_user(
         self, telegram_user: types.User, use_cache: bool = True, cache_ttl: int = 300
-    ) -> User:
-        """Get or create user from Telegram user data"""
+    ) -> tuple[User, bool]:
+        """Get or create user from Telegram user data."""
         CACHE_KEY: str = f"{self.brand.id}:{telegram_user.id}"
         created = False
 
@@ -87,11 +87,10 @@ class BaseHandler:
             ).aget(pk=user.pk)
             if current.is_staff or current.is_superuser:
                 return True
-            if (
-                current.brand_id == self.brand.pk
-                and current.user_type
-                in {User.UserType.BRAND_MANAGER, User.UserType.BRAND_ADMIN}
-            ):
+            if current.brand_id == self.brand.pk and current.user_type in {
+                User.UserType.BRAND_MANAGER,
+                User.UserType.BRAND_ADMIN,
+            }:
                 return True
             return await current.admin_brands.filter(pk=self.brand.pk).aexists()
         except User.DoesNotExist:
@@ -143,22 +142,15 @@ class BaseHandler:
         buttons = [
             [
                 {"text": "🛒 خرید اشتراک", "callback_data": "purchase_subscription"},
-                {"text": "📊 پروفایل من", "callback_data": "my_profile"},
+                {"text": "👤 پروفایل من", "callback_data": "my_profile"},
             ],
             [
-                {"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"},
-                {"text": "💰 کیف پول", "callback_data": "wallet"},
-            ],
-            [
+                {"text": "🏅 درجه پزشکی و امتیازات", "callback_data": "rewards"},
                 {"text": "👥 معرفی دوستان", "callback_data": "referral_system"},
-                {"text": "🎁 جایزه‌ها", "callback_data": "rewards"},
             ],
             [
-                {"text": "🔧 پشتیبانی", "callback_data": "support"},
-                {"text": "📊 آمار", "callback_data": "statistics"},
-            ],
-            [
-                {"text": "❓ راهنما", "callback_data": "help"},
+                {"text": "🛟 پشتیبانی", "callback_data": "support"},
+                {"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"},
             ],
         ]
 
@@ -222,7 +214,7 @@ class BaseHandler:
         if currency in {"T", "IRT"}:
             try:
                 formatted = f"{float(amount):,.2f}".rstrip("0").rstrip(".")
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 formatted = str(amount)
             return f"{formatted} تومان"
         if currency == "USD":

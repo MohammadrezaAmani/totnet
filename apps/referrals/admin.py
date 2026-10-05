@@ -305,7 +305,9 @@ class RewardServiceAdmin(admin.ModelAdmin):
         services = list(queryset.select_related("brand"))
         brand_ids = {service.brand_id for service in services}
         if len(services) != len(brand_ids):
-            self.message_user(request, "Select at most one service per brand.", level="ERROR")
+            self.message_user(
+                request, "Select at most one service per brand.", level="ERROR"
+            )
             return
         from .services import RewardConfigurationError, set_active_reference_service
 
@@ -321,20 +323,28 @@ class RewardServiceAdmin(admin.ModelAdmin):
                 )
                 continue
             updated += 1
-        self.message_user(request, f"Updated active reference service for {updated} brand(s).")
+        self.message_user(
+            request, f"Updated active reference service for {updated} brand(s)."
+        )
 
-    @admin.action(description="Set selected service as the lifetime points reference (once)")
+    @admin.action(
+        description="Set selected service as the lifetime points reference (once)"
+    )
     def set_as_lifetime_reference_service(self, request, queryset):
         services = list(queryset.select_related("brand"))
         if len({service.brand_id for service in services}) != len(services):
-            self.message_user(request, "Select at most one service per brand.", level="ERROR")
+            self.message_user(
+                request, "Select at most one service per brand.", level="ERROR"
+            )
             return
         from django.db import transaction
 
         updated = 0
         for service in services:
             with transaction.atomic():
-                program = ReferralProgram.objects.select_for_update().get(brand_id=service.brand_id)
+                program = ReferralProgram.objects.select_for_update().get(
+                    brand_id=service.brand_id
+                )
                 if program.lifetime_reference_service_id:
                     self.message_user(
                         request,
@@ -343,23 +353,46 @@ class RewardServiceAdmin(admin.ModelAdmin):
                     )
                     continue
                 if not service.is_active or not service.plan.is_active:
-                    self.message_user(request, f"{service.brand.name}: select an active service and plan.", level="ERROR")
+                    self.message_user(
+                        request,
+                        f"{service.brand.name}: select an active service and plan.",
+                        level="ERROR",
+                    )
                     continue
-                if service.plan.currency != service.brand.currency or not service.box_capacities.exists():
-                    self.message_user(request, f"{service.brand.name}: currency and point-box capacities must be configured.", level="ERROR")
+                if (
+                    service.plan.currency != service.brand.currency
+                    or not service.box_capacities.exists()
+                ):
+                    self.message_user(
+                        request,
+                        f"{service.brand.name}: currency and point-box capacities must be configured.",
+                        level="ERROR",
+                    )
                     continue
                 from .services import RewardConfigurationError, _service_value
 
                 try:
                     value = _service_value(service)
                 except RewardConfigurationError:
-                    self.message_user(request, f"{service.brand.name}: service profit configuration is invalid.", level="ERROR")
+                    self.message_user(
+                        request,
+                        f"{service.brand.name}: service profit configuration is invalid.",
+                        level="ERROR",
+                    )
                     continue
                 program.lifetime_reference_service = service
                 program.lifetime_point_value = value
-                program.save(update_fields=("lifetime_reference_service", "lifetime_point_value", "updated_at"))
+                program.save(
+                    update_fields=(
+                        "lifetime_reference_service",
+                        "lifetime_point_value",
+                        "updated_at",
+                    )
+                )
                 updated += 1
-        self.message_user(request, f"Set lifetime reference service for {updated} brand(s).")
+        self.message_user(
+            request, f"Set lifetime reference service for {updated} brand(s)."
+        )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -389,7 +422,14 @@ class RewardBoxCapacityAdmin(admin.ModelAdmin):
 
 @admin.register(RewardAccount)
 class RewardAccountAdmin(admin.ModelAdmin):
-    list_display = ("user", "brand", "reference_service", "liquid_points", "lifetime_points", "lifetime_profit")
+    list_display = (
+        "user",
+        "brand",
+        "reference_service",
+        "liquid_points",
+        "lifetime_points",
+        "lifetime_profit",
+    )
     list_filter = ("brand",)
     search_fields = ("user__username", "brand__name")
     readonly_fields = tuple(field.name for field in RewardAccount._meta.fields)
@@ -403,7 +443,15 @@ class RewardAccountAdmin(admin.ModelAdmin):
 
 @admin.register(RewardPointBox)
 class RewardPointBoxAdmin(admin.ModelAdmin):
-    list_display = ("account", "service", "cycle", "sequence", "filled", "capacity", "state")
+    list_display = (
+        "account",
+        "service",
+        "cycle",
+        "sequence",
+        "filled",
+        "capacity",
+        "state",
+    )
     list_filter = ("service__brand", "state", "service")
     readonly_fields = tuple(field.name for field in RewardPointBox._meta.fields)
 
@@ -416,7 +464,14 @@ class RewardPointBoxAdmin(admin.ModelAdmin):
 
 @admin.register(RewardPointLedger)
 class RewardPointLedgerAdmin(admin.ModelAdmin):
-    list_display = ("account", "entry_type", "points_delta", "value_delta", "order", "created_at")
+    list_display = (
+        "account",
+        "entry_type",
+        "points_delta",
+        "value_delta",
+        "order",
+        "created_at",
+    )
     list_filter = ("service__brand", "entry_type", "created_at")
     search_fields = ("idempotency_key", "account__user__username")
     readonly_fields = tuple(field.name for field in RewardPointLedger._meta.fields)

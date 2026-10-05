@@ -12,8 +12,8 @@ from apps.referrals.models import (
     Achievement,
     Referral,
     ReferralClick,
-    ReferralLink,
     ReferralLevel,
+    ReferralLink,
     ReferralProgram,
     ReferralReward,
     RewardAccount,
@@ -74,16 +74,24 @@ class DefaultGamificationSetupTests(TestCase):
         self.assertEqual(service.plan_id, plan.pk)
         self.assertEqual(service.free_points, Decimal("10"))
         self.assertEqual(
-            list(RewardBoxCapacity.objects.filter(service=service).values_list("capacity", flat=True)),
+            list(
+                RewardBoxCapacity.objects.filter(service=service).values_list(
+                    "capacity", flat=True
+                )
+            ),
             [Decimal("10")],
         )
         self.assertEqual(program.levels.count(), 3)
-        self.assertEqual(Achievement.objects.filter(brand=brand, is_active=True).count(), 7)
+        self.assertEqual(
+            Achievement.objects.filter(brand=brand, is_active=True).count(), 7
+        )
 
         call_command("setup_default_gamification", brand=brand.slug, verbosity=0)
         self.assertEqual(RewardService.objects.filter(brand=brand).count(), 1)
         self.assertEqual(program.levels.count(), 3)
-        self.assertEqual(Achievement.objects.filter(brand=brand, is_active=True).count(), 7)
+        self.assertEqual(
+            Achievement.objects.filter(brand=brand, is_active=True).count(), 7
+        )
 
 
 class ReferralAttributionTests(TestCase):
@@ -235,7 +243,9 @@ class AchievementTests(TestCase):
                 brand_id=self.brand.pk,
                 achievement_id=self.achievement.pk,
             )
-        self.assertFalse(Wallet.objects.filter(user=self.user, brand=self.brand).exists())
+        self.assertFalse(
+            Wallet.objects.filter(user=self.user, brand=self.brand).exists()
+        )
 
 
 class ReferralProfitPointTests(TestCase):
@@ -339,8 +349,12 @@ class ReferralProfitPointTests(TestCase):
     def test_confirmed_order_awards_fractional_level_one_points_once(self):
         self.purchase_plan.upstream_cost = Decimal("8.00")
         self.purchase_plan.save(update_fields=["upstream_cost"])
-        points = award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
-        duplicate = award_level_one_referral_for_payment(payment_id=str(self.payment.payment_id))
+        points = award_level_one_referral_for_payment(
+            payment_id=str(self.payment.payment_id)
+        )
+        duplicate = award_level_one_referral_for_payment(
+            payment_id=str(self.payment.payment_id)
+        )
         account = RewardAccount.objects.get(user=self.referrer, brand=self.brand)
         referral = Referral.objects.get(referee=self.referee, brand=self.brand)
 
@@ -350,11 +364,20 @@ class ReferralProfitPointTests(TestCase):
         self.assertEqual(account.lifetime_points, Decimal("2.00000000"))
         self.assertEqual(account.liquid_points, Decimal("1.00000000"))
         self.assertEqual(
-            list(RewardPointBox.objects.filter(account=account).values_list("filled", flat=True)),
+            list(
+                RewardPointBox.objects.filter(account=account).values_list(
+                    "filled", flat=True
+                )
+            ),
             [Decimal("1.00000000"), Decimal("1.50000000")],
         )
         self.assertEqual(ReferralReward.objects.filter(order=self.order).count(), 1)
-        self.assertEqual(RewardPointLedger.objects.filter(order=self.order, entry_type="earned").count(), 1)
+        self.assertEqual(
+            RewardPointLedger.objects.filter(
+                order=self.order, entry_type="earned"
+            ).count(),
+            1,
+        )
         self.assertEqual(referral.status, Referral.ReferralStatus.REWARDED)
 
     def test_qualified_level_multiplier_and_bonus_are_applied_once(self):
@@ -455,7 +478,9 @@ class ReferralProfitPointTests(TestCase):
         self.assertEqual(account.reference_service_id, new_service.pk)
         self.assertEqual(account.liquid_points, Decimal("0"))
         new_boxes = list(
-            RewardPointBox.objects.filter(account=account, service=new_service).order_by("cycle")
+            RewardPointBox.objects.filter(
+                account=account, service=new_service
+            ).order_by("cycle")
         )
         self.assertEqual(len(new_boxes), 1)
         self.assertEqual(new_boxes[0].filled, Decimal("0.85714285"))
@@ -494,7 +519,12 @@ class ReferralProfitPointTests(TestCase):
         self.assertEqual(order.final_price, Decimal("0"))
         self.assertEqual(order.subscriptions.count(), 1)
         self.assertEqual(account.liquid_points, Decimal("0"))
-        self.assertEqual(RewardPointLedger.objects.filter(order=order, entry_type="redeemed").count(), 1)
+        self.assertEqual(
+            RewardPointLedger.objects.filter(
+                order=order, entry_type="redeemed"
+            ).count(),
+            1,
+        )
 
     def test_reference_change_does_not_convert_already_spent_box_points(self):
         from apps.referrals.services import redeem_reward_service

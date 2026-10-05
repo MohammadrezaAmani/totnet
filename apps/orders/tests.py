@@ -1,6 +1,6 @@
+import uuid
 from datetime import timedelta
 from decimal import Decimal
-import uuid
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -82,7 +82,9 @@ class WalletCheckoutTests(TestCase):
     def test_wallet_order_payment_debits_once_and_is_idempotent(self):
         with (
             patch("apps.orders.signals.broadcast_message"),
-            patch("apps.subscriptions.tasks.provision_paid_order.delay") as provision_delay,
+            patch(
+                "apps.subscriptions.tasks.provision_paid_order.delay"
+            ) as provision_delay,
             patch("apps.referrals.tasks.process_referral_reward.delay") as reward_delay,
             self.captureOnCommitCallbacks(execute=True),
         ):
@@ -140,7 +142,9 @@ class WalletCheckoutTests(TestCase):
 
         with (
             patch("apps.orders.signals.broadcast_message"),
-            patch("apps.subscriptions.tasks.provision_paid_order.delay") as provision_delay,
+            patch(
+                "apps.subscriptions.tasks.provision_paid_order.delay"
+            ) as provision_delay,
             patch("apps.referrals.tasks.process_referral_reward.delay") as reward_delay,
             self.captureOnCommitCallbacks(execute=True),
         ):
@@ -165,7 +169,9 @@ class WalletCheckoutTests(TestCase):
 
         with (
             patch("apps.orders.signals.broadcast_message"),
-            patch("apps.subscriptions.tasks.provision_paid_order.delay") as provision_delay,
+            patch(
+                "apps.subscriptions.tasks.provision_paid_order.delay"
+            ) as provision_delay,
             patch("apps.referrals.tasks.process_referral_reward.delay") as reward_delay,
             self.captureOnCommitCallbacks(execute=True),
         ):
@@ -277,7 +283,9 @@ class WalletCheckoutTests(TestCase):
             redeem_wallet_coupon(
                 user_id=self.user.pk, brand_id=self.brand.pk, code=coupon.code
             )
-        self.assertEqual(WalletTransaction.objects.filter(wallet=self.wallet).count(), 1)
+        self.assertEqual(
+            WalletTransaction.objects.filter(wallet=self.wallet).count(), 1
+        )
 
     def test_percentage_coupon_cannot_be_turned_into_fixed_wallet_cash(self):
         from datetime import timedelta

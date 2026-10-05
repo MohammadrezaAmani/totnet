@@ -29,9 +29,9 @@ class StatsHandler(BaseHandler):
         ).acount()
         rewards = await reward_summary(user_id=user.pk, brand_id=self.brand.pk)
         referred_by = (
-            await User.objects.filter(pk=user.referred_by_id).values_list(
-                "username", flat=True
-            ).afirst()
+            await User.objects.filter(pk=user.referred_by_id)
+            .values_list("username", flat=True)
+            .afirst()
             if user.referred_by_id
             else "خودتان"
         )
@@ -54,9 +54,9 @@ class StatsHandler(BaseHandler):
 اشتراک‌های فعال: {subscription_count}
 معرفی شده توسط: {referred_by}
 تعداد معرفی‌ها: {user.referral_count}
-امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
-امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
-سطح: {rewards['level_title']}
+امتیاز مادام‌العمر: {rewards["lifetime_points"]:g}
+امتیاز کامل قابل استفاده: {rewards["liquid_points"]:g}
+سطح: {rewards["level_title"]}
 
 💰 موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
         """
@@ -133,9 +133,9 @@ class StatsHandler(BaseHandler):
 
 👥 معرفی:
 • تعداد کل معرفی‌ها: {user.referral_count}
-• امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
-• امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
-• سطح فعلی: {rewards['level_title']}
+• امتیاز مادام‌العمر: {rewards["lifetime_points"]:g}
+• امتیاز کامل قابل استفاده: {rewards["liquid_points"]:g}
+• سطح فعلی: {rewards["level_title"]}
 
 💰 مالی:
 • موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}

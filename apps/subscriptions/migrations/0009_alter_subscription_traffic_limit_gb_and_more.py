@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("subscriptions", "0008_subscription_provisioning_error_and_more"),
     ]

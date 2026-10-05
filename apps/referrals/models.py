@@ -83,9 +83,12 @@ class ReferralProgram(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            previous = type(self).objects.filter(pk=self.pk).values(
-                "lifetime_reference_service_id", "lifetime_point_value"
-            ).first()
+            previous = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .values("lifetime_reference_service_id", "lifetime_point_value")
+                .first()
+            )
             if previous and previous["lifetime_reference_service_id"]:
                 self.lifetime_reference_service_id = previous[
                     "lifetime_reference_service_id"
@@ -106,13 +109,21 @@ class ReferralProgram(models.Model):
         super().clean()
         from django.core.exceptions import ValidationError
 
-        for service_id in (self.reference_service_id, self.lifetime_reference_service_id):
-            if service_id and RewardService.objects.filter(pk=service_id).exclude(
-                brand_id=self.brand_id
-            ).exists():
+        for service_id in (
+            self.reference_service_id,
+            self.lifetime_reference_service_id,
+        ):
+            if (
+                service_id
+                and RewardService.objects.filter(pk=service_id)
+                .exclude(brand_id=self.brand_id)
+                .exists()
+            ):
                 raise ValidationError("Reference services must belong to this brand")
         if self.lifetime_point_value is not None and self.lifetime_point_value <= 0:
-            raise ValidationError({"lifetime_point_value": "Point value must be positive"})
+            raise ValidationError(
+                {"lifetime_point_value": "Point value must be positive"}
+            )
 
 
 class ReferralLevel(models.Model):
@@ -382,7 +393,7 @@ class Achievement(models.Model):
         blank=True,
         help_text=(
             "Thresholds: referrals, conversions, purchases, lifetime_points, "
-            "total_spent, wallet_deposits. Example: {\"referrals\": 5}."
+            'total_spent, wallet_deposits. Example: {"referrals": 5}.'
         ),
     )
 
@@ -488,9 +499,12 @@ class RewardService(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            previous = type(self).objects.filter(pk=self.pk).values_list(
-                "point_value_snapshot", flat=True
-            ).first()
+            previous = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .values_list("point_value_snapshot", flat=True)
+                .first()
+            )
             if previous is not None:
                 self.point_value_snapshot = previous
         if self.point_value_snapshot is None and self.plan_id:
@@ -519,7 +533,9 @@ class RewardBoxCapacity(models.Model):
             models.UniqueConstraint(
                 fields=["service", "sequence"], name="uniq_reward_box_sequence"
             ),
-            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_box_capacity_positive"),
+            models.CheckConstraint(
+                condition=models.Q(capacity__gt=0), name="reward_box_capacity_positive"
+            ),
         ]
 
 
@@ -591,11 +607,26 @@ class RewardPointBox(models.Model):
                 fields=["account", "service", "cycle", "sequence"],
                 name="uniq_reward_point_box_cycle",
             ),
-            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_point_box_capacity_positive"),
-            models.CheckConstraint(condition=models.Q(filled__gte=0), name="reward_point_box_filled_nonnegative"),
-            models.CheckConstraint(condition=models.Q(filled__lte=models.F("capacity")), name="reward_point_box_filled_within_capacity"),
-            models.CheckConstraint(condition=models.Q(spent_points__gte=0), name="reward_point_box_spent_nonnegative"),
-            models.CheckConstraint(condition=models.Q(spent_points__lte=models.F("filled")), name="reward_point_box_spent_within_filled"),
+            models.CheckConstraint(
+                condition=models.Q(capacity__gt=0),
+                name="reward_point_box_capacity_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(filled__gte=0),
+                name="reward_point_box_filled_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(filled__lte=models.F("capacity")),
+                name="reward_point_box_filled_within_capacity",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(spent_points__gte=0),
+                name="reward_point_box_spent_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(spent_points__lte=models.F("filled")),
+                name="reward_point_box_spent_within_filled",
+            ),
         ]
 
 

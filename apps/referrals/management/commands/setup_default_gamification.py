@@ -22,7 +22,6 @@ from apps.referrals.services import (
 from apps.subscriptions.models import SubscriptionPlan
 from apps.vpn_providers.models import VPNProvider
 
-
 DEFAULT_LEVELS = (
     {
         "level": 1,

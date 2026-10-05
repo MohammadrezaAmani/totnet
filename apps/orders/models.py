@@ -462,7 +462,11 @@ class CouponUsage(models.Model):
         "accounts.User", on_delete=models.CASCADE, related_name="coupon_usages"
     )
     order = models.ForeignKey(
-        Order, on_delete=models.CASCADE, related_name="coupon_usages", null=True, blank=True
+        Order,
+        on_delete=models.CASCADE,
+        related_name="coupon_usages",
+        null=True,
+        blank=True,
     )
 
     discount_amount = models.DecimalField(max_digits=15, decimal_places=2)

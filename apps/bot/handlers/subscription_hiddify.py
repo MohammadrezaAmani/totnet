@@ -332,23 +332,27 @@ UUID کاربر در پنل یافت نشد.
 
             try:
                 configs = await provider.get_user_configs(secret_uuid=secret_uuid)
-                config = [c for c in configs if (c.name or "").lower() == "subscription link"]
+                config = [
+                    c for c in configs if (c.name or "").lower() == "subscription link"
+                ]
                 link = config[0].link if config else None
                 if not configs:
                     text = "❌ هیچ کانفیگی یافت نشد."
                     keyboard = self.get_back_keyboard(f"subscription_details_{sub_id}")
                 else:
-                    text = "📱 کانفیگ‌های VPN\n" \
-                    "" \
-                    "" \
-                    f"""    🔗 لینک کانفیگ:
+                    text = (
+                        "📱 کانفیگ‌های VPN\n"
+                        ""
+                        ""
+                        f"""    🔗 لینک کانفیگ:
     <code>{link}</code>
 )
     ⚠️ روی لینک برای کپی کلیک کنید.
-    """ if link else ""
-                    "" \
-                    "\nیکی از گزینه‌ها را انتخاب کنید:"""
-                    
+    """
+                        if link
+                        else ""
+                    )
+                    "\nیکی از گزینه‌ها را انتخاب کنید:"
 
                     keyboard_buttons = []
 

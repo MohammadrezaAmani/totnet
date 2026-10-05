@@ -200,7 +200,7 @@ def _connectix_decimal(value, *, default=Decimal("0")):
         return default
     try:
         return Decimal(str(value).replace(",", "").strip())
-    except (InvalidOperation, ValueError):
+    except InvalidOperation, ValueError:
         return default
 
 
@@ -267,11 +267,13 @@ def sync_connectix_plans(self, provider_id: int):
             parsed_period = int(Decimal(upstream.period)) if upstream.period else None
             if parsed_period and duration_unit:
                 duration_value = parsed_period
-        except (InvalidOperation, ValueError):
+        except InvalidOperation, ValueError:
             pass
         raw_traffic = str(upstream.traffic_amount or "").strip()
         unlimited = raw_traffic.casefold() in {"∞", "inf", "infinite", "unlimited"}
-        traffic = None if unlimited or not raw_traffic else _connectix_decimal(raw_traffic)
+        traffic = (
+            None if unlimited or not raw_traffic else _connectix_decimal(raw_traffic)
+        )
         if unlimited:
             plan_type = SubscriptionPlan.PlanType.UNLIMITED
             traffic = None
@@ -319,9 +321,11 @@ def sync_connectix_plans(self, provider_id: int):
                 setattr(existing, key, value)
             existing.save()
         else:
-            name_in_use = SubscriptionPlan.objects.filter(
-                brand=provider.brand, name=title
-            ).exclude(vpn_provider=provider, upstream_plan_id=upstream.plan_id).exists()
+            name_in_use = (
+                SubscriptionPlan.objects.filter(brand=provider.brand, name=title)
+                .exclude(vpn_provider=provider, upstream_plan_id=upstream.plan_id)
+                .exists()
+            )
             if name_in_use:
                 defaults["name"] = f"{title[:82]} · {upstream.plan_id[:12]}"
             SubscriptionPlan.objects.create(

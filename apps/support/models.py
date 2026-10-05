@@ -175,7 +175,7 @@ class SupportTicket(models.Model):
             date_str = datetime.now().strftime("%Y%m%d")
             random_part = str(random.randint(10000, 99999))
             self.ticket_number = f"TKT-{date_str}-{random_part}"
-        
+
         if not self.sla_response_due and self.category:
             self.created_at = self.created_at or datetime.now()
             self.sla_response_due = self.created_at + timedelta(

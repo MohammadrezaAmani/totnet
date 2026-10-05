@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("vpn_providers", "0004_vpnprovider_last_sync"),
     ]

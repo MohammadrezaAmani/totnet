@@ -562,9 +562,9 @@ class AdminHandler(BaseHandler):
 📊 وضعیت:
 • اشتراک‌های فعال: {subs_count}
 • موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
-• سطح: {rewards['level_title']}
-• امتیاز مادام‌العمر: {rewards['lifetime_points']:g}
-• امتیاز کامل قابل استفاده: {rewards['liquid_points']:g}
+• سطح: {rewards["level_title"]}
+• امتیاز مادام‌العمر: {rewards["lifetime_points"]:g}
+• امتیاز کامل قابل استفاده: {rewards["liquid_points"]:g}
 
 🔄 عملیات:
                 """

@@ -11,7 +11,6 @@ def copy_current_plan_cost(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("orders", "0007_alter_wallet_balance_alter_wallettransaction_amount_and_more"),
         ("subscriptions", "0006_subscription_provisioning_started_at"),

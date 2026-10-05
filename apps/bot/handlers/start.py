@@ -59,9 +59,7 @@ class StartHandler(BaseHandler):
     @sync_to_async
     def _process_referral_sync(self, user_id: int, referral_code: str, brand_id: int):
         """Execute the ORM transaction outside the asynchronous bot loop."""
-        from apps.referrals.services import attribute_referral
-
-        from apps.referrals.services import track_referral_click
+        from apps.referrals.services import attribute_referral, track_referral_click
 
         track_referral_click(code=referral_code, brand_id=brand_id, visitor_id=user_id)
         return attribute_referral(

@@ -4,11 +4,15 @@ Handles referral system and marketing
 """
 
 import logging
+import os
 import secrets
+from html import escape
 
 from aiogram import types
+from aiogram.types import FSInputFile
+from django.db.models import F
 
-from apps.referrals.models import Referral, ReferralLink
+from apps.referrals.models import MarketingMaterial, Referral, ReferralLink
 from apps.referrals.selectors import referral_level_progress
 
 from .base import BaseHandler
@@ -57,11 +61,18 @@ class ReferralsHandler(BaseHandler):
         progress = await referral_level_progress(
             user_id=user.pk, brand_id=self.brand.pk
         )
+        successful_referrals = await Referral.objects.filter(
+            referrer=user,
+            brand=self.brand,
+            status=Referral.ReferralStatus.REWARDED,
+        ).acount()
         account = progress["account"]
         program = progress["program"]
         lifetime_points = progress["lifetime_points"]
         current_level = progress["current_level"]
-        level_label = f"{current_level.badge} {current_level.name}" if current_level else "—"
+        level_label = (
+            f"{current_level.badge} {current_level.name}" if current_level else "—"
+        )
         program_notice = (
             "امتیازها پس از خرید سودآور دوستان معرفی‌شده محاسبه می‌شوند."
             if program and program.reference_service_id
@@ -77,7 +88,8 @@ class ReferralsHandler(BaseHandler):
 📊 آمار معرفی:
 • ورودهای یکتا از لینک: {referral_link.click_count}
 • تعداد ثبت‌نام: {referral_link.conversion_count}
-• تعداد کل معرفی‌ها: {progress['referral_count']}
+• تعداد کل معرفی‌ها: {progress["referral_count"]}
+• معرفی‌های موفق دارای خرید: {successful_referrals}
 
 💰 درآمد از معرفی:
 • امتیاز مادام‌العمر: {lifetime_points:g}
@@ -85,12 +97,15 @@ class ReferralsHandler(BaseHandler):
 • سطح فعلی: {level_label}
 
 {program_notice}
+
+این سیستم راه‌اندازی شده تا افراد به بالاترین کیفیت اینترنت بدون هزینه دسترسی پیدا کنند. فعالیت و معرفی بیشتر توسط شما، ضمن کاهش محسوس و دائمی هزینه‌های شما، به دسترسی افراد بیشتری به این امکان کمک می‌کند.
         """
 
         keyboard = self.create_keyboard(
             [
                 [{"text": "📤 اشتراک‌گذاری لینک", "callback_data": "share_referral"}],
-                [{"text": "📈 آمار تفصیلی", "callback_data": "referral_stats"}],
+                [{"text": "🧰 محتواهای کمکی", "callback_data": "referral_materials"}],
+                [{"text": "📈 آمار معرفی‌های موفق", "callback_data": "referral_stats"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
             ]
         )
@@ -178,6 +193,121 @@ class ReferralsHandler(BaseHandler):
             await self.send_message_with_keyboard(
                 callback.message.chat.id, text, keyboard
             )
+
+        await callback.answer()
+
+    async def show_referral_materials(self, callback: types.CallbackQuery):
+        """List brand-provided videos, banners and suggested copy."""
+        materials = []
+        async for material in MarketingMaterial.objects.filter(
+            brand=self.brand, is_active=True
+        ).order_by("material_type", "name")[:30]:
+            materials.append(material)
+
+        if not materials:
+            text = (
+                "🧰 <b>محتواهای کمکی</b>\n\n"
+                "در حال حاضر ویدیو، بنر یا متن پیشنهادی فعالی ثبت نشده است."
+            )
+            rows = [[{"text": "🔙 بازگشت", "callback_data": "referral_system"}]]
+        else:
+            labels = {
+                MarketingMaterial.MaterialType.VIDEO: "🎬",
+                MarketingMaterial.MaterialType.BANNER: "🖼",
+                MarketingMaterial.MaterialType.TEXT_TEMPLATE: "📝",
+                MarketingMaterial.MaterialType.SOCIAL_POST: "📣",
+                MarketingMaterial.MaterialType.EMAIL_TEMPLATE: "✉️",
+            }
+            text = (
+                "🧰 <b>محتواهای کمکی معرفی دوستان</b>\n\n"
+                "ویدیوها، بنرها و متن‌های پیشنهادی آماده را انتخاب کنید:"
+            )
+            rows = [
+                [
+                    {
+                        "text": f"{labels.get(item.material_type, '📄')} {item.name}",
+                        "callback_data": f"referral_material_{item.pk}",
+                    }
+                ]
+                for item in materials
+            ]
+            rows.append([{"text": "🔙 بازگشت", "callback_data": "referral_system"}])
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id,
+            callback.message.message_id,
+            text,
+            self.create_keyboard(rows),
+        )
+        await callback.answer()
+
+    async def show_referral_material(
+        self, callback: types.CallbackQuery, material_id: int
+    ):
+        """Show one helper asset and send its configured media when available."""
+        try:
+            material = await MarketingMaterial.objects.aget(
+                pk=material_id, brand=self.brand, is_active=True
+            )
+        except MarketingMaterial.DoesNotExist:
+            await callback.answer("❌ محتوای موردنظر یافت نشد.", show_alert=True)
+            return
+
+        await MarketingMaterial.objects.filter(pk=material.pk).aupdate(
+            usage_count=F("usage_count") + 1
+        )
+        type_label = material.get_material_type_display()
+        text = f"🧰 <b>{escape(material.name)}</b>\nنوع: {escape(type_label)}"
+        if material.description:
+            text += f"\n\n{escape(material.description[:700])}"
+        if material.content:
+            # Bound user-visible content to stay below Telegram's 4096-char limit.
+            content = material.content[:2600]
+            if len(material.content) > len(content):
+                content += "…"
+            text += f"\n\n<code>{escape(content)}</code>"
+
+        keyboard = self.create_keyboard(
+            [[{"text": "🔙 بازگشت به محتواها", "callback_data": "referral_materials"}]]
+        )
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+
+        media = (
+            material.video
+            if material.material_type == MarketingMaterial.MaterialType.VIDEO
+            else material.image
+        )
+        if media:
+            source = None
+            try:
+                path = media.path
+                if path and os.path.isfile(path):
+                    source = FSInputFile(path)
+            except AttributeError, NotImplementedError, ValueError:
+                source = None
+            if source is None:
+                try:
+                    url = media.url
+                except AttributeError, ValueError:
+                    url = ""
+                if url.startswith(("http://", "https://")):
+                    source = url
+            if source is not None:
+                try:
+                    if material.material_type == MarketingMaterial.MaterialType.VIDEO:
+                        await self.bot.send_video(
+                            callback.message.chat.id, video=source
+                        )
+                    else:
+                        await self.bot.send_photo(
+                            callback.message.chat.id, photo=source
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not send referral material %s: %s", material.pk, exc
+                    )
 
         await callback.answer()
 

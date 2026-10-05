@@ -24,6 +24,11 @@ class SubscriptionPlan(models.Model):
         MONTHS = "months", "Months"
         YEARS = "years", "Years"
 
+    class ServiceCategory(models.TextChoices):
+        NORMAL = "normal", "Normal service"
+        ROYAL = "royal", "Royal service"
+        IRAN_IP = "iran_ip", "Iran IP service"
+
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="subscription_plans"
     )
@@ -43,6 +48,9 @@ class SubscriptionPlan(models.Model):
 
     name = models.CharField(max_length=100)
     description = models.TextField(null=True, blank=True)
+    service_category = models.CharField(
+        max_length=20, choices=ServiceCategory.choices, default=ServiceCategory.NORMAL
+    )
     plan_type = models.CharField(max_length=20, choices=PlanType.choices)
 
     price = models.DecimalField(max_digits=15, decimal_places=2)
@@ -103,8 +111,11 @@ class SubscriptionPlan(models.Model):
 
     @property
     def discounted_price(self):
-        """Calculate price after discount"""
-        if self.discount_percentage > 0:
+        """Calculate the currently valid discounted price."""
+        discount_is_active = self.discount_percentage > 0 and (
+            self.offer_expires_at is None or self.offer_expires_at > timezone.now()
+        )
+        if discount_is_active:
             discount_amount = (self.price * self.discount_percentage) / 100
             return self.price - discount_amount
         return self.price

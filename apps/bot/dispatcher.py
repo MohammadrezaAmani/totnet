@@ -10,7 +10,14 @@ from typing import Dict, Optional
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message, Update
+from aiogram.types import (
+    CallbackQuery,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    Message,
+    Update,
+)
 from aiohttp import web
 from django.conf import settings
 
@@ -32,11 +39,7 @@ from apps.bot.models import BotState
 from apps.bot.services.broadcaster import BroadcastSubscriber
 from apps.bot.services.telegram_sender import TelegramSender
 from apps.brands.models import Brand
-from aiogram.types import (
-    InlineQuery,
-    InlineQueryResultArticle,
-    InputTextMessageContent,
-)
+
 logger = logging.getLogger(__name__)
 
 
@@ -209,6 +212,15 @@ class MultiBrandDispatcher:
                 (await handlers["start"].get_or_create_user(message.from_user))[0],
             )
 
+        @router.pre_checkout_query()
+        async def handle_pre_checkout_query(pre_checkout_query):
+            await handlers["wallet"].handle_pre_checkout_query(pre_checkout_query)
+
+        @router.message(F.successful_payment)
+        async def handle_successful_payment(message: Message):
+            user, _ = await handlers["start"].get_or_create_user(message.from_user)
+            await handlers["wallet"].handle_successful_payment(message, user)
+
         @router.message(F.text)
         async def handle_text_messages(message: Message):
             user, _ = await handlers["start"].get_or_create_user(message.from_user)
@@ -256,7 +268,7 @@ class MultiBrandDispatcher:
                 action = (state.state_data or {}).get("action")
 
                 if action == "wallet_charge" and step == "waiting_receipt":
-                    await handlers["wallet"].handle_receipt_photo(message, user, state)
+                    await message.reply("❌ لطفاً عکس رسید پرداخت را ارسال کنید.")
                     return
                 elif action == "wallet_charge" and step == "waiting_custom_amount":
                     await handlers["wallet"].handle_custom_amount_message(
@@ -268,7 +280,6 @@ class MultiBrandDispatcher:
                     await handlers["wallet"].handle_coupon_message(message, user, state)
 
             # در متد handle_photo_messages اضافه کنید:
-
 
             elif (
                 state.state_data
@@ -289,13 +300,11 @@ class MultiBrandDispatcher:
             user, _ = await handlers["start"].get_or_create_user(message.from_user)
             await handlers["start"].handle_contact_message(message, user)
 
-
-
         @router.inline_query()
         async def inline_handler(query: InlineQuery):
             purchase_handler: PurchaseHandler = handlers["purchase"]
-            user = await purchase_handler.get_or_create_user(query.from_user)
-            text,keyboard = await purchase_handler.get_plans(user)
+            user, _ = await purchase_handler.get_or_create_user(query.from_user)
+            text, keyboard = await purchase_handler.get_plans(user)
 
             result = InlineQueryResultArticle(
                 id="1",
@@ -325,7 +334,6 @@ class MultiBrandDispatcher:
             step = (state.state_data or {}).get("step")
             action = (state.state_data or {}).get("action")
             if state.current_state == BotState.StateType.PAYMENT_PROCESS:
-
                 if action == "wallet_charge" and step == PurchaseStep.WAITING_RECEIPT:
                     await handlers["wallet"].handle_receipt_photo(message, user, state)
                     return
@@ -370,6 +378,13 @@ class MultiBrandDispatcher:
                 await handlers["referrals"].show_referral_menu(callback)
             elif data == "referral_stats":
                 await handlers["referrals"].show_referral_stats(callback)
+            elif data == "referral_materials":
+                await handlers["referrals"].show_referral_materials(callback)
+            elif data.startswith("referral_material_"):
+                material_id = int(data.removeprefix("referral_material_"))
+                await handlers["referrals"].show_referral_material(
+                    callback, material_id
+                )
             elif data == "share_referral":
                 await handlers["referrals"].share_referral_link(callback)
             elif data == "copy_referral_link":
@@ -382,6 +397,13 @@ class MultiBrandDispatcher:
 
             elif data == "purchase_subscription":
                 await handlers["purchase"].show_subscription_plans(callback)
+            elif data.startswith("purchase_category_"):
+                category = data.removeprefix("purchase_category_")
+                await handlers["purchase"].show_plans_by_category(callback, category)
+            elif data == "purchase_special":
+                await handlers["purchase"].show_special_offers(callback)
+            elif data == "service_guide":
+                await handlers["purchase"].show_service_guide(callback)
             elif data.startswith("select_plan_"):
                 plan_id = int(data.split("_")[2])
                 await handlers["purchase"].show_plan_details(callback, plan_id)
@@ -395,14 +417,12 @@ class MultiBrandDispatcher:
                 plan_id = int(data.split("_")[3])
                 await handlers["purchase"].initiate_purchase(callback, plan_id, "other")
 
-
             elif data.startswith("admin_confirm_wallet_"):
                 payment_id = int(data.split("_")[3])
                 await handlers["wallet"].admin_confirm_payment(callback, payment_id)
             elif data.startswith("admin_reject_wallet_"):
                 payment_id = int(data.split("_")[3])
                 await handlers["wallet"].admin_reject_payment(callback, payment_id)
-
 
             elif data.startswith("admin_confirm_payment_"):
                 payment_id = int(data.split("_")[3])
@@ -411,17 +431,24 @@ class MultiBrandDispatcher:
                 payment_id = int(data.split("_")[3])
                 await handlers["purchase"].admin_reject_payment(callback, payment_id)
 
-
             elif data.startswith("payment_done_"):
                 parts = data.split("_")
-                if len(parts) >= 2:
+                if len(parts) >= 3:
                     order_id = parts[2]
                     await handlers["purchase"].payment_done(callback, order_id)
+                else:
+                    await callback.answer(
+                        "❌ شناسه سفارش نامعتبر است.", show_alert=True
+                    )
             elif data.startswith("payment_not_done_"):
                 parts = data.split("_")
-                if len(parts) >= 3:
+                if len(parts) >= 4:
                     order_id = parts[3]
                     await handlers["purchase"].payment_not_done(callback, order_id)
+                else:
+                    await callback.answer(
+                        "❌ شناسه سفارش نامعتبر است.", show_alert=True
+                    )
             elif data.startswith("payment_methods_"):
                 order_id = data.removeprefix("payment_methods_")
                 await handlers["purchase"].show_payment_methods_for_order(
@@ -429,21 +456,27 @@ class MultiBrandDispatcher:
                 )
             elif data.startswith("payment_wallet_"):
                 order_id = data.removeprefix("payment_wallet_")
-                await handlers["purchase"].process_wallet_payment(
-                    callback, order_id
-                )
-            elif data.startswith("payment_"):
-                order_id = data.rsplit("_", 1)[-1]
+                await handlers["purchase"].process_wallet_payment(callback, order_id)
+            elif data.startswith("payment_card_transfer_"):
+                order_id = data.removeprefix("payment_card_transfer_")
                 await handlers["purchase"].show_card_transfer_payment(
                     callback, order_id
                 )
+            elif data.startswith("payment_"):
+                await callback.answer(
+                    "❌ این روش پرداخت برای خرید مستقیم اشتراک پشتیبانی نمی‌شود.",
+                    show_alert=True,
+                )
             elif data.startswith("select_card_"):
                 parts = data.split("_")
-                if len(parts) >= 3:
+                if len(parts) >= 4:
                     order_id = parts[3]
-
                     await handlers["purchase"].show_card_transfer_payment(
                         callback, order_id
+                    )
+                else:
+                    await callback.answer(
+                        "❌ شناسه سفارش نامعتبر است.", show_alert=True
                     )
             # در متد route_callback اضافه کنید:
 
@@ -538,6 +571,18 @@ class MultiBrandDispatcher:
 
             elif data == "my_subscriptions":
                 await handlers["subscriptions"].show_my_subscriptions(callback)
+            elif data == "my_own_subscriptions":
+                await handlers["subscriptions"].show_own_subscriptions(callback)
+            elif data == "family_subscriptions":
+                await handlers["subscriptions"].show_family_subscriptions(callback)
+            elif data == "renewal_page":
+                await handlers["subscriptions"].show_renewal_page(callback)
+            elif data.startswith("renewal_details_"):
+                sub_id = int(data.removeprefix("renewal_details_"))
+                await handlers["subscriptions"].show_renewal_details(callback, sub_id)
+            elif data.startswith("repurchase_subscription_"):
+                sub_id = int(data.removeprefix("repurchase_subscription_"))
+                await handlers["purchase"].repurchase_subscription(callback, sub_id)
             elif data.startswith("subscription_details_"):
                 sub_id = int(data.split("_")[2])
                 await handlers["subscriptions"].show_subscription_details(
@@ -550,9 +595,7 @@ class MultiBrandDispatcher:
                 )
             elif data.startswith("usage_stats_"):
                 sub_id = int(data.split("_")[2])
-                await handlers["subscriptions"].show_usage_statistics(
-                    callback, sub_id
-                )
+                await handlers["subscriptions"].show_usage_statistics(callback, sub_id)
             elif data.startswith("renew_"):
                 sub_id = int(data.split("_")[1])
                 await handlers["subscription_hiddify"].show_subscription_details(
@@ -594,7 +637,7 @@ class MultiBrandDispatcher:
                         await callback.answer("❌ خطا در پردازش درخواست")
             elif data.startswith("qr_codes_"):
                 parts = data.split("_")
-                if len(parts) >= 2:
+                if len(parts) >= 3:
                     try:
                         sub_id = int(parts[2])
                         await handlers["subscription_hiddify"].show_qr_codes(
@@ -605,7 +648,7 @@ class MultiBrandDispatcher:
                         await callback.answer("❌ خطا در پردازش درخواست")
             elif data.startswith("config_file_"):
                 parts = data.split("_")
-                if len(parts) >= 2:
+                if len(parts) >= 3:
                     try:
                         sub_id = int(parts[2])
                         await handlers["subscription_hiddify"].send_config_file(
@@ -713,7 +756,9 @@ class MultiBrandDispatcher:
                 ticket_id = int(data.replace("ticket_close_", ""))
                 await handlers["support"].close_ticket(callback, ticket_id)
 
-            elif data.startswith("ticket_rate_") and not data.startswith("ticket_rate_submit_"):
+            elif data.startswith("ticket_rate_") and not data.startswith(
+                "ticket_rate_submit_"
+            ):
                 ticket_id = int(data.replace("ticket_rate_", ""))
                 await handlers["support"].show_rating_options(callback, ticket_id)
             elif data.startswith("ticket_rate_submit_"):
@@ -732,10 +777,14 @@ class MultiBrandDispatcher:
                 await handlers["support"].show_faq_article(callback, article_id)
             elif data.startswith("faq_helpful_"):
                 article_id = int(data.replace("faq_helpful_", ""))
-                await handlers["support"].vote_faq(callback, article_id, is_helpful=True)
+                await handlers["support"].vote_faq(
+                    callback, article_id, is_helpful=True
+                )
             elif data.startswith("faq_not_helpful_"):
                 article_id = int(data.replace("faq_not_helpful_", ""))
-                await handlers["support"].vote_faq(callback, article_id, is_helpful=False)
+                await handlers["support"].vote_faq(
+                    callback, article_id, is_helpful=False
+                )
             elif data == "faq_search":
                 await handlers["support"].start_faq_search(callback)
 
@@ -746,7 +795,9 @@ class MultiBrandDispatcher:
             elif data == "rewards":
                 await handlers["rewards"].show_rewards(callback)
             elif data.startswith("claim_reward:"):
-                await handlers["rewards"].redeem_reward(callback, data.partition(":")[2])
+                await handlers["rewards"].redeem_reward(
+                    callback, data.partition(":")[2]
+                )
             elif data == "how_to_earn":
                 await handlers["rewards"].show_how_to_earn(callback)
             elif data == "leaderboard":
@@ -1038,8 +1089,8 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].delete_panel_user(callback, user_uuid)
 
             elif data == "admin_pending_orders":
-                await handlers["admin_hiddify"].list_orders(callback,"pending" )
-            
+                await handlers["admin_hiddify"].list_orders(callback, "pending")
+
             elif data == "admin_completed_orders":
                 await handlers["admin_hiddify"].list_orders(callback, "completed")
             elif data == "admin_failed_orders":
@@ -1052,15 +1103,25 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].refresh_orders(callback)
             # pagination
             elif data.startswith("aop_"):
-                await handlers["admin_hiddify"].show_order_list_page(callback, int(data.split("_")[-1]))
+                await handlers["admin_hiddify"].show_order_list_page(
+                    callback, int(data.split("_")[-1])
+                )
             elif data.startswith("aod_"):
-                await handlers["admin_hiddify"].view_order_details(callback, data.split("_")[-1])
+                await handlers["admin_hiddify"].view_order_details(
+                    callback, data.split("_")[-1]
+                )
             elif data.startswith("aoc_"):
-                await handlers["admin_hiddify"].change_order_status(callback, data.split("_")[-2],data.split("_")[-1])
+                await handlers["admin_hiddify"].change_order_status(
+                    callback, data.split("_")[-2], data.split("_")[-1]
+                )
             elif data.startswith("aost_"):
-                await handlers["admin_hiddify"].start_order_status_picker(callback, data.split("_")[-1])
+                await handlers["admin_hiddify"].start_order_status_picker(
+                    callback, data.split("_")[-1]
+                )
             elif data.startswith("aoan_"):
-                await handlers["admin_hiddify"].start_order_admin_note(callback, data.split("_")[-1])
+                await handlers["admin_hiddify"].start_order_admin_note(
+                    callback, data.split("_")[-1]
+                )
             elif data.startswith("admin_view_order_"):
                 order_id = int(data.replace("admin_view_order_", ""))
                 await handlers["admin_hiddify"].view_order_details(callback, order_id)
@@ -1247,7 +1308,7 @@ class MultiBrandDispatcher:
 
     async def show_wallet(self, callback: CallbackQuery, handler: BaseHandler):
         """Show wallet information"""
-        user = await handler.get_or_create_user(callback.from_user)
+        user, _ = await handler.get_or_create_user(callback.from_user)
 
         from apps.orders.models import Wallet
 
@@ -1295,7 +1356,7 @@ class MultiBrandDispatcher:
 
     async def show_wallet_history(self, callback: CallbackQuery, handler: BaseHandler):
         """Show wallet transaction history"""
-        user = await handler.get_or_create_user(callback.from_user)
+        user, _ = await handler.get_or_create_user(callback.from_user)
 
         from apps.orders.models import Wallet
 
@@ -1519,10 +1580,9 @@ class MultiBrandDispatcher:
 
         await callback.answer()
 
-
     async def show_statistics(self, callback: CallbackQuery, handler: BaseHandler):
         """Show user statistics"""
-        user = await handler.get_or_create_user(callback.from_user)
+        user, _ = await handler.get_or_create_user(callback.from_user)
 
         from apps.subscriptions.models import Subscription
 
@@ -1565,7 +1625,7 @@ class MultiBrandDispatcher:
 
     async def show_detailed_stats(self, callback: CallbackQuery, handler: BaseHandler):
         """Show detailed user statistics"""
-        user = await handler.get_or_create_user(callback.from_user)
+        user, _ = await handler.get_or_create_user(callback.from_user)
 
         text = f"""
 📈 آمار جامع شما
@@ -1604,7 +1664,7 @@ class MultiBrandDispatcher:
 
     async def show_marketing_tools(self, callback: CallbackQuery, handler: BaseHandler):
         """Show marketing tools for referrals"""
-        user = await handler.get_or_create_user(callback.from_user)
+        user, _ = await handler.get_or_create_user(callback.from_user)
 
         bot_username = (
             handler.brand.bot_username or handler.bot._me.username

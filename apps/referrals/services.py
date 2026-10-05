@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation, ROUND_DOWN, localcontext
+from decimal import ROUND_DOWN, Decimal, InvalidOperation, localcontext
 
 from django.db import IntegrityError, connection, transaction
 from django.db.models import F, Sum
@@ -18,6 +18,7 @@ from apps.subscriptions.models import Subscription, SubscriptionPlan
 from apps.vpn_providers.models import VPNProvider
 
 from .models import (
+    Achievement,
     Referral,
     ReferralClick,
     ReferralLink,
@@ -28,7 +29,6 @@ from .models import (
     RewardPointLedger,
     RewardRedemption,
     RewardService,
-    Achievement,
     UserAchievement,
 )
 
@@ -65,7 +65,9 @@ def _record_zero_referral_reward(
 
 
 @transaction.atomic
-def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = None) -> bool:
+def track_referral_click(
+    *, code: str, brand_id: int, visitor_id: int | None = None
+) -> bool:
     """Count one branded bot start per visitor without granting attribution."""
     link = ReferralLink.objects.filter(
         code=code, brand_id=brand_id, is_active=True
@@ -130,9 +132,11 @@ def attribute_referral(*, user_id: int, brand_id: int, code: str) -> bool:
     ):
         return False
 
-    program = ReferralProgram.objects.select_for_update().filter(
-        brand_id=brand_id, is_active=True
-    ).first()
+    program = (
+        ReferralProgram.objects.select_for_update()
+        .filter(brand_id=brand_id, is_active=True)
+        .first()
+    )
     if program:
         if program.require_phone_verification and (
             not user.phone_number or not user.is_verified
@@ -141,17 +145,25 @@ def attribute_referral(*, user_id: int, brand_id: int, code: str) -> bool:
         now = timezone.now()
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         month_start = day_start.replace(day=1)
-        if program.max_referrals_per_day and Referral.objects.filter(
-            referrer_id=referral_link.user_id,
-            brand_id=brand_id,
-            created_at__gte=day_start,
-        ).count() >= program.max_referrals_per_day:
+        if (
+            program.max_referrals_per_day
+            and Referral.objects.filter(
+                referrer_id=referral_link.user_id,
+                brand_id=brand_id,
+                created_at__gte=day_start,
+            ).count()
+            >= program.max_referrals_per_day
+        ):
             return False
-        if program.max_referrals_per_month and Referral.objects.filter(
-            referrer_id=referral_link.user_id,
-            brand_id=brand_id,
-            created_at__gte=month_start,
-        ).count() >= program.max_referrals_per_month:
+        if (
+            program.max_referrals_per_month
+            and Referral.objects.filter(
+                referrer_id=referral_link.user_id,
+                brand_id=brand_id,
+                created_at__gte=month_start,
+            ).count()
+            >= program.max_referrals_per_month
+        ):
             return False
 
     if Referral.objects.filter(referee_id=user.pk, brand_id=brand_id).exists():
@@ -199,7 +211,9 @@ def validate_reward_service_configuration(service: RewardService) -> Decimal:
     if service.free_points <= 0:
         raise RewardConfigurationError("Free point threshold must be positive")
     if not service.box_capacities.exists():
-        raise RewardConfigurationError("Reference service must have point-box capacities")
+        raise RewardConfigurationError(
+            "Reference service must have point-box capacities"
+        )
     return _service_value(service)
 
 
@@ -299,14 +313,23 @@ def _locked_reward_account(*, user_id: int, brand_id: int) -> RewardAccount:
 
 
 def _credit_wallet_once(
-    *, user_id: int, brand_id: int, amount: Decimal, idempotency_key: str, description: str
+    *,
+    user_id: int,
+    brand_id: int,
+    amount: Decimal,
+    idempotency_key: str,
+    description: str,
 ) -> WalletTransaction:
     if amount <= 0:
         raise ValueError("Wallet credit must be positive")
     wallet, _ = Wallet.objects.get_or_create(
         user_id=user_id,
         brand_id=brand_id,
-        defaults={"currency": Brand.objects.values_list("currency", flat=True).get(pk=brand_id)},
+        defaults={
+            "currency": Brand.objects.values_list("currency", flat=True).get(
+                pk=brand_id
+            )
+        },
     )
     return credit_wallet(
         wallet_id=wallet.pk,
@@ -339,7 +362,9 @@ def _achievement_metrics(*, user_id: int, brand_id: int) -> dict[str, Decimal]:
             Order.OrderStatus.COMPLETED,
         ),
     )
-    total_spent = paid_orders.aggregate(total=Sum("final_price"))["total"] or Decimal("0")
+    total_spent = paid_orders.aggregate(total=Sum("final_price"))["total"] or Decimal(
+        "0"
+    )
     account = RewardAccount.objects.filter(user_id=user_id, brand_id=brand_id).first()
     deposits = WalletTransaction.objects.filter(
         wallet__user_id=user_id,
@@ -348,14 +373,16 @@ def _achievement_metrics(*, user_id: int, brand_id: int) -> dict[str, Decimal]:
         amount__gt=0,
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
     return {
-        "referrals": Decimal(Referral.objects.filter(
-            referrer_id=user_id, brand_id=brand_id
-        ).count()),
-        "conversions": Decimal(Referral.objects.filter(
-            referrer_id=user_id,
-            brand_id=brand_id,
-            status=Referral.ReferralStatus.REWARDED,
-        ).count()),
+        "referrals": Decimal(
+            Referral.objects.filter(referrer_id=user_id, brand_id=brand_id).count()
+        ),
+        "conversions": Decimal(
+            Referral.objects.filter(
+                referrer_id=user_id,
+                brand_id=brand_id,
+                status=Referral.ReferralStatus.REWARDED,
+            ).count()
+        ),
         "purchases": Decimal(paid_orders.count()),
         "lifetime_points": account.lifetime_points if account else Decimal("0"),
         "total_spent": total_spent,
@@ -379,11 +406,12 @@ def refresh_user_achievements(*, user_id: int, brand_id: int) -> list[UserAchiev
         if valid:
             try:
                 targets = {
-                    key: Decimal(str(value))
-                    for key, value in requirements.items()
+                    key: Decimal(str(value)) for key, value in requirements.items()
                 }
-                valid = all(value > 0 and value.is_finite() for value in targets.values())
-            except (InvalidOperation, TypeError, ValueError):
+                valid = all(
+                    value > 0 and value.is_finite() for value in targets.values()
+                )
+            except InvalidOperation, TypeError, ValueError:
                 valid = False
         user_achievement, _ = UserAchievement.objects.get_or_create(
             user_id=user_id, achievement=achievement
@@ -392,18 +420,25 @@ def refresh_user_achievements(*, user_id: int, brand_id: int) -> list[UserAchiev
             pk=user_achievement.pk
         )
         if valid:
-            multiplier = user_achievement.claim_count + 1 if achievement.is_repeatable else 1
+            multiplier = (
+                user_achievement.claim_count + 1 if achievement.is_repeatable else 1
+            )
             scaled_targets = {
                 key: target * multiplier for key, target in targets.items()
             }
             progress = min(
                 Decimal("100"),
                 min(
-                    (metrics[key] / target * Decimal("100") for key, target in scaled_targets.items()),
+                    (
+                        metrics[key] / target * Decimal("100")
+                        for key, target in scaled_targets.items()
+                    ),
                     default=Decimal("0"),
                 ),
             ).quantize(Decimal("0.01"))
-            completed = all(metrics[key] >= target for key, target in scaled_targets.items())
+            completed = all(
+                metrics[key] >= target for key, target in scaled_targets.items()
+            )
         if user_achievement.reward_claimed and not achievement.is_repeatable:
             # Preserve the permanent completion record after a claimed badge.
             user_achievement.is_completed = True
@@ -547,7 +582,11 @@ def _rebase_account(
         Decimal("0"),
     )
     incomplete_value = sum(
-        (box.filled * box.point_value_snapshot for box in old_boxes if box.state == RewardPointBox.State.OPEN),
+        (
+            box.filled * box.point_value_snapshot
+            for box in old_boxes
+            if box.state == RewardPointBox.State.OPEN
+        ),
         Decimal("0"),
     )
     completed_points = sum(
@@ -677,9 +716,11 @@ def set_active_reference_service(*, brand_id: int, service_id: int) -> None:
 @transaction.atomic
 def redeem_reward_service(*, user_id: int, brand_id: int, request_key: uuid.UUID):
     """Spend completed points and atomically create a zero-price service order."""
-    existing = RewardRedemption.objects.filter(idempotency_key=request_key).select_related(
-        "order", "account"
-    ).first()
+    existing = (
+        RewardRedemption.objects.filter(idempotency_key=request_key)
+        .select_related("order", "account")
+        .first()
+    )
     if existing:
         if existing.account.user_id != user_id or existing.account.brand_id != brand_id:
             raise RewardRedemptionError("Reward claim does not belong to this account")
@@ -687,10 +728,14 @@ def redeem_reward_service(*, user_id: int, brand_id: int, request_key: uuid.UUID
 
     account = _locked_reward_account(user_id=user_id, brand_id=brand_id)
     if account.redemption_nonce != request_key:
-        existing = RewardRedemption.objects.filter(
-            idempotency_key=request_key,
-            account_id=account.pk,
-        ).select_related("order").first()
+        existing = (
+            RewardRedemption.objects.filter(
+                idempotency_key=request_key,
+                account_id=account.pk,
+            )
+            .select_related("order")
+            .first()
+        )
         if existing:
             return existing.order, True
         raise RewardRedemptionError("This reward button has already been used")
@@ -787,7 +832,9 @@ def redeem_reward_service(*, user_id: int, brand_id: int, request_key: uuid.UUID
         point_value_snapshot=_service_value(service),
         idempotency_key=f"reward-redemption:{redemption.pk}",
     )
-    transaction.on_commit(lambda order_id=order.pk: _enqueue_order_provisioning(order_id))
+    transaction.on_commit(
+        lambda order_id=order.pk: _enqueue_order_provisioning(order_id)
+    )
     return order, False
 
 
@@ -796,11 +843,15 @@ def _spend_completed_points(
 ) -> None:
     """Mark the exact completed-box value consumed by a redemption."""
     remaining = points
-    boxes = RewardPointBox.objects.select_for_update().filter(
-        account=account,
-        service=service,
-        state=RewardPointBox.State.COMPLETE,
-    ).order_by("cycle", "sequence")
+    boxes = (
+        RewardPointBox.objects.select_for_update()
+        .filter(
+            account=account,
+            service=service,
+            state=RewardPointBox.State.COMPLETE,
+        )
+        .order_by("cycle", "sequence")
+    )
     for box in boxes:
         available = box.capacity - box.spent_points
         spent = min(remaining, available)
@@ -812,7 +863,9 @@ def _spend_completed_points(
         if remaining == 0:
             break
     if remaining > 0:
-        raise RewardRedemptionError("Completed reward boxes do not match the liquid balance")
+        raise RewardRedemptionError(
+            "Completed reward boxes do not match the liquid balance"
+        )
 
 
 def _enqueue_order_provisioning(order_id: int) -> None:
@@ -862,8 +915,10 @@ def _qualified_referral_levels(
 @transaction.atomic
 def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
     """Credit points from one profitable, confirmed level-one referral purchase."""
-    payment = Payment.objects.select_for_update(of=("self",)).select_related("order").get(
-        payment_id=payment_id
+    payment = (
+        Payment.objects.select_for_update(of=("self",))
+        .select_related("order")
+        .get(payment_id=payment_id)
     )
     if payment.status != Payment.PaymentStatus.CONFIRMED or not payment.order_id:
         return Decimal("0")
@@ -887,7 +942,7 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
                 Referral.ReferralStatus.REWARDED,
             ],
         )
-    except (ReferralProgram.DoesNotExist, Referral.DoesNotExist):
+    except ReferralProgram.DoesNotExist, Referral.DoesNotExist:
         return Decimal("0")
     now = timezone.now()
     expiry = referral.expires_at or (
@@ -908,7 +963,9 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
     reference_service = program.reference_service
     lifetime_service = program.lifetime_reference_service or reference_service
     if not reference_service or not lifetime_service:
-        raise RewardConfigurationError("Referral point reference services are not configured")
+        raise RewardConfigurationError(
+            "Referral point reference services are not configured"
+        )
     if (
         reference_service.brand_id != order.brand_id
         or lifetime_service.brand_id != order.brand_id
@@ -929,18 +986,18 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
             reason="Order did not have positive recorded profit.",
         )
         return Decimal("0")
-    account = RewardAccount.objects.select_for_update().filter(
-        user_id=referral.referrer_id, brand_id=order.brand_id
-    ).first()
+    account = (
+        RewardAccount.objects.select_for_update()
+        .filter(user_id=referral.referrer_id, brand_id=order.brand_id)
+        .first()
+    )
     existing_lifetime = account.lifetime_points if account else Decimal("0")
     active_levels = _qualified_referral_levels(
         user_id=referral.referrer_id,
         brand_id=order.brand_id,
         lifetime_points=existing_lifetime,
     )
-    multiplier = (
-        active_levels[-1].reward_multiplier if active_levels else Decimal("1")
-    )
+    multiplier = active_levels[-1].reward_multiplier if active_levels else Decimal("1")
     with localcontext() as context:
         context.prec = 32
         points = _quantize_points(profit / point_value * multiplier)
@@ -995,7 +1052,12 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
     account.lifetime_points += lifetime_points
     account.lifetime_profit += profit
     account.save(
-        update_fields=["lifetime_points", "lifetime_profit", "liquid_points", "updated_at"]
+        update_fields=[
+            "lifetime_points",
+            "lifetime_profit",
+            "liquid_points",
+            "updated_at",
+        ]
     )
     if referral.status == Referral.ReferralStatus.PENDING:
         referral.status = Referral.ReferralStatus.REWARDED

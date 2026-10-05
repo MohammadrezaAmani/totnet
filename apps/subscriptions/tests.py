@@ -72,7 +72,9 @@ class ConnectixOrderProvisioningTests(TestCase):
         async def activate(subscription):
             subscription.status = Subscription.SubscriptionStatus.ACTIVE
             subscription.subscription_url = "https://subscription.example.invalid/token"
-            await subscription.asave(update_fields=("status", "subscription_url", "updated_at"))
+            await subscription.asave(
+                update_fields=("status", "subscription_url", "updated_at")
+            )
             return True
 
         provision_mock = AsyncMock(side_effect=activate)
@@ -173,14 +175,18 @@ class ConnectixOrderProvisioningTests(TestCase):
         )
 
         async def get_clients(*, page):
-            return ConnectixClientPage((record,), current_page=page, last_page=1, total=1)
+            return ConnectixClientPage(
+                (record,), current_page=page, last_page=1, total=1
+            )
 
         async def close():
             return None
 
         with (
             patch("apps.vpn_providers.tasks._client", return_value=provider_client),
-            patch.object(provider_client.client, "get_clients", side_effect=get_clients),
+            patch.object(
+                provider_client.client, "get_clients", side_effect=get_clients
+            ),
             patch.object(provider_client, "close", side_effect=close),
         ):
             self.assertTrue(sync_connectix_status(self.provider))
@@ -190,3 +196,121 @@ class ConnectixOrderProvisioningTests(TestCase):
         self.assertEqual(remote.remote_status, "expired")
         self.assertEqual(remote.metadata["used_traffic_raw"], "12.4 GB")
         self.assertEqual(subscription.status, Subscription.SubscriptionStatus.EXPIRED)
+
+
+class SubscriptionPlanPricingTests(TestCase):
+    def test_expired_offer_does_not_apply_discount(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        plan = SubscriptionPlan(
+            price=Decimal("100.00"),
+            discount_percentage=Decimal("25.00"),
+            offer_expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        self.assertEqual(plan.discounted_price, Decimal("100.00"))
+
+    def test_active_offer_applies_discount(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        plan = SubscriptionPlan(
+            price=Decimal("100.00"),
+            discount_percentage=Decimal("25.00"),
+            offer_expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.assertEqual(plan.discounted_price, Decimal("75.0000"))
+
+
+class ProvisioningDeliveryTests(TestCase):
+    def setUp(self):
+        self.brand = Brand.objects.create(
+            name=f"Delivery Test {uuid.uuid4().hex[:8]}",
+            slug=f"delivery-test-{uuid.uuid4().hex[:8]}",
+            contact_email="delivery@example.invalid",
+            bot_token=f"token-{uuid.uuid4().hex}",
+            currency="USD",
+        )
+        self.user = User.objects.create_user(
+            username=f"delivery-user-{uuid.uuid4().hex[:8]}", brand=self.brand
+        )
+        self.provider = VPNProvider.objects.create(
+            name="Delivery Provider",
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            base_url="https://api.example.invalid",
+            api_key="masked-test-value",
+            brand=self.brand,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+            is_default=True,
+        )
+        self.plan = SubscriptionPlan.objects.create(
+            brand=self.brand,
+            vpn_provider=self.provider,
+            upstream_plan_id="plan-delivery",
+            upstream_group_id="group-delivery",
+            upstream_count_of_devices=1,
+            name="Delivery plan",
+            plan_type=SubscriptionPlan.PlanType.TIME_BASED,
+            price=Decimal("10.00"),
+            currency="USD",
+            duration_value=30,
+            duration_unit=SubscriptionPlan.DurationUnit.DAYS,
+        )
+        self.order = Order.objects.create(
+            brand=self.brand,
+            user=self.user,
+            plan=self.plan,
+            original_price=Decimal("10.00"),
+            final_price=Decimal("10.00"),
+            currency="USD",
+            status=Order.OrderStatus.PAID,
+        )
+
+    def test_success_notification_exposes_link_and_direct_config_qr_action(self):
+        subscription = Subscription.objects.create(
+            brand=self.brand,
+            user=self.user,
+            owner=self.user,
+            plan=self.plan,
+            order=self.order,
+            vpn_provider=self.provider,
+            starts_at=self.order.created_at,
+            status=Subscription.SubscriptionStatus.PENDING,
+        )
+
+        async def activate(_order_pk):
+            subscription.status = Subscription.SubscriptionStatus.ACTIVE
+            subscription.subscription_url = (
+                "https://subscription.example.invalid/direct"
+            )
+            subscription.connectix_username = "client-123"
+            await subscription.asave(
+                update_fields=(
+                    "status",
+                    "subscription_url",
+                    "connectix_username",
+                    "updated_at",
+                )
+            )
+            return subscription
+
+        with (
+            patch(
+                "apps.subscriptions.tasks.provision_order_subscription",
+                new_callable=AsyncMock,
+                side_effect=activate,
+            ),
+            patch("utils.message.broadcast_message") as broadcast_mock,
+        ):
+            self.assertTrue(provision_paid_order.run(self.order.pk))
+
+        broadcast_mock.assert_called_once()
+        kwargs = broadcast_mock.call_args.kwargs
+        self.assertIn("client-123", kwargs["text"])
+        self.assertIn("subscription.example.invalid/direct", kwargs["text"])
+        self.assertEqual(
+            kwargs["buttons_data"][0][0]["callback_data"],
+            f"get_config_{subscription.pk}",
+        )

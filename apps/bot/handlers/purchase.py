@@ -4,13 +4,16 @@ Handles subscription purchases, plan selection, and payment processing
 """
 
 import logging
+from html import escape
 
 from aiogram import types
 from asgiref.sync import sync_to_async
-from django.db.models import Sum
+from django.db.models import Q, Sum
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
+from apps.brands.models import BrandConfiguration
 from apps.orders.models import Order, Payment, Wallet
 from apps.orders.services import WalletCheckoutError, pay_order_with_wallet
 from apps.subscriptions.models import Subscription, SubscriptionPlan
@@ -34,66 +37,227 @@ class PurchaseStep:
 class PurchaseHandler(BaseHandler):
     """Handle subscription purchase flow"""
 
-    async def get_plans(self, user):
-        plans = []
-        async for plan in SubscriptionPlan.objects.filter(
+    CATEGORY_LABELS = {
+        SubscriptionPlan.ServiceCategory.NORMAL: "سرویس نرمال",
+        SubscriptionPlan.ServiceCategory.ROYAL: "سرویس رویال",
+        SubscriptionPlan.ServiceCategory.IRAN_IP: "سرویس آی‌پی ایران",
+    }
+
+    async def get_plans(
+        self,
+        user,
+        *,
+        category: str | None = None,
+        special_only: bool = False,
+        back_callback: str = "purchase_subscription",
+    ):
+        """Build a plan list for one XMind service group or the inline picker."""
+        queryset = SubscriptionPlan.objects.filter(
             brand=self.brand, is_active=True, is_visible=True
-        ).order_by("display_order", "price"):
+        )
+        if category:
+            queryset = queryset.filter(service_category=category)
+        if special_only:
+            queryset = queryset.filter(is_featured=True).filter(
+                Q(offer_expires_at__isnull=True)
+                | Q(offer_expires_at__gt=timezone.now())
+            )
+
+        plans = []
+        async for plan in queryset.order_by("display_order", "price"):
             plans.append(plan)
 
         if not plans:
-            text = "❌ در حال حاضر پلن فعالی موجود نیست."
-            keyboard = self.get_back_keyboard("main_menu")
-            return text, keyboard
+            text = "❌ در حال حاضر پلن فعالی در این بخش موجود نیست."
+            return text, self.get_back_keyboard(back_callback)
+
+        if special_only:
+            title = "🔥 پیشنهادهای ویژه"
+        elif category:
+            title = f"🛒 {self.CATEGORY_LABELS.get(category, 'پلن‌های اشتراک')}"
         else:
-            text = f"""
-🛒 پلن‌های اشتراک {self.brand.name}
+            title = f"🛒 پلن‌های اشتراک {self.brand.name}"
 
-لطفاً یکی از پلن‌های زیر را انتخاب کنید:
-            """
-
-            keyboard_buttons = []
-            for plan in plans:
-                plan_text = f"{plan.name}"
-                if plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
-                    plan_text += (
-                        f" - {self.format_duration(plan.duration_value, plan.duration_unit)} - نامحدود"
+        text = f"{title}\n\nلطفاً یکی از پلن‌های زیر را انتخاب کنید:"
+        keyboard_buttons = []
+        for plan in plans:
+            details = []
+            if plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
+                if plan.duration_value:
+                    details.append(
+                        self.format_duration(plan.duration_value, plan.duration_unit)
                     )
-                elif plan.plan_type == SubscriptionPlan.PlanType.TRAFFIC_BASED:
-                    plan_text += f" - {self.format_traffic(plan.traffic_limit_gb)}"
-                elif plan.plan_type == SubscriptionPlan.PlanType.TIME_BASED:
-                    plan_text += f" - {self.format_duration(plan.duration_value, plan.duration_unit)}"
-                elif plan.plan_type == SubscriptionPlan.PlanType.HYBRID:
-                    plan_text += f" - {self.format_duration(plan.duration_value, plan.duration_unit)} - {self.format_traffic(plan.traffic_limit_gb)}"
+                details.append("نامحدود")
+            elif plan.plan_type == SubscriptionPlan.PlanType.TRAFFIC_BASED:
+                if plan.traffic_limit_gb is not None:
+                    details.append(self.format_traffic(plan.traffic_limit_gb))
+            elif plan.plan_type == SubscriptionPlan.PlanType.TIME_BASED:
+                if plan.duration_value:
+                    details.append(
+                        self.format_duration(plan.duration_value, plan.duration_unit)
+                    )
+            elif plan.plan_type == SubscriptionPlan.PlanType.HYBRID:
+                if plan.duration_value:
+                    details.append(
+                        self.format_duration(plan.duration_value, plan.duration_unit)
+                    )
+                if plan.traffic_limit_gb is not None:
+                    details.append(self.format_traffic(plan.traffic_limit_gb))
 
-                plan_text += (
-                    f"\n💰 {self.format_price(plan.discounted_price, plan.currency)}"
-                )
-
-                if plan.discount_percentage > 0:
-                    plan_text += f" 🔥 {plan.discount_percentage}% تخفیف"
-
-                keyboard_buttons.append(
-                    [{"text": plan_text, "callback_data": f"select_plan_{plan.id}"}]
-                )
+            plan_text = plan.name
+            if details:
+                plan_text += " • " + " • ".join(details)
+            plan_text += f" • {self.format_price(plan.discounted_price, plan.currency)}"
+            if plan.discount_percentage > 0 and (
+                plan.offer_expires_at is None or plan.offer_expires_at > timezone.now()
+            ):
+                plan_text += f" • {plan.discount_percentage:g}% تخفیف"
 
             keyboard_buttons.append(
-                [{"text": "🔙 بازگشت", "callback_data": "main_menu"}]
+                [{"text": plan_text, "callback_data": f"select_plan_{plan.id}"}]
             )
-            keyboard = self.create_keyboard(keyboard_buttons)
-            return text, keyboard
+
+        keyboard_buttons.append([{"text": "🔙 بازگشت", "callback_data": back_callback}])
+        return text, self.create_keyboard(keyboard_buttons)
 
     async def show_subscription_plans(self, callback: types.CallbackQuery):
-        """Show available subscription plans"""
+        """Show the XMind purchase landing page."""
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
-            user, BotState.StateType.PURCHASE_FLOW, {"step": "plan_selection"}
+            user, BotState.StateType.PURCHASE_FLOW, {"step": "service_selection"}
         )
 
-        text, keyboard = await self.get_plans(user=user)
+        text = f"""
+🛒 خرید اشتراک {self.brand.name}
 
+نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای سرویس‌ها را ببینید.
+        """
+        keyboard = self.create_keyboard(
+            [
+                [
+                    {
+                        "text": "🌐 سرویس نرمال",
+                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.NORMAL}",
+                    },
+                    {
+                        "text": "👑 سرویس رویال",
+                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.ROYAL}",
+                    },
+                ],
+                [
+                    {
+                        "text": "🇮🇷 سرویس آی‌پی ایران",
+                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.IRAN_IP}",
+                    },
+                    {"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"},
+                ],
+                [{"text": "📖 راهنمای سرویس‌ها", "callback_data": "service_guide"}],
+                [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
+            ]
+        )
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def show_plans_by_category(
+        self, callback: types.CallbackQuery, category: str
+    ):
+        """Show active plans in exactly one configured service category."""
+        if category not in self.CATEGORY_LABELS:
+            await callback.answer("❌ دستهٔ سرویس نامعتبر است.", show_alert=True)
+            return
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.PURCHASE_FLOW,
+            {
+                "step": "plan_selection",
+                "service_category": category,
+                "special_offers": False,
+            },
+        )
+        text, keyboard = await self.get_plans(
+            user, category=category, back_callback="purchase_subscription"
+        )
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def show_special_offers(self, callback: types.CallbackQuery):
+        """Show non-expired plans explicitly marked as special offers."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.PURCHASE_FLOW,
+            {
+                "step": "plan_selection",
+                "special_offers": True,
+                "service_category": None,
+            },
+        )
+        text, keyboard = await self.get_plans(
+            user, special_only=True, back_callback="purchase_subscription"
+        )
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def show_service_guide(self, callback: types.CallbackQuery):
+        """Show configurable service descriptions and direct links to each group."""
+        try:
+            config = await BrandConfiguration.objects.aget(brand=self.brand)
+            custom_fields = config.custom_fields or {}
+        except BrandConfiguration.DoesNotExist:
+            custom_fields = {}
+        guides = custom_fields.get("service_guides", {})
+        if not isinstance(guides, dict):
+            guides = {}
+
+        lines = ["📖 <b>راهنمای سرویس‌ها</b>"]
+        for category, label in self.CATEGORY_LABELS.items():
+            description = str(guides.get(category, "")).strip()
+            if not description:
+                description = (
+                    "توضیح اختصاصی این سرویس هنوز تنظیم نشده است؛ "
+                    "مشخصات کامل هر پلن در صفحهٔ خرید نمایش داده می‌شود."
+                )
+            # Telegram text messages are capped at 4096 characters. Keep each
+            # configurable section bounded and escape admin-provided HTML.
+            description = escape(description[:900])
+            lines.append(f"\n<b>{escape(label)}</b>\n{description}")
+
+        keyboard = self.create_keyboard(
+            [
+                [
+                    {
+                        "text": "🌐 رفتن به سرویس نرمال",
+                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.NORMAL}",
+                    }
+                ],
+                [
+                    {
+                        "text": "👑 رفتن به سرویس رویال",
+                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.ROYAL}",
+                    }
+                ],
+                [
+                    {
+                        "text": "🇮🇷 رفتن به سرویس آی‌پی ایران",
+                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.IRAN_IP}",
+                    }
+                ],
+                [{"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"}],
+                [{"text": "🔙 بازگشت", "callback_data": "purchase_subscription"}],
+            ]
+        )
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id,
+            callback.message.message_id,
+            "\n".join(lines),
+            keyboard,
         )
         await callback.answer()
 
@@ -102,25 +266,40 @@ class PurchaseHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            plan = await SubscriptionPlan.objects.aget(id=plan_id, brand=self.brand)
+            plan = await SubscriptionPlan.objects.aget(
+                id=plan_id, brand=self.brand, is_active=True, is_visible=True
+            )
         except SubscriptionPlan.DoesNotExist:
             await callback.answer("❌ پلن یافت نشد.", show_alert=True)
             return
 
+        state = await self.get_user_state(user)
+        state_data = state.state_data or {}
+        if state_data.get("special_offers"):
+            back_callback = "purchase_special"
+        else:
+            category = state_data.get("service_category") or plan.service_category
+            back_callback = f"purchase_category_{category}"
+
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
-            {"step": "plan_details", "plan_id": plan_id},
+            {
+                "step": "plan_details",
+                "plan_id": plan_id,
+                "details_back_callback": back_callback,
+            },
         )
 
         text = f"""
 📋 جزئیات پلن {plan.name}
 
+🏷️ دسته: {self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display())}
 💰 قیمت: {self.format_price(plan.price, plan.currency)}
 """
 
-        if plan.discount_percentage > 0:
-            text += f"🔥 تخفیف: {plan.discount_percentage}%\n"
+        if plan.discounted_price < plan.price:
+            text += f"🔥 تخفیف: {plan.discount_percentage:g}%\n"
             text += f"💵 قیمت نهایی: {self.format_price(plan.discounted_price, plan.currency)}\n"
 
         text += "\n📊 مشخصات:\n"
@@ -164,7 +343,7 @@ class PurchaseHandler(BaseHandler):
                 [
                     {
                         "text": "🔙 بازگشت به پلن‌ها",
-                        "callback_data": "purchase_subscription",
+                        "callback_data": back_callback,
                     }
                 ],
             ]
@@ -182,7 +361,9 @@ class PurchaseHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            plan = await SubscriptionPlan.objects.aget(id=plan_id, brand=self.brand)
+            plan = await SubscriptionPlan.objects.aget(
+                id=plan_id, brand=self.brand, is_active=True, is_visible=True
+            )
         except SubscriptionPlan.DoesNotExist:
             await callback.answer("❌ پلن یافت نشد.", show_alert=True)
             return
@@ -252,6 +433,78 @@ class PurchaseHandler(BaseHandler):
 
         await self.show_payment_methods(callback, order)
 
+    async def repurchase_subscription(
+        self, callback: types.CallbackQuery, subscription_id: int
+    ):
+        """Create a new same-plan order from the renewal page without faking provider renewal."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        try:
+            subscription = (
+                await Subscription.objects.select_related("plan", "owner", "user")
+                .filter(Q(user=user) | Q(owner=user), brand=self.brand)
+                .aget(pk=subscription_id)
+            )
+        except Subscription.DoesNotExist:
+            await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
+            return
+
+        plan = subscription.plan
+        if not plan.is_active or not plan.is_visible:
+            await callback.answer(
+                "❌ این پلن دیگر برای خرید فعال نیست.", show_alert=True
+            )
+            return
+
+        recipient = (
+            subscription.owner
+            if subscription.user_id == user.pk and subscription.owner_id != user.pk
+            else None
+        )
+        order = await Order.objects.acreate(
+            brand=self.brand,
+            user=user,
+            recipient=recipient,
+            plan=plan,
+            order_type=(
+                Order.OrderType.GIFT if recipient else Order.OrderType.NEW_SUBSCRIPTION
+            ),
+            original_price=plan.price,
+            discount_amount=plan.price - plan.discounted_price,
+            final_price=plan.discounted_price,
+            currency=plan.currency,
+            status=Order.OrderStatus.PENDING,
+            notes=f"Same-plan re-purchase requested from subscription {subscription.pk}.",
+        )
+
+        if order.final_price <= 0:
+            queued, message = await self._queue_free_order(order)
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+            await self.edit_message_with_keyboard(
+                callback.message.chat.id,
+                callback.message.message_id,
+                message,
+                self.create_keyboard(
+                    [[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}]]
+                ),
+            )
+            await callback.answer(
+                "✅ درخواست ثبت شد" if queued else "❌ فعال‌سازی انجام نشد",
+                show_alert=not queued,
+            )
+            return
+
+        await self.update_user_state(
+            user,
+            BotState.StateType.PURCHASE_FLOW,
+            {
+                "step": PurchaseStep.PAYMENT_METHOD,
+                "order_id": str(order.order_id),
+                "purchase_type": "repurchase",
+                "source_subscription_id": subscription.pk,
+            },
+        )
+        await self.show_payment_methods(callback, order)
+
     async def _queue_free_order(self, order: Order) -> tuple[bool, str]:
         """Fulfill zero-price plans without routing them through payment screens."""
         provider = None
@@ -269,9 +522,14 @@ class PurchaseHandler(BaseHandler):
             ).afirst()
         if provider is None:
             order.status = Order.OrderStatus.FAILED
-            order.admin_notes = "Free order could not be provisioned: no active provider."
+            order.admin_notes = (
+                "Free order could not be provisioned: no active provider."
+            )
             await order.asave(update_fields=("status", "admin_notes", "updated_at"))
-            return False, "❌ برای این برند پنل فعالی تنظیم نشده است. با پشتیبانی تماس بگیرید."
+            return (
+                False,
+                "❌ برای این برند پنل فعالی تنظیم نشده است. با پشتیبانی تماس بگیرید.",
+            )
 
         await Subscription.objects.aget_or_create(
             order=order,
@@ -315,13 +573,15 @@ class PurchaseHandler(BaseHandler):
                 username__iexact=username,
                 is_active=True,
             )
-        except (SubscriptionPlan.DoesNotExist, User.DoesNotExist):
+        except SubscriptionPlan.DoesNotExist, User.DoesNotExist:
             await message.reply(
                 "گیرنده پیدا نشد. او باید ابتدا همین ربات را شروع کند؛ سپس نام کاربری را دوباره بفرستید."
             )
             return
         if recipient.pk == user.pk:
-            await message.reply("برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید.")
+            await message.reply(
+                "برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید."
+            )
             return
 
         order = await Order.objects.acreate(
@@ -362,7 +622,11 @@ class PurchaseHandler(BaseHandler):
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
     async def show_payment_methods(
-        self, callback: types.CallbackQuery, order: Order, *, answer_callback: bool = True
+        self,
+        callback: types.CallbackQuery,
+        order: Order,
+        *,
+        answer_callback: bool = True,
     ):
         """Show available payment methods"""
         total_paid = await self._confirmed_order_payments(order)
@@ -415,6 +679,13 @@ class PurchaseHandler(BaseHandler):
             "display_order"
         ):
             if method.payment_type == "wallet":
+                continue
+            if method.payment_type != "card_transfer":
+                logger.warning(
+                    "Skipping unsupported purchase payment method %s for brand %s",
+                    method.payment_type,
+                    self.brand.slug,
+                )
                 continue
             keyboard_buttons.append(
                 [
@@ -888,7 +1159,9 @@ class PurchaseHandler(BaseHandler):
                 )
                 notified += 1
             except Exception:
-                logger.exception("Failed to send receipt notification to admin %s", user.pk)
+                logger.exception(
+                    "Failed to send receipt notification to admin %s", user.pk
+                )
         if notified:
             logger.info(
                 "Sent payment receipt notification to %s admin(s) for brand %s, payment %s",

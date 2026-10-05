@@ -76,3 +76,51 @@ The captured Connectix contract has no verified renewal, suspend, deletion, traf
 - Subscription management actions, renewals, expiry notifications, subscription import/claim verification, and the full onboarding/profile flow need further repair. Gift checkout now resolves a registered same-brand recipient, and phone sharing uses Telegram's contact request.
 - Legacy `User.reward_points` and `User.level` columns remain in the database for compatibility, but are no longer used by the bot or admin summaries. They can be removed after confirming no external integrations read them.
 - The panel's seller-plan read request returned HTTP 500 during read-only verification. Plan mappings must be entered from seller-panel metadata until Connectix corrects that endpoint. No remote account was created or modified.
+
+## 2026-10-05 — XMind menu implementation and static bug pass
+
+### XMind flow implemented
+
+- Main Telegram menu now follows the XMind: profile, subscription purchase, medical-grade/reward points, referrals, support, and subscriptions.
+- Profile now shows name, phone, numeric Telegram ID, join date, username, active subscriptions, wallet balance, and configured reward level.
+- Subscription purchase now has Normal, Royal, Iran-IP, Special Offers, and Service Guide entries. `SubscriptionPlan.service_category` was added with migration `0010_subscriptionplan_service_category` and is editable/filterable in Django Admin.
+- Service-guide copy is brand-configurable through `BrandConfiguration.custom_fields.service_guides` using the keys `normal`, `royal`, and `iran_ip`; each guide links directly to its purchase group.
+- Special Offers only lists visible/active featured plans whose offer has not expired. Expired discounts are no longer applied to `discounted_price`.
+- Successful provisioning now notifies purchaser/owner with the verified subscription link when present and provides a direct `get_config` action to receive the account/link/QR flow.
+- Rewards view now exposes configured level, lifetime/liquid points, point cash value, point-box progress, and progress toward the configured free-service threshold, with a direct referrals link.
+- Referral view now includes the referral URL, successful paid referrals, helper marketing assets (video/banner/text), statistics, and the XMind footer copy.
+- Subscriptions now separate the user's own subscriptions from subscriptions bought for other people and include a renewal page. Because provider renewal is not verified/implemented, renewal is intentionally represented as a safe same-plan re-purchase rather than mutating the existing remote account.
+- Support already had a working knowledge-base/FAQ and ticket flow, so it is retained and exposed from the XMind main menu.
+
+### Bugs fixed during this pass
+
+- Fixed invalid Python 2-style multi-exception syntax in bot dispatcher/admin and Hiddify service code; the uploaded checkout did not compile before this fix.
+- Fixed `get_or_create_user()` tuple misuse in inline mode and dormant dispatcher helpers; corrected its return annotation.
+- Fixed malformed callback length guards for payment confirmation, card selection, QR list, and config-file actions.
+- Prevented unsupported configured purchase payment methods from being silently routed to card transfer. Wallet remains handled separately and direct purchase currently exposes only implemented card-transfer methods.
+- Registered Telegram Stars pre-checkout and successful-payment update handlers; the wallet methods existed but were unreachable from the dispatcher.
+- Text sent while the wallet is waiting for a receipt now asks for an image instead of entering the photo handler with a text message.
+- Active/visible plan checks now also protect plan-details and purchase callbacks, preventing stale/crafted callbacks from buying hidden or inactive plans.
+- Configurable service-guide and referral-material text is HTML-escaped and bounded to Telegram message limits.
+- Generated fallback usernames (`user_<telegram_id>`) are no longer shown as if they were real Telegram handles in the profile.
+
+### Verification for this checkout
+
+- `python -m compileall -q .`: passes after the changes.
+- Static scan confirms no remaining Python 2-style `except A, B:` syntax.
+- Added regression tests for expired/active plan discounts and for the post-provisioning connection-link/direct-QR action.
+- Full Django checks/tests could not be executed in this sandbox because the project requires Python 3.14 and its Django/aiogram dependencies are not installed here; the available interpreter is Python 3.13.5 and network access is unavailable to fetch the required runtime. The earlier 2026-09-26 verification above refers to the pre-XMind revision, not this current one.
+
+### Deployment/configuration note
+
+After deploying this revision, run migrations. Existing plans default to `normal`; classify Royal and Iran-IP plans in Django Admin. Optional service-guide copy can be configured in `BrandConfiguration.custom_fields`, for example:
+
+```json
+{
+  "service_guides": {
+    "normal": "توضیح سرویس نرمال",
+    "royal": "توضیح سرویس رویال",
+    "iran_ip": "توضیح سرویس آی‌پی ایران"
+  }
+}
+```

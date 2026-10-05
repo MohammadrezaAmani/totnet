@@ -17,9 +17,7 @@ class ProviderCapabilities:
 _CAPABILITIES = {
     # The captured seller API supports create and client-list reads. The application
     # can reconcile a saved remote ID and sync status/usage from those records.
-    "connectix": ProviderCapabilities(
-        provision=True, reconcile=True, sync_status=True
-    ),
+    "connectix": ProviderCapabilities(provision=True, reconcile=True, sync_status=True),
     # These operations are exercised by the current provisioning service/client.
     # Renewal and lifecycle actions still require separate domain workflows.
     "hiddify": ProviderCapabilities(
