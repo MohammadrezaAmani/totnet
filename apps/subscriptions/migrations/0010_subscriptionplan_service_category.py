@@ -4,6 +4,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
         ("subscriptions", "0009_alter_subscription_traffic_limit_gb_and_more"),
     ]

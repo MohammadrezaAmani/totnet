@@ -26,13 +26,11 @@ from apps.orders.models import (
 from apps.orders.services import (
     WalletCouponError,
     WalletOperationError,
-    confirm_stars_payment,
-)
-from apps.orders.services import credit_wallet as apply_wallet_credit
-from apps.orders.services import debit_wallet as apply_wallet_debit
-from apps.orders.services import (
+    credit_wallet as apply_wallet_credit,
+    debit_wallet as apply_wallet_debit,
     redeem_wallet_coupon,
     validate_stars_pre_checkout,
+    confirm_stars_payment,
 )
 
 from .base import BaseHandler
@@ -430,9 +428,7 @@ class WalletHandler(BaseHandler):
 
             limits = self.LIMITS.get(wallet.currency)
             if not limits:
-                raise WalletOperationError(
-                    "Wallet currency is not supported for top-ups"
-                )
+                raise WalletOperationError("Wallet currency is not supported for top-ups")
             symbol = self._get_currency_symbol(wallet.currency)
 
             if amount < limits["min"]:
@@ -450,7 +446,7 @@ class WalletHandler(BaseHandler):
             # Proceed to payment method selection
             await self.show_payment_methods(message.chat.id, user, amount)
 
-        except ValueError, InvalidOperation, WalletOperationError:
+        except (ValueError, InvalidOperation, WalletOperationError):
             await message.reply(
                 "❌ لطفاً یک عدد معتبر وارد کنید.\n\n💡 مثال: 50000 یا 100000"
             )
@@ -710,9 +706,7 @@ class WalletHandler(BaseHandler):
         try:
             amount = self._validated_charge_amount(amount, wallet.currency)
         except WalletOperationError:
-            await message.reply(
-                "❌ مبلغ پرداخت منقضی یا نامعتبر است. دوباره شارژ را آغاز کنید."
-            )
+            await message.reply("❌ مبلغ پرداخت منقضی یا نامعتبر است. دوباره شارژ را آغاز کنید.")
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
             return
 
@@ -858,14 +852,10 @@ class WalletHandler(BaseHandler):
         except Payment.DoesNotExist:
             await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
             return
-        if (
-            payment.status
-            not in (
-                Payment.PaymentStatus.PENDING,
-                Payment.PaymentStatus.AWAITING_CONFIRMATION,
-            )
-            or not payment.wallet_id
-        ):
+        if payment.status not in (
+            Payment.PaymentStatus.PENDING,
+            Payment.PaymentStatus.AWAITING_CONFIRMATION,
+        ) or not payment.wallet_id:
             await callback.answer("❌ این پرداخت قابل تأیید نیست.", show_alert=True)
             return
         payment.status = Payment.PaymentStatus.CONFIRMED
@@ -896,14 +886,10 @@ class WalletHandler(BaseHandler):
             await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
             return
 
-        if (
-            payment.status
-            not in (
-                Payment.PaymentStatus.PENDING,
-                Payment.PaymentStatus.AWAITING_CONFIRMATION,
-            )
-            or not payment.wallet_id
-        ):
+        if payment.status not in (
+            Payment.PaymentStatus.PENDING,
+            Payment.PaymentStatus.AWAITING_CONFIRMATION,
+        ) or not payment.wallet_id:
             await callback.answer("❌ این پرداخت قابل رد نیست.", show_alert=True)
             return
 
@@ -916,7 +902,6 @@ class WalletHandler(BaseHandler):
 
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.answer("❌ پرداخت رد شد.")
-
     # ==================== Gateway Payment Methods ====================
 
     async def show_gateway_payment(self, callback: types.CallbackQuery, amount: float):
@@ -990,9 +975,7 @@ class WalletHandler(BaseHandler):
             [{"text": "🔙 بازگشت", "callback_data": f"charge_amount_{int(amount)}"}]
         )
         if len(button_rows) == 1:
-            await callback.answer(
-                "برای رمزارزها نرخ تبدیل معتبر ثبت نشده است.", show_alert=True
-            )
+            await callback.answer("برای رمزارزها نرخ تبدیل معتبر ثبت نشده است.", show_alert=True)
             return
         keyboard = self.create_keyboard(button_rows)
 
@@ -1030,9 +1013,7 @@ class WalletHandler(BaseHandler):
             return
 
         if crypto.conversion_rate <= 0:
-            await callback.answer(
-                "❌ نرخ تبدیل رمزارز تنظیم نشده است.", show_alert=True
-            )
+            await callback.answer("❌ نرخ تبدیل رمزارز تنظیم نشده است.", show_alert=True)
             return
 
         # Calculate crypto amount based on conversion rate
@@ -1202,15 +1183,8 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         """Validate a crypto reference and route it to an admin for review."""
         txid = (message.text or "").strip()
         payment_id = state.state_data.get("payment_id") if state.state_data else None
-        if (
-            not payment_id
-            or not txid
-            or len(txid) > 255
-            or any(ch.isspace() for ch in txid)
-        ):
-            await message.reply(
-                "❌ شناسهٔ تراکنش نامعتبر است. فقط TXID معتبر را ارسال کنید."
-            )
+        if not payment_id or not txid or len(txid) > 255 or any(ch.isspace() for ch in txid):
+            await message.reply("❌ شناسهٔ تراکنش نامعتبر است. فقط TXID معتبر را ارسال کنید.")
             return
 
         try:
@@ -1257,18 +1231,10 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 
     async def _notify_admin_crypto_payment(self, payment: Payment) -> bool:
         keyboard = self.create_keyboard(
-            [
-                [
-                    {
-                        "text": "✅ تأیید",
-                        "callback_data": f"admin_confirm_wallet_{payment.pk}",
-                    },
-                    {
-                        "text": "❌ رد",
-                        "callback_data": f"admin_reject_wallet_{payment.pk}",
-                    },
-                ]
-            ]
+            [[
+                {"text": "✅ تأیید", "callback_data": f"admin_confirm_wallet_{payment.pk}"},
+                {"text": "❌ رد", "callback_data": f"admin_reject_wallet_{payment.pk}"},
+            ]]
         )
         text = (
             "₿ رسید رمزارز برای بررسی\n"
@@ -1302,9 +1268,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         user, _ = await self.get_or_create_user(callback.from_user)
         wallet = await self.get_or_create_wallet(user)
         if wallet.currency != "USD":
-            await callback.answer(
-                "پرداخت با ستاره فقط برای کیف پول دلاری فعال است.", show_alert=True
-            )
+            await callback.answer("پرداخت با ستاره فقط برای کیف پول دلاری فعال است.", show_alert=True)
             return
         if not wallet.is_active or wallet.is_frozen:
             await callback.answer("❌ کیف پول شما در دسترس نیست.", show_alert=True)
@@ -1328,18 +1292,8 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         """
         keyboard = self.create_keyboard(
             [
-                [
-                    {
-                        "text": f"⭐ پرداخت {stars_amount:,} ستاره",
-                        "callback_data": f"wallet_stars_pay_{stars_amount}_{int(amount * 100)}",
-                    }
-                ],
-                [
-                    {
-                        "text": "🔙 بازگشت",
-                        "callback_data": f"charge_amount_{int(amount)}",
-                    }
-                ],
+                [{"text": f"⭐ پرداخت {stars_amount:,} ستاره", "callback_data": f"wallet_stars_pay_{stars_amount}_{int(amount * 100)}"}],
+                [{"text": "🔙 بازگشت", "callback_data": f"charge_amount_{int(amount)}"}],
             ]
         )
         await self._safe_edit_message(
@@ -1355,9 +1309,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         wallet = await self.get_or_create_wallet(user)
         amount = Decimal(str(amount_cents)) / Decimal("100")
         if wallet.currency != "USD" or not wallet.is_active or wallet.is_frozen:
-            await callback.answer(
-                "❌ پرداخت با ستاره برای این کیف پول در دسترس نیست.", show_alert=True
-            )
+            await callback.answer("❌ پرداخت با ستاره برای این کیف پول در دسترس نیست.", show_alert=True)
             return
         try:
             amount = self._validated_charge_amount(amount, wallet.currency)
@@ -1366,9 +1318,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
             return
         expected_stars = int(amount * 100)
         if stars_amount != expected_stars:
-            await callback.answer(
-                "❌ مبلغ فاکتور تغییر کرده؛ دوباره تلاش کنید.", show_alert=True
-            )
+            await callback.answer("❌ مبلغ فاکتور تغییر کرده؛ دوباره تلاش کنید.", show_alert=True)
             return
 
         payment = await Payment.objects.acreate(
@@ -1390,9 +1340,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
             description=f"شارژ {amount:,.2f} {symbol} به کیف پول شما",
             payload=f"wallet_charge_{payment.payment_id.hex}",
             currency="XTR",
-            prices=[
-                LabeledPrice(label=f"شارژ {amount:,.2f} {symbol}", amount=stars_amount)
-            ],
+            prices=[LabeledPrice(label=f"شارژ {amount:,.2f} {symbol}", amount=stars_amount)],
             provider_token="",
         )
         await callback.answer()
@@ -1416,9 +1364,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
                 raise WalletOperationError("Stars invoice did not match the payment")
             await pre_checkout_query.answer(ok=True)
         except Exception as exc:
-            logger.warning(
-                "Rejected Telegram Stars pre-checkout (%s)", type(exc).__name__
-            )
+            logger.warning("Rejected Telegram Stars pre-checkout (%s)", type(exc).__name__)
             await pre_checkout_query.answer(
                 ok=False,
                 error_message="فاکتور نامعتبر یا منقضی است. دوباره از کیف پول پرداخت را آغاز کنید.",
@@ -1432,13 +1378,13 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         prefix = "wallet_charge_"
         payload = successful_payment.invoice_payload or ""
         if not payload.startswith(prefix):
-            await message.reply(
-                "❌ فاکتور پرداخت شناسایی نشد؛ با پشتیبانی تماس بگیرید."
-            )
+            await message.reply("❌ فاکتور پرداخت شناسایی نشد؛ با پشتیبانی تماس بگیرید.")
             return
         payment_id = payload.removeprefix(prefix)
         try:
-            payment = await sync_to_async(confirm_stars_payment, thread_sensitive=True)(
+            payment = await sync_to_async(
+                confirm_stars_payment, thread_sensitive=True
+            )(
                 payment_id=payment_id,
                 user_id=user.pk,
                 charge_id=successful_payment.telegram_payment_charge_id,
@@ -1446,9 +1392,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
             )
         except WalletOperationError as exc:
             logger.error("Stars payment confirmation failed (%s)", type(exc).__name__)
-            await message.reply(
-                "❌ پرداخت با فاکتور شما تطبیق نداشت؛ با پشتیبانی تماس بگیرید."
-            )
+            await message.reply("❌ پرداخت با فاکتور شما تطبیق نداشت؛ با پشتیبانی تماس بگیرید.")
             return
 
         wallet = await self.get_or_create_wallet(user)
@@ -1531,9 +1475,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
                 "Wallet currency does not match the brand": "❌ ارز کیف پول با برند هماهنگ نیست؛ با پشتیبانی تماس بگیرید.",
                 "Wallet is unavailable": "❌ کیف پول شما غیرفعال یا مسدود است.",
             }
-            await message.reply(
-                messages.get(str(exc), "❌ کد تخفیف قابل استفاده نیست.")
-            )
+            await message.reply(messages.get(str(exc), "❌ کد تخفیف قابل استفاده نیست."))
             return
 
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
@@ -1632,7 +1574,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         wallet = await self.get_or_create_wallet(user)
         try:
             amount = Decimal(str(amount))
-        except InvalidOperation, TypeError, ValueError:
+        except (InvalidOperation, TypeError, ValueError):
             return False
         return (
             amount.is_finite()

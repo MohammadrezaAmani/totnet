@@ -4,6 +4,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
         ("subscriptions", "0003_providerremotesubscription_and_more"),
     ]

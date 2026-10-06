@@ -175,7 +175,7 @@ class SupportTicket(models.Model):
             date_str = datetime.now().strftime("%Y%m%d")
             random_part = str(random.randint(10000, 99999))
             self.ticket_number = f"TKT-{date_str}-{random_part}"
-
+        
         if not self.sla_response_due and self.category:
             self.created_at = self.created_at or datetime.now()
             self.sla_response_due = self.created_at + timedelta(
@@ -311,6 +311,40 @@ class SupportTemplate(models.Model):
     class Meta:
         db_table = "support_templates"
         unique_together = ["brand", "name"]
+
+
+class UsefulContent(models.Model):
+    """Brand-managed practical content exposed from the bot main menu."""
+
+    class Category(models.TextChoices):
+        DOWNLOADS = "downloads", "App files and download links"
+        INSTALL = "install", "Install and import subscription"
+        APP_USAGE = "app_usage", "Application usage guide"
+        FAQ = "faq", "Frequently asked questions"
+
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="useful_contents"
+    )
+    category = models.CharField(max_length=24, choices=Category.choices)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    content = models.TextField(blank=True)
+    download_url = models.URLField(max_length=1000, blank=True)
+    file = models.FileField(upload_to="useful_content/", null=True, blank=True)
+    display_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "useful_content"
+        ordering = ["category", "display_order", "title"]
+        indexes = [
+            models.Index(fields=["brand", "category", "is_active"], name="useful_content_brand_cat_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.brand.name} - {self.get_category_display()} - {self.title}"
 
 
 class SupportKnowledgeBase(models.Model):

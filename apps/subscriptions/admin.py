@@ -3,15 +3,17 @@ Admin configuration for subscriptions app
 """
 
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.db import transaction
+from django.utils import timezone
 from django.utils.html import format_html
-
 from apps.vpn_providers.models import VPNProvider
 from apps.vpn_providers.services.capabilities import capabilities_for
 
 from .models import (
     ProviderRemoteSubscription,
     Subscription,
+    SubscriptionClaim,
     SubscriptionConfig,
     SubscriptionNotification,
     SubscriptionPlan,
@@ -335,6 +337,100 @@ class SubscriptionNotificationAdmin(admin.ModelAdmin):
         if not request.user.is_superuser:
             return qs.filter(subscription__brand__in=request.user.admin_brands.all())
         return qs
+
+
+@admin.register(SubscriptionClaim)
+class SubscriptionClaimAdmin(admin.ModelAdmin):
+    list_display = (
+        "username",
+        "user",
+        "brand",
+        "status",
+        "matched_subscription",
+        "reviewed_by",
+        "reviewed_at",
+        "created_at",
+    )
+    list_filter = ("status", "brand", "created_at")
+    search_fields = (
+        "username",
+        "user__username",
+        "user__telegram_id",
+        "matched_subscription__connectix_username",
+        "matched_subscription__vpn_user_email",
+    )
+    autocomplete_fields = ("user", "matched_subscription")
+    readonly_fields = ("created_at", "updated_at", "reviewed_by", "reviewed_at")
+    actions = ("approve_and_assign_verified_subscription", "reject_claims")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request).select_related(
+            "user", "brand", "matched_subscription", "reviewed_by"
+        )
+        if not request.user.is_superuser:
+            return qs.filter(brand__in=request.user.admin_brands.all())
+        return qs
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        field = super().formfield_for_foreignkey(db_field, request, **kwargs)
+        if db_field.name == "matched_subscription" and not request.user.is_superuser:
+            field.queryset = field.queryset.filter(
+                brand__in=request.user.admin_brands.all()
+            )
+        return field
+
+    @admin.action(description="تأیید و اتصال اشتراک انتخاب‌شده به صاحب درخواست")
+    def approve_and_assign_verified_subscription(self, request, queryset):
+        approved = 0
+        skipped = 0
+        for claim_id in queryset.values_list("pk", flat=True):
+            with transaction.atomic():
+                claim = (
+                    SubscriptionClaim.objects.select_for_update()
+                    .select_related("matched_subscription")
+                    .get(pk=claim_id)
+                )
+                subscription = claim.matched_subscription
+                if subscription is None or subscription.brand_id != claim.brand_id:
+                    skipped += 1
+                    continue
+                # This transfer is deliberately an explicit admin action. The bot
+                # never changes ownership from a username alone.
+                Subscription.objects.select_for_update().filter(pk=subscription.pk).update(
+                    owner_id=claim.user_id
+                )
+                claim.status = SubscriptionClaim.Status.APPROVED
+                claim.reviewed_by = request.user
+                claim.reviewed_at = timezone.now()
+                claim.save(
+                    update_fields=[
+                        "status",
+                        "reviewed_by",
+                        "reviewed_at",
+                        "updated_at",
+                    ]
+                )
+                approved += 1
+        if approved:
+            self.message_user(
+                request, f"{approved} درخواست تأیید و اشتراک آن به کاربر متصل شد.", messages.SUCCESS
+            )
+        if skipped:
+            self.message_user(
+                request,
+                f"{skipped} درخواست بدون اشتراک منطبق یا با برند ناسازگار رد شد؛ ابتدا matched subscription را بررسی کنید.",
+                messages.WARNING,
+            )
+
+    @admin.action(description="رد کردن درخواست‌های انتخاب‌شده")
+    def reject_claims(self, request, queryset):
+        now = timezone.now()
+        updated = queryset.exclude(status=SubscriptionClaim.Status.APPROVED).update(
+            status=SubscriptionClaim.Status.REJECTED,
+            reviewed_by=request.user,
+            reviewed_at=now,
+        )
+        self.message_user(request, f"{updated} درخواست رد شد.", messages.SUCCESS)
 
 
 @admin.register(SubscriptionConfig)

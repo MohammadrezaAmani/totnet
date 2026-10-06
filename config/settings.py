@@ -181,7 +181,9 @@ CONNECTIX_API_BASE_URL = (
 CONNECTIX_USERNAME = config("CONNECTIX_USERNAME", default="")
 CONNECTIX_PASSWORD = config("CONNECTIX_PASSWORD", default="")
 CONNECTIX_TIMEOUT_SECONDS = config("CONNECTIX_TIMEOUT_SECONDS", default=20, cast=int)
-BOT_RELOAD_INTERVAL_SECONDS = config("BOT_RELOAD_INTERVAL_SECONDS", default=5, cast=int)
+BOT_RELOAD_INTERVAL_SECONDS = config(
+    "BOT_RELOAD_INTERVAL_SECONDS", default=5, cast=int
+)
 
 
 CELERY_BROKER_URL = config("CELERY_BROKER_URL", default=REDIS_URL)
@@ -272,7 +274,9 @@ LOGGING = {
         "file": {
             "level": "INFO",
             "class": "logging.FileHandler",
-            "filename": Path(config("LOG_DIR", default=str(BASE_DIR / "logs")))
+            "filename": Path(
+                config("LOG_DIR", default=str(BASE_DIR / "logs"))
+            )
             / "django.log",
             "formatter": "verbose",
         },
@@ -312,7 +316,9 @@ WEBHOOK_PATH = config("WEBHOOK_PATH", default="/webhook")
 SOCKS5_PROXY = config("SOCKS5_PROXY", default=None)
 if SOCKS5_PROXY and os.environ.get("RUNNING_IN_DOCKER") == "1":
     proxy_value = SOCKS5_PROXY.strip()
-    proxy_url = proxy_value if "://" in proxy_value else f"socks5://{proxy_value}"
+    proxy_url = (
+        proxy_value if "://" in proxy_value else f"socks5://{proxy_value}"
+    )
     proxy_parts = urlsplit(proxy_url)
     if proxy_parts.hostname in {"localhost", "127.0.0.1", "::1"}:
         userinfo = (

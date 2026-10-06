@@ -4,6 +4,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
         ("subscriptions", "0004_remove_subscription_connectix_password_and_more"),
     ]

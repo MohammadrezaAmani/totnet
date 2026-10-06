@@ -215,8 +215,8 @@ class Subscription(models.Model):
             )
         ]
         indexes = [
-            models.Index(fields=["brand", "status"]),
-            models.Index(fields=["user", "status"]),
+            models.Index(fields=["brand", "status"], name="subscriptio_brand_i_22de41_idx"),
+            models.Index(fields=["user", "status"], name="subscriptio_user_id_e33833_idx"),
             models.Index(fields=["expires_at"]),
             models.Index(fields=["vpn_provider", "vpn_user_email"]),
         ]
@@ -248,6 +248,74 @@ class Subscription(models.Model):
                 (float(self.traffic_used_gb) / float(self.traffic_limit_gb)) * 100,
             )
         return 0
+
+
+class SubscriptionClaim(models.Model):
+    """User request to attach an already-existing subscription to their profile.
+
+    A VPN username by itself is not proof of ownership. Claims therefore remain
+    pending unless the subscription is already owned by the same user; an admin
+    can explicitly verify and assign a matched subscription.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending review"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="subscription_claims"
+    )
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="subscription_claims"
+    )
+    username = models.CharField(max_length=100)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    matched_subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ownership_claims",
+    )
+    admin_note = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_subscription_claims",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "subscription_claims"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "brand", "username"],
+                name="uniq_subscription_claim_username",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["brand", "status"]),
+            models.Index(fields=["user", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.brand_id}:{self.username} ({self.status})"
+
+    def clean(self):
+        super().clean()
+        if self.matched_subscription_id and self.brand_id:
+            from django.core.exceptions import ValidationError
+
+            if self.matched_subscription.brand_id != self.brand_id:
+                raise ValidationError(
+                    {"matched_subscription": "Matched subscription must belong to the same brand."}
+                )
 
 
 class ProviderRemoteSubscription(models.Model):

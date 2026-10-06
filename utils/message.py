@@ -39,8 +39,10 @@ async def abroadcast_message(
         logger.info(
             f"Async Broadcast published to {len(user_ids)} users for brand {brand_id}"
         )
+        return True
     except Exception as e:
         logger.error(f"Failed to publish Async broadcast: {e}")
+        return False
 
 
 def broadcast_message(
@@ -69,5 +71,7 @@ def broadcast_message(
         logger.info(
             f"Sync Broadcast published to {len(user_ids)} users for brand {brand_id}"
         )
+        return True
     except Exception as e:
         logger.error(f"Failed to publish sync broadcast: {e}")
+        return False

@@ -126,6 +126,7 @@ class Command(BaseCommand):
                 "referee_reward_value": 5,
                 "require_purchase": True,
                 "minimum_purchase_amount": 10,
+                "purchase_reward_percent": 8,
                 "conversion_window_days": 30,
                 "max_referrals_per_day": 10,
                 "same_ip_limit": 3,

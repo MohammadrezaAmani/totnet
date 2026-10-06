@@ -1,29 +1,21 @@
-import asyncio
 import logging
-from enum import Enum
 from html import escape
+from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 from aiogram import types
 from asgiref.sync import sync_to_async
-from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
+from django.conf import settings
 
 from apps.accounts.models import User
 from apps.bot.handlers.wallet import WalletHandler
 from apps.bot.models import BotState
-from apps.orders.models import (
-    CryptoCurrency,
-    Order,
-    Payment,
-    PaymentCard,
-    PaymentGateway,
-)
+from apps.orders.models import CryptoCurrency, Order, Payment, PaymentGateway
 from apps.subscriptions.models import Subscription
 from apps.support.models import SupportTicket
 from apps.vpn_providers.models import VPNProvider
-from apps.vpn_providers.services.connectix import ConnectixProvider
 from apps.vpn_providers.services.hiddify import HiddifyAdmin as HiddifyAdminData
 from apps.vpn_providers.services.hiddify import (
     HiddifyAdminMode,
@@ -31,7 +23,12 @@ from apps.vpn_providers.services.hiddify import (
     HiddifyProvider,
     HiddifyUser,
 )
+from apps.vpn_providers.services.connectix import ConnectixProvider
 
+import asyncio
+
+
+from apps.orders.models import PaymentCard
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -56,6 +53,7 @@ class HiddifyAdminHandler(BaseHandler):
         self._search_cache: Dict[int, list] = {}
         self.wallet_handler = WalletHandler(self.bot, self.brand)
 
+
     def _usage_bar(
         self, used_gb: float, limit_gb: Optional[float], width: int = 10
     ) -> str:
@@ -72,7 +70,7 @@ class HiddifyAdminHandler(BaseHandler):
         elif percent >= 50:
             emoji = "🟡"
         else:
-            emoji = "🟢"  # noqa
+            emoji = "🟢" # noqa
         bar = "█" * filled + "░" * empty
         return f"[{bar}] {percent:.0f}%"
 
@@ -338,15 +336,11 @@ class HiddifyAdminHandler(BaseHandler):
             return None
 
     async def get_connectix_provider(self):
-        provider = (
-            await VPNProvider.objects.filter(
-                brand=self.brand,
-                provider_type=VPNProvider.ProviderType.CONNECTIX,
-                status=VPNProvider.ProviderStatus.ACTIVE,
-            )
-            .order_by("-is_default", "priority")
-            .afirst()
-        )
+        provider = await VPNProvider.objects.filter(
+            brand=self.brand,
+            provider_type=VPNProvider.ProviderType.CONNECTIX,
+            status=VPNProvider.ProviderStatus.ACTIVE,
+        ).order_by("-is_default", "priority").afirst()
         if not provider:
             return None
         return ConnectixProvider(
@@ -374,11 +368,7 @@ class HiddifyAdminHandler(BaseHandler):
                 lines.append("کاربری در این صفحه نیست.")
             for record in result.clients:
                 label = escape(record.name or record.username)
-                status = (
-                    "🟢 فعال"
-                    if record.is_active and not record.is_expired
-                    else "🔴 غیرفعال"
-                )
+                status = "🟢 فعال" if record.is_active and not record.is_expired else "🔴 غیرفعال"
                 if record.is_expired:
                     status = "⌛ منقضی"
                 lines.extend(
@@ -390,36 +380,19 @@ class HiddifyAdminHandler(BaseHandler):
                         "",
                     ]
                 )
-            lines.append(
-                f"صفحه {result.current_page} از {max(1, result.last_page)} · کل: {result.total}"
-            )
+            lines.append(f"صفحه {result.current_page} از {max(1, result.last_page)} · کل: {result.total}")
             buttons = []
             nav = []
             if result.current_page > 1:
-                nav.append(
-                    {
-                        "text": "◀️",
-                        "callback_data": f"admin_connectix_users_page_{result.current_page - 1}",
-                    }
-                )
+                nav.append({"text": "◀️", "callback_data": f"admin_connectix_users_page_{result.current_page - 1}"})
             if result.current_page < result.last_page:
-                nav.append(
-                    {
-                        "text": "▶️",
-                        "callback_data": f"admin_connectix_users_page_{result.current_page + 1}",
-                    }
-                )
+                nav.append({"text": "▶️", "callback_data": f"admin_connectix_users_page_{result.current_page + 1}"})
             if nav:
                 buttons.append(nav)
-            buttons.append(
-                [
-                    {
-                        "text": "🔄 بروزرسانی",
-                        "callback_data": f"admin_connectix_users_page_{result.current_page}",
-                    },
-                    {"text": "🔙 بازگشت", "callback_data": "admin_panel_users"},
-                ]
-            )
+            buttons.append([
+                {"text": "🔄 بروزرسانی", "callback_data": f"admin_connectix_users_page_{result.current_page}"},
+                {"text": "🔙 بازگشت", "callback_data": "admin_panel_users"},
+            ])
             text = "\n".join(lines)
             keyboard = self.create_keyboard(buttons)
         except Exception as exc:
@@ -894,17 +867,17 @@ class HiddifyAdminHandler(BaseHandler):
                 except Exception:
                     new_label = new_status
 
-                text = f"✅ وضعیت سفارش <code>{order_number}</code> به {new_label} تغییر کرد:\n"
+                text = (
+                    f"✅ وضعیت سفارش <code>{order_number}</code> به {new_label} تغییر کرد:\n"
+                )
 
         except Exception as e:
             text = f"❌ خطا:\n<code>{e}</code>"
 
-        keyboard = self.create_keyboard(
-            [
-                {"text": "📋 مشاهده جزئیات", "callback_data": f"aod_{order_number}"},
-                {"text": "🔙 بازگشت به لیست", "callback_data": "admin_refresh_orders"},
-            ]
-        )
+        keyboard = self.create_keyboard([
+            {"text": "📋 مشاهده جزئیات", "callback_data": f"aod_{order_number}"},
+            {"text": "🔙 بازگشت به لیست", "callback_data": "admin_refresh_orders"},
+        ])
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
@@ -927,14 +900,9 @@ class HiddifyAdminHandler(BaseHandler):
 
         buttons = []
         for status_val, status_label in statuses:
-            buttons.append(
-                [
-                    {
-                        "text": status_label,
-                        "callback_data": f"aoc_{order_number}_{status_val}",
-                    }
-                ]
-            )
+            buttons.append([
+                {"text": status_label, "callback_data": f"aoc_{order_number}_{status_val}"}
+            ])
 
         buttons.append([{"text": "❌ انصراف", "callback_data": f"aod_{order_number}"}])
 
@@ -948,7 +916,6 @@ class HiddifyAdminHandler(BaseHandler):
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
         await callback.answer()
-
     async def start_order_admin_note(
         self, callback: types.CallbackQuery, order_number: str
     ):
@@ -963,9 +930,9 @@ class HiddifyAdminHandler(BaseHandler):
             f"🔧  <b>یادداشت ادمین</b> برای سفارش <code>{order_number}</code>\n\n"
             f"یادداشت خود را وارد کنید:"
         )
-        keyboard = self.create_keyboard(
-            [{"text": "❌ انصراف", "callback_data": f"aod_{order_number}"}]
-        )
+        keyboard = self.create_keyboard([
+            {"text": "❌ انصراف", "callback_data": f"aod_{order_number}"}
+        ])
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
@@ -993,18 +960,14 @@ class HiddifyAdminHandler(BaseHandler):
             else:
                 order.admin_notes = note_text
                 await order.asave()
-                text = (
-                    f"✅ یادداشت ادمین برای سفارش <code>{order_number}</code> ذخیره شد."
-                )
+                text = f"✅ یادداشت ادمین برای سفارش <code>{order_number}</code> ذخیره شد."
         except Exception as e:
             text = f"❌ خطا:\n<code>{e}</code>"
 
-        keyboard = self.create_keyboard(
-            [
-                {"text": "📋 مشاهده جزئیات", "callback_data": f"aod_{order_number}"},
-                {"text": "🔙 بازگشت به لیست", "callback_data": "admin_refresh_orders"},
-            ]
-        )
+        keyboard = self.create_keyboard([
+            {"text": "📋 مشاهده جزئیات", "callback_data": f"aod_{order_number}"},
+            {"text": "🔙 بازگشت به لیست", "callback_data": "admin_refresh_orders"},
+        ])
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
@@ -1226,18 +1189,14 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             orders = [
-                o
-                async for o in Order.objects.filter(
+                o async for o in Order.objects.filter(
                     Q(order_number__icontains=query)
                     | Q(user__username__icontains=query)
                     | Q(user__telegram_id__icontains=query)
                     | Q(coupon_code__icontains=query)
                     | Q(notes__icontains=query)
                     | Q(admin_notes__icontains=query)
-                )
-                .filter(brand=self.brand)
-                .select_related("user", "plan")
-                .order_by("-created_at")[:50]
+                ).filter(brand=self.brand).select_related("user", "plan").order_by("-created_at")[:50]
             ]
 
             self._order_cache[message.from_user.id] = orders
@@ -1245,15 +1204,10 @@ UUID:  <code>{u.uuid}</code>
 
             if not orders:
                 text = f"❌ سفارشی با «<code>{query}</code>» یافت نشد"
-                keyboard = self.create_keyboard(
-                    [
-                        {
-                            "text": "🔍 جستجوی مجدد",
-                            "callback_data": "admin_search_payment",
-                        },
-                        {"text": "🔙 بازگشت", "callback_data": "admin_orders"},
-                    ]
-                )
+                keyboard = self.create_keyboard([
+                    {"text": "🔍 جستجوی مجدد", "callback_data": "admin_search_payment"},
+                    {"text": "🔙 بازگشت", "callback_data": "admin_orders"},
+                ])
                 await self.send_message_with_keyboard(message.chat.id, text, keyboard)
             else:
                 text, keyboard = self._build_order_list_page(
@@ -1267,7 +1221,7 @@ UUID:  <code>{u.uuid}</code>
             await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-
+    
     async def show_panel_users_menu(self, callback: types.CallbackQuery):
         """Show panel users management menu"""
         user, _ = await self.get_or_create_user(callback.from_user)
@@ -1297,45 +1251,34 @@ UUID:  <code>{u.uuid}</code>
 
         rows = []
         if has_connectix:
-            rows.append(
-                [
-                    {
-                        "text": "📋 کاربران Connectix",
-                        "callback_data": "admin_list_connectix_users",
-                    }
-                ]
-            )
+            rows.append([{"text": "📋 کاربران Connectix", "callback_data": "admin_list_connectix_users"}])
         if has_hiddify:
-            rows.append(
-                [
+            rows.append([
                     {
                         "text": "📋 لیست کاربران Hiddify",
                         "callback_data": "admin_list_panel_users",
                     }
-                ]
-            )
-            rows.extend(
+                ])
+            rows.extend([
                 [
-                    [
-                        {
-                            "text": "➕ افزودن کاربر",
-                            "callback_data": "admin_add_panel_user",
-                        }
-                    ],
-                    [
-                        {
-                            "text": "🔍 جستجوی کاربر",
-                            "callback_data": "admin_search_panel_user",
-                        }
-                    ],
-                    [
-                        {
-                            "text": "📊 بروزرسانی مصرف",
-                            "callback_data": "admin_update_usage",
-                        }
-                    ],
-                ]
-            )
+                    {
+                        "text": "➕ افزودن کاربر",
+                        "callback_data": "admin_add_panel_user",
+                    }
+                ],
+                [
+                    {
+                        "text": "🔍 جستجوی کاربر",
+                        "callback_data": "admin_search_panel_user",
+                    }
+                ],
+                [
+                    {
+                        "text": "📊 بروزرسانی مصرف",
+                        "callback_data": "admin_update_usage",
+                    }
+                ],
+            ])
         rows.append([{"text": "🔙 بازگشت", "callback_data": "admin"}])
         keyboard = self.create_keyboard(rows)
         await self.edit_message_with_keyboard(
@@ -1349,9 +1292,7 @@ UUID:  <code>{u.uuid}</code>
         """Central dispatcher for ALL admin text input."""
         # Allow /cancel anywhere inside admin actions
         if message.text and message.text.strip() in ("/cancel", "انصراف", "❌ انصراف"):
-            await message.reply(
-                "❌ عملیات لغو شد.", reply_markup=await self._get_main_menu_kb(user)
-            )
+            await message.reply("❌ عملیات لغو شد.", reply_markup=await self._get_main_menu_kb(user))
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
             return
 
@@ -1383,7 +1324,7 @@ UUID:  <code>{u.uuid}</code>
             await self._perform_user_search(message, query)
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
         elif action == "order_admin_note":
-            await self._handle_order_admin_note(message, user, state)
+                    await self._handle_order_admin_note(message, user, state)
         # ── Panel Admin ──────────────────────────
         elif action == "search_panel_admin":
             await self._handle_search_panel_admin(message, user, state)
@@ -1441,9 +1382,7 @@ UUID:  <code>{u.uuid}</code>
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
         else:
             # Unknown action — reset state and show menu
-            logger.warning(
-                f"Unhandled admin action: {action}, step: {step}, data: {state.state_data}"
-            )
+            logger.warning(f"Unhandled admin action: {action}, step: {step}, data: {state.state_data}")
             await message.reply(
                 "لطفاً از منوی زیر استفاده کنید:",
                 reply_markup=await self._get_main_menu_kb(user),
@@ -1648,18 +1587,8 @@ UUID:  <code>{u.uuid}</code>
             if has_hiddify:
                 buttons.extend(
                     [
-                        [
-                            {
-                                "text": "👤 مدیریت ادمین‌های Hiddify",
-                                "callback_data": "admin_panel_admins",
-                            }
-                        ],
-                        [
-                            {
-                                "text": "📊 آمار سرور Hiddify",
-                                "callback_data": "admin_server_status",
-                            }
-                        ],
+                        [{"text": "👤 مدیریت ادمین‌های Hiddify", "callback_data": "admin_panel_admins"}],
+                        [{"text": "📊 آمار سرور Hiddify", "callback_data": "admin_server_status"}],
                     ]
                 )
 
@@ -2384,6 +2313,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
+
     async def sync_panel_admins(self, callback: types.CallbackQuery):
         """Sync panel admins with database"""
         user, _ = await self.get_or_create_user(callback.from_user)
@@ -2585,7 +2515,6 @@ UUID:  <code>{u.uuid}</code>
         "wallet": "👛 کیف پول",
         "bank_transfer": "🏦 انتقال بانکی",
     }
-
     def _build_order_list_page(
         self, orders: list, page: int = 1, title: Optional[str] = None
     ) -> Tuple[str, list]:
@@ -2673,10 +2602,7 @@ UUID:  <code>{u.uuid}</code>
         )
 
         return text, self.create_keyboard(buttons)
-
-    async def list_orders(
-        self, callback: types.CallbackQuery, status_filter: str = "all"
-    ):
+    async def list_orders(self, callback: types.CallbackQuery, status_filter: str = "all"):
         """Entry point – fetches orders by filter and renders page 1"""
         if Order is None:
             await callback.answer("❌ مدل Order یافت نشد", show_alert=True)
@@ -2729,9 +2655,7 @@ UUID:  <code>{u.uuid}</code>
                 await callback.answer("❌ خطا", show_alert=True)
                 return
             try:
-                qs = Order.objects.filter(brand=self.brand).select_related(
-                    "user", "plan"
-                )
+                qs = Order.objects.filter(brand=self.brand).select_related("user", "plan")
                 if status_filter == "pending":
                     qs = qs.filter(status__in=["pending", "awaiting_payment"])
                 elif status_filter == "paid":
@@ -2746,10 +2670,7 @@ UUID:  <code>{u.uuid}</code>
                 text = f"❌ خطا: <code>{e}</code>"
                 keyboard = self.get_back_keyboard("admin_orders")
                 await self.edit_message_with_keyboard(
-                    callback.message.chat.id,
-                    callback.message.message_id,
-                    text,
-                    keyboard,
+                    callback.message.chat.id, callback.message.message_id, text, keyboard
                 )
                 await callback.answer()
                 return
@@ -2784,10 +2705,7 @@ UUID:  <code>{u.uuid}</code>
             return ""
         try:
             payments = [
-                p
-                async for p in Payment.objects.filter(order=order).order_by(
-                    "-created_at"
-                )[:5]
+                p async for p in Payment.objects.filter(order=order).order_by("-created_at")[:5]
             ]
             if not payments:
                 return "   📭 هیچ پرداختی ثبت نشده\n"
@@ -2795,24 +2713,16 @@ UUID:  <code>{u.uuid}</code>
             lines = ["   ── پرداخت‌ها ──\n"]
             for p in payments:
                 p_emoji = (
-                    "✅"
-                    if p.status == "confirmed"
-                    else "⏳"
-                    if p.status in ("pending", "awaiting_confirmation")
+                    "✅" if p.status == "confirmed"
+                    else "⏳" if p.status in ("pending", "awaiting_confirmation")
                     else "❌"
                 )
-                method = self._PAYMENT_METHOD_LABEL.get(
-                    p.payment_method, p.payment_method
-                )
+                method = self._PAYMENT_METHOD_LABEL.get(p.payment_method, p.payment_method)
                 lines.append(f"   {p_emoji} {method}: {p.amount:,.0f} {p.currency}\n")
                 if p.gateway_transaction_id:
-                    lines.append(
-                        f"      txn: <code>{p.gateway_transaction_id[:30]}</code>\n"
-                    )
+                    lines.append(f"      txn: <code>{p.gateway_transaction_id[:30]}</code>\n")
                 if p.receipt_reference:
-                    lines.append(
-                        f"      ref: <code>{p.receipt_reference[:30]}</code>\n"
-                    )
+                    lines.append(f"      ref: <code>{p.receipt_reference[:30]}</code>\n")
                 if p.verified_by:
                     lines.append(f"      ✍️ تاییدکننده: {p.verified_by.username}\n")
             return "".join(lines)
@@ -2820,20 +2730,16 @@ UUID:  <code>{u.uuid}</code>
             logger.warning(f"Error fetching payments for {order.order_number}: {e}")
             return "   ⚠️ خطا در دریافت پرداخت‌ها\n"
 
-    async def view_order_details(
-        self, callback: types.CallbackQuery, order_number: str
-    ):
+    async def view_order_details(self, callback: types.CallbackQuery, order_number: str):
         """Rich detail view for a single order"""
         if Order is None:
             await callback.answer("❌ خطا", show_alert=True)
             return
 
         try:
-            order = (
-                await Order.objects.filter(brand=self.brand, order_number=order_number)
-                .select_related("user", "plan", "recipient")
-                .afirst()
-            )
+            order = await Order.objects.filter(
+                brand=self.brand, order_number=order_number
+            ).select_related("user", "plan", "recipient").afirst()
 
             if not order:
                 text = "❌ سفارش یافت نشد"
@@ -2867,9 +2773,7 @@ UUID:  <code>{u.uuid}</code>
                 text += "━━━━━━━━━━━━━━━━━━\n"
                 text += f"💰 قیمت اصلی:  {order.original_price:,.0f} {order.currency}\n"
                 if order.discount_amount:
-                    text += (
-                        f"🏷️ تخفیف:  −{order.discount_amount:,.0f} {order.currency}\n"
-                    )
+                    text += f"🏷️ تخفیف:  −{order.discount_amount:,.0f} {order.currency}\n"
                 if order.coupon_code:
                     text += f"🎫 کد تخفیف:  <code>{order.coupon_code}</code> (−{order.coupon_discount:,.0f})\n"
                 if order.tax_amount:
@@ -2884,13 +2788,9 @@ UUID:  <code>{u.uuid}</code>
 
                 text += "━━━━━━━━━━━━━━━━━━\n"
                 text += f"📅 ایجاد:  {order.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-                text += (
-                    f"📅 بروزرسانی:  {order.updated_at.strftime('%Y-%m-%d %H:%M')}\n"
-                )
+                text += f"📅 بروزرسانی:  {order.updated_at.strftime('%Y-%m-%d %H:%M')}\n"
                 if order.expires_at:
-                    text += (
-                        f"⏰ انقضا:  {order.expires_at.strftime('%Y-%m-%d %H:%M')}\n"
-                    )
+                    text += f"⏰ انقضا:  {order.expires_at.strftime('%Y-%m-%d %H:%M')}\n"
 
                 if order.notes:
                     text += "━━━━━━━━━━━━━━━━━━\n"
@@ -2907,84 +2807,37 @@ UUID:  <code>{u.uuid}</code>
                 buttons: list = []
 
                 if order.status in ("pending", "awaiting_payment"):
-                    buttons.append(
-                        [
-                            {
-                                "text": "💵 ثبت پرداخت",
-                                "callback_data": f"aoc_{order_number}_paid",
-                            },
-                            {
-                                "text": "❌ لغو",
-                                "callback_data": f"aoc_{order_number}_cancelled",
-                            },
-                        ]
-                    )
+                    buttons.append([
+                        {"text": "💵 ثبت پرداخت", "callback_data": f"aoc_{order_number}_paid"},
+                        {"text": "❌ لغو", "callback_data": f"aoc_{order_number}_cancelled"},
+                    ])
                 elif order.status == "paid":
-                    buttons.append(
-                        [
-                            {
-                                "text": "⚙️ شروع پردازش",
-                                "callback_data": f"aoc_{order_number}_processing",
-                            },
-                            {
-                                "text": "❌ لغو",
-                                "callback_data": f"aoc_{order_number}_cancelled",
-                            },
-                        ]
-                    )
+                    buttons.append([
+                        {"text": "⚙️ شروع پردازش", "callback_data": f"aoc_{order_number}_processing"},
+                        {"text": "❌ لغو", "callback_data": f"aoc_{order_number}_cancelled"},
+                    ])
                 elif order.status == "processing":
-                    buttons.append(
-                        [
-                            {
-                                "text": "✅ تکمیل سفارش",
-                                "callback_data": f"aoc_{order_number}_completed",
-                            },
-                            {
-                                "text": "❌ لغو",
-                                "callback_data": f"aoc_{order_number}_cancelled",
-                            },
-                        ]
-                    )
+                    buttons.append([
+                        {"text": "✅ تکمیل سفارش", "callback_data": f"aoc_{order_number}_completed"},
+                        {"text": "❌ لغو", "callback_data": f"aoc_{order_number}_cancelled"},
+                    ])
                 elif order.status == "completed":
-                    buttons.append(
-                        [
-                            {
-                                "text": "↩️ بازگشت وجه",
-                                "callback_data": f"aoc_{order_number}_refunded",
-                            },
-                        ]
-                    )
+                    buttons.append([
+                        {"text": "↩️ بازگشت وجه", "callback_data": f"aoc_{order_number}_refunded"},
+                    ])
                 elif order.status in ("failed", "cancelled"):
-                    buttons.append(
-                        [
-                            {
-                                "text": "🔄 بازگردانی به انتظار",
-                                "callback_data": f"aoc_{order_number}_pending",
-                            },
-                        ]
-                    )
+                    buttons.append([
+                        {"text": "🔄 بازگردانی به انتظار", "callback_data": f"aoc_{order_number}_pending"},
+                    ])
 
-                buttons.append(
-                    [
-                        {
-                            "text": "🔧 یادداشت ادمین",
-                            "callback_data": f"aoan_{order_number}",
-                        },
-                        {
-                            "text": "🏷️ تغییر وضعیت دستی",
-                            "callback_data": f"aost_{order_number}",
-                        },
-                    ]
-                )
+                buttons.append([
+                    {"text": "🔧 یادداشت ادمین", "callback_data": f"aoan_{order_number}"},
+                    {"text": "🏷️ تغییر وضعیت دستی", "callback_data": f"aost_{order_number}"},
+                ])
 
-                buttons.append(
-                    [
-                        {
-                            "text": "🔙 بازگشت به لیست",
-                            "callback_data": "admin_refresh_orders",
-                        },
-                    ]
-                )
+                buttons.append([
+                    {"text": "🔙 بازگشت به لیست", "callback_data": "admin_refresh_orders"},
+                ])
 
                 keyboard = self.create_keyboard(buttons)
 
@@ -3006,13 +2859,10 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             orders = [
-                o
-                async for o in Order.objects.filter(
+                o async for o in Order.objects.filter(
                     brand=self.brand,
                     status__in=["pending", "awaiting_payment"],
-                )
-                .select_related("user", "plan")
-                .order_by("-created_at")[:15]
+                ).select_related("user", "plan").order_by("-created_at")[:15]
             ]
 
             if not orders:
@@ -3025,10 +2875,7 @@ UUID:  <code>{u.uuid}</code>
             keyboard = self.create_keyboard(
                 [
                     [
-                        {
-                            "text": "🔄 بروزرسانی",
-                            "callback_data": "admin_pending_orders",
-                        },
+                        {"text": "🔄 بروزرسانی", "callback_data": "admin_pending_orders"},
                         {"text": "🔍 جستجو", "callback_data": "admin_search_payment"},
                     ],
                     [{"text": "🔙 بازگشت", "callback_data": "admin_orders"}],
@@ -3052,10 +2899,9 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             orders = [
-                o
-                async for o in Order.objects.filter(brand=self.brand, status="paid")
-                .select_related("user", "plan")
-                .order_by("-created_at")[:15]
+                o async for o in Order.objects.filter(
+                    brand=self.brand, status="paid"
+                ).select_related("user", "plan").order_by("-created_at")[:15]
             ]
 
             if not orders:
@@ -3093,12 +2939,9 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             orders = [
-                o
-                async for o in Order.objects.filter(
+                o async for o in Order.objects.filter(
                     brand=self.brand, status="completed"
-                )
-                .select_related("user", "plan")
-                .order_by("-created_at")[:15]
+                ).select_related("user", "plan").order_by("-created_at")[:15]
             ]
 
             if not orders:
@@ -3111,10 +2954,7 @@ UUID:  <code>{u.uuid}</code>
             keyboard = self.create_keyboard(
                 [
                     [
-                        {
-                            "text": "🔄 بروزرسانی",
-                            "callback_data": "admin_completed_orders",
-                        },
+                        {"text": "🔄 بروزرسانی", "callback_data": "admin_completed_orders"},
                         {"text": "🔍 جستجو", "callback_data": "admin_search_payment"},
                     ],
                     [{"text": "🔙 بازگشت", "callback_data": "admin_orders"}],
@@ -3138,12 +2978,9 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             orders = [
-                o
-                async for o in Order.objects.filter(
+                o async for o in Order.objects.filter(
                     brand=self.brand, status__in=["failed", "cancelled"]
-                )
-                .select_related("user", "plan")
-                .order_by("-created_at")[:15]
+                ).select_related("user", "plan").order_by("-created_at")[:15]
             ]
 
             if not orders:
@@ -3156,10 +2993,7 @@ UUID:  <code>{u.uuid}</code>
             keyboard = self.create_keyboard(
                 [
                     [
-                        {
-                            "text": "🔄 بروزرسانی",
-                            "callback_data": "admin_failed_orders",
-                        },
+                        {"text": "🔄 بروزرسانی", "callback_data": "admin_failed_orders"},
                         {"text": "🔍 جستجو", "callback_data": "admin_search_payment"},
                     ],
                     [{"text": "🔙 بازگشت", "callback_data": "admin_orders"}],
@@ -3174,10 +3008,13 @@ UUID:  <code>{u.uuid}</code>
         )
         await callback.answer()
 
+
     async def confirm_order(self, callback: types.CallbackQuery, order_id: int):
         """Confirm a pending order"""
         try:
-            order = await Order.objects.filter(brand=self.brand, id=order_id).afirst()
+            order = await Order.objects.filter(
+                brand=self.brand, id=order_id
+            ).afirst()
 
             if not order:
                 text = "❌ سفارش یافت نشد"
@@ -3198,7 +3035,9 @@ UUID:  <code>{u.uuid}</code>
     async def cancel_order(self, callback: types.CallbackQuery, order_id: int):
         """Cancel an order"""
         try:
-            order = await Order.objects.filter(brand=self.brand, id=order_id).afirst()
+            order = await Order.objects.filter(
+                brand=self.brand, id=order_id
+            ).afirst()
 
             if not order:
                 text = "❌ سفارش یافت نشد"
@@ -3222,11 +3061,9 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             # استفاده از select_related برای جلوگیری از کوئری‌های سینک (Lazy Loading) در حلقه
-            queryset = (
-                SupportTicket.objects.filter(brand=self.brand, status="open")
-                .order_by("-created_at")
-                .select_related("customer")
-            )
+            queryset = SupportTicket.objects.filter(
+                brand=self.brand, status="open"
+            ).order_by("-created_at").select_related('customer')
 
             # گرفتن لیست تیکت‌ها با async for (چون queryset قابل await نیست)
             tickets = [ticket async for ticket in queryset]
@@ -3269,11 +3106,9 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             # اسلایس [:10] قبل از حلقه اعمال می‌شود و در دیتابیس لیمیت می‌شود
-            queryset = (
-                SupportTicket.objects.filter(brand=self.brand, status="in_progress")
-                .order_by("-created_at")
-                .select_related("customer")[:10]
-            )
+            queryset = SupportTicket.objects.filter(
+                brand=self.brand, status="in_progress"
+            ).order_by("-created_at").select_related('customer')[:10]
 
             tickets = [ticket async for ticket in queryset]
 
@@ -3314,11 +3149,9 @@ UUID:  <code>{u.uuid}</code>
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            queryset = (
-                SupportTicket.objects.filter(brand=self.brand, status="resolved")
-                .order_by("-created_at")
-                .select_related("customer")[:10]
-            )
+            queryset = SupportTicket.objects.filter(
+                brand=self.brand, status="resolved"
+            ).order_by("-created_at").select_related('customer')[:10]
 
             tickets = [ticket async for ticket in queryset]
 
@@ -3358,11 +3191,9 @@ UUID:  <code>{u.uuid}</code>
         """View details of a specific ticket"""
         try:
             # اضافه کردن select_related برای خواندن رابطه user بدون کوئری سینک
-            ticket = (
-                await SupportTicket.objects.filter(brand=self.brand, id=ticket_id)
-                .select_related("user")
-                .afirst()
-            )
+            ticket = await SupportTicket.objects.filter(
+                brand=self.brand, id=ticket_id
+            ).select_related('user').afirst()
 
             if not ticket:
                 text = "❌ تیکت یافت نشد"
@@ -3495,7 +3326,6 @@ UUID:  <code>{u.uuid}</code>
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
         await callback.answer()
-
     # ═══════════════════════════════════════════════
     #  BROADCAST
     # ═══════════════════════════════════════════════
@@ -3519,9 +3349,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_broadcast_input(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_broadcast_input(self, message: types.Message, user: User, state: BotState):
         """Receive broadcast text, store it, ask for confirmation"""
         text = (message.text or "").strip()
         if not text:
@@ -3549,9 +3377,7 @@ UUID:  <code>{u.uuid}</code>
         )
         await self.send_message_with_keyboard(message.chat.id, resp, keyboard)
 
-    async def _handle_broadcast_confirm(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_broadcast_confirm(self, message: types.Message, user: User, state: BotState):
         """Text-based broadcast confirmation"""
         answer = message.text.strip().lower()
         if answer in ("بله", "yes", "ی", "ب"):
@@ -3580,7 +3406,9 @@ UUID:  <code>{u.uuid}</code>
 
         status_msg = await origin_message.reply("📡 در حال ارسال پیام به کاربران…")
         try:
-            users_qs = User.objects.filter(is_active=True, telegram_id__isnull=False)
+            users_qs = User.objects.filter(
+                is_active=True, telegram_id__isnull=False
+            )
 
             total = 0
             success = 0
@@ -3615,10 +3443,10 @@ UUID:  <code>{u.uuid}</code>
             logger.error(f"Broadcast error: {e}")
 
         await status_msg.edit_text(result, parse_mode="HTML")
-        keyboard = self.create_keyboard(
-            [{"text": "🔙 بازگشت", "callback_data": "admin"}]
+        keyboard = self.create_keyboard([{"text": "🔙 بازگشت", "callback_data": "admin"}])
+        await self.bot.send_message(
+            origin_message.chat.id, " ", reply_markup=keyboard
         )
-        await self.bot.send_message(origin_message.chat.id, " ", reply_markup=keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     # ═══════════════════════════════════════════════
@@ -3640,9 +3468,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_ticket_reply(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_ticket_reply(self, message: types.Message, user: User, state: BotState):
         """Save ticket reply and notify user"""
         ticket_id = state.state_data.get("ticket_id")
         reply_text = message.text.strip()
@@ -3651,9 +3477,7 @@ UUID:  <code>{u.uuid}</code>
             return
 
         try:
-            ticket = await SupportTicket.objects.select_related("user").aget(
-                pk=ticket_id
-            )
+            ticket = await SupportTicket.objects.select_related("user").aget(pk=ticket_id)
         except SupportTicket.DoesNotExist:
             await message.reply("❌ تیکت یافت نشد.")
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
@@ -3675,9 +3499,7 @@ UUID:  <code>{u.uuid}</code>
             else:
                 # Fallback: update ticket directly
                 ticket.admin_reply = reply_text
-                ticket.status = (
-                    "replied" if hasattr(ticket, "status") else ticket.status
-                )
+                ticket.status = "replied" if hasattr(ticket, "status") else ticket.status
                 await ticket.asave()
 
             # Notify the user who opened the ticket
@@ -3694,9 +3516,7 @@ UUID:  <code>{u.uuid}</code>
                         parse_mode="HTML",
                     )
                 except Exception as e:
-                    logger.warning(
-                        f"Could not notify ticket user {ticket.customer.telegram_id}: {e}"
-                    )
+                    logger.warning(f"Could not notify ticket user {ticket.customer.telegram_id}: {e}")
 
             await message.reply("✅ پاسخ ارسال شد و به کاربر اطلاع داده شد.")
         except Exception as e:
@@ -3716,10 +3536,7 @@ UUID:  <code>{u.uuid}</code>
     async def start_edit_brand_field(self, callback: types.CallbackQuery, field: str):
         """Set state for editing a brand field"""
         user, _ = await self.get_or_create_user(callback.from_user)
-        action_map = {
-            "name": "edit_brand_name",
-            "description": "edit_brand_description",
-        }
+        action_map = {"name": "edit_brand_name", "description": "edit_brand_description"}
         action = action_map.get(field)
         if not action:
             await callback.answer("❌ فیلد نامعتبر", show_alert=True)
@@ -3739,9 +3556,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_edit_brand_field(
-        self, message: types.Message, user: User, state: BotState, field: str
-    ):
+    async def _handle_edit_brand_field(self, message: types.Message, user: User, state: BotState, field: str):
         """Apply brand field edit"""
         value = message.text.strip()
         if not value:
@@ -3776,14 +3591,15 @@ UUID:  <code>{u.uuid}</code>
             BotState.StateType.ADMIN_ACTION,
             {"action": "search_panel_admin"},
         )
-        text = "🔍  <b>جستجوی ادمین پنل</b>\n\nنام یا UUID ادمین را وارد کنید:"
+        text = (
+            "🔍  <b>جستجوی ادمین پنل</b>\n\n"
+            "نام یا UUID ادمین را وارد کنید:"
+        )
         keyboard = self.get_back_keyboard("admin_panel_admins")
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_search_panel_admin(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_search_panel_admin(self, message: types.Message, user: User, state: BotState):
         """Execute panel admin search"""
         query = message.text.strip()
         if not query:
@@ -3800,8 +3616,7 @@ UUID:  <code>{u.uuid}</code>
             admins = await provider.get_all_admins()
             q = query.lower()
             results = [
-                a
-                for a in admins
+                a for a in admins
                 if q in (a.name or "").lower() or q in (a.uuid or "").lower()
             ]
 
@@ -3810,9 +3625,7 @@ UUID:  <code>{u.uuid}</code>
             else:
                 text_lines = [f"🔍 نتایج جستجو ({len(results)} نتیجه):\n"]
                 for i, a in enumerate(results, 1):
-                    text_lines.append(
-                        f"<b>{i}.</b> <code>{a.name}</code> — {a.uuid[:16]}…"
-                    )
+                    text_lines.append(f"<b>{i}.</b> <code>{a.name}</code> — {a.uuid[:16]}…")
                 text = "\n".join(text_lines)
         except Exception as e:
             text = f"❌ خطا:\n<code>{e}</code>"
@@ -3828,39 +3641,25 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
-    async def start_edit_panel_admin_field(
-        self, callback: types.CallbackQuery, admin_uuid: str, field: str
-    ):
+    async def start_edit_panel_admin_field(self, callback: types.CallbackQuery, admin_uuid: str, field: str):
         """Set state for editing a panel admin field"""
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user,
             BotState.StateType.ADMIN_ACTION,
-            {
-                "action": "edit_panel_admin",
-                "admin_uuid": admin_uuid,
-                "field": field,
-                "step": "input",
-            },
+            {"action": "edit_panel_admin", "admin_uuid": admin_uuid, "field": field, "step": "input"},
         )
 
         labels = {"name": "نام", "telegram_id": "شناسه تلگرام"}
         label = labels.get(field, field)
         text = f"✏️  مقدار جدید برای «{label}» را وارد کنید:"
         keyboard = self.create_keyboard(
-            [
-                {
-                    "text": "❌ انصراف",
-                    "callback_data": f"admin_edit_panel_admin_{admin_uuid}",
-                }
-            ]
+            [{"text": "❌ انصراف", "callback_data": f"admin_edit_panel_admin_{admin_uuid}"}]
         )
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_edit_panel_admin_field(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_edit_panel_admin_field(self, message: types.Message, user: User, state: BotState):
         """Apply panel admin field edit"""
         admin_uuid = state.state_data.get("admin_uuid")
         field = state.state_data.get("field")
@@ -3886,11 +3685,7 @@ UUID:  <code>{u.uuid}</code>
                 result = await provider.update_admin(admin_uuid, admin)
                 labels = {"name": "نام", "telegram_id": "شناسه تلگرام"}
                 fname = labels.get(field, field)
-                text = (
-                    f"✅ {fname} با موفقیت بروزرسانی شد"
-                    if result
-                    else "❌ خطا در بروزرسانی"
-                )
+                text = f"✅ {fname} با موفقیت بروزرسانی شد" if result else "❌ خطا در بروزرسانی"
         except Exception as e:
             text = f"❌ خطا:\n<code>{e}</code>"
         finally:
@@ -3906,9 +3701,7 @@ UUID:  <code>{u.uuid}</code>
     #  PAYMENT SEARCH
     # ═══════════════════════════════════════════════
 
-    async def _handle_search_payment(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_search_payment(self, message: types.Message, user: User, state: BotState):
         """Execute payment/order search"""
         query = message.text.strip()
         if not query:
@@ -3916,29 +3709,19 @@ UUID:  <code>{u.uuid}</code>
             return
 
         try:
-            orders = (
-                await Order.objects.filter(
-                    Q(id__icontains=query)
-                    | Q(user__username__icontains=query)
-                    | Q(user__telegram_id__icontains=query)
-                    | Q(transaction_id__icontains=query)
-                )
-                .select_related("user")[:20]
-                .alist()
-            )
+            orders = await Order.objects.filter(
+                Q(id__icontains=query)
+                | Q(user__username__icontains=query)
+                | Q(user__telegram_id__icontains=query)
+                | Q(transaction_id__icontains=query)
+            ).select_related("user")[:20].alist()
 
             if not orders:
                 text = f"❌ سفارشی با «<code>{query}</code>» یافت نشد"
             else:
                 lines = [f"🔍 نتایج جستجو ({len(orders)} نتیجه):\n"]
                 for o in orders:
-                    status_emoji = (
-                        "✅"
-                        if o.status == "paid"
-                        else "⏳"
-                        if o.status == "pending"
-                        else "❌"
-                    )
+                    status_emoji = "✅" if o.status == "paid" else "⏳" if o.status == "pending" else "❌"
                     uname = o.user.username if o.user else "—"
                     lines.append(
                         f"{status_emoji} <b>#{o.id}</b> | {uname} | {o.amount or '—'}"
@@ -3973,9 +3756,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_add_card_step(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_add_card_step(self, message: types.Message, user: User, state: BotState):
         """Multi-step card creation"""
         step = state.state_data.get("step")
         card_data = state.state_data.get("card_data", {})
@@ -4021,9 +3802,7 @@ UUID:  <code>{u.uuid}</code>
                 except Exception as e:
                     await message.reply(f"❌ خطا در ذخیره کارت:\n<code>{e}</code>")
             else:
-                await message.reply(
-                    "❌ مدل PaymentCard یافت نشد. لطفاً ایمپورت را بررسی کنید."
-                )
+                await message.reply("❌ مدل PaymentCard یافت نشد. لطفاً ایمپورت را بررسی کنید.")
 
             keyboard = self.create_keyboard(
                 [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
@@ -4031,26 +3810,15 @@ UUID:  <code>{u.uuid}</code>
             await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
-    async def start_edit_card_field(
-        self, callback: types.CallbackQuery, card_id: int, field: str
-    ):
+    async def start_edit_card_field(self, callback: types.CallbackQuery, card_id: int, field: str):
         """Set state for editing a card field"""
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user,
             BotState.StateType.ADMIN_ACTION,
-            {
-                "action": "edit_card",
-                "card_id": card_id,
-                "field": field,
-                "step": "input",
-            },
+            {"action": "edit_card", "card_id": card_id, "field": field, "step": "input"},
         )
-        labels = {
-            "name": "نام کارت",
-            "number": "شماره کارت",
-            "holder_name": "نام صاحب حساب",
-        }
+        labels = {"name": "نام کارت", "number": "شماره کارت", "holder_name": "نام صاحب حساب"}
         label = labels.get(field, field)
         text = f"✏️  مقدار جدید برای «{label}» را وارد کنید:"
         keyboard = self.create_keyboard(
@@ -4059,9 +3827,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_edit_card_field(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_edit_card_field(self, message: types.Message, user: User, state: BotState):
         """Apply card field edit"""
         card_id = state.state_data.get("card_id")
         field = state.state_data.get("field")
@@ -4105,9 +3871,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_add_crypto_step(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_add_crypto_step(self, message: types.Message, user: User, state: BotState):
         """Multi-step crypto wallet creation"""
         step = state.state_data.get("step")
         crypto_data = state.state_data.get("crypto_data", {})
@@ -4144,9 +3908,7 @@ UUID:  <code>{u.uuid}</code>
                 except Exception as e:
                     await message.reply(f"❌ خطا در ذخیره:\n<code>{e}</code>")
             else:
-                await message.reply(
-                    "❌ مدل CryptoCurrency یافت نشد. لطفاً ایمپورت را بررسی کنید."
-                )
+                await message.reply("❌ مدل CryptoCurrency یافت نشد. لطفاً ایمپورت را بررسی کنید.")
 
             keyboard = self.create_keyboard(
                 [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
@@ -4154,20 +3916,13 @@ UUID:  <code>{u.uuid}</code>
             await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
-    async def start_edit_crypto_field(
-        self, callback: types.CallbackQuery, wallet_id: int, field: str
-    ):
+    async def start_edit_crypto_field(self, callback: types.CallbackQuery, wallet_id: int, field: str):
         """Set state for editing a crypto wallet field"""
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user,
             BotState.StateType.ADMIN_ACTION,
-            {
-                "action": "edit_crypto",
-                "wallet_id": wallet_id,
-                "field": field,
-                "step": "input",
-            },
+            {"action": "edit_crypto", "wallet_id": wallet_id, "field": field, "step": "input"},
         )
         labels = {"network": "نام شبکه", "address": "آدرس کیف پول"}
         label = labels.get(field, field)
@@ -4178,9 +3933,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_edit_crypto_field(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_edit_crypto_field(self, message: types.Message, user: User, state: BotState):
         """Apply crypto wallet field edit"""
         wallet_id = state.state_data.get("wallet_id")
         field = state.state_data.get("field")
@@ -4224,9 +3977,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_add_gateway_step(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_add_gateway_step(self, message: types.Message, user: User, state: BotState):
         """Multi-step gateway creation"""
         step = state.state_data.get("step")
         gw_data = state.state_data.get("gw_data", {})
@@ -4257,9 +4008,7 @@ UUID:  <code>{u.uuid}</code>
                     api_key=gw_data["api_key"],
                     is_active=True,
                 )
-                await message.reply(
-                    f"✅ دروازه «{gw_data['name']}» با موفقیت اضافه شد."
-                )
+                await message.reply(f"✅ دروازه «{gw_data['name']}» با موفقیت اضافه شد.")
             except ImportError:
                 await message.reply(
                     f"ℹ️ داده‌های دروازه دریافت شد:\n"
@@ -4276,26 +4025,15 @@ UUID:  <code>{u.uuid}</code>
             await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
-    async def start_edit_gateway_field(
-        self, callback: types.CallbackQuery, gateway_id: int, field: str
-    ):
+    async def start_edit_gateway_field(self, callback: types.CallbackQuery, gateway_id: int, field: str):
         """Set state for editing a gateway field"""
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user,
             BotState.StateType.ADMIN_ACTION,
-            {
-                "action": "edit_gateway",
-                "gateway_id": gateway_id,
-                "field": field,
-                "step": "input",
-            },
+            {"action": "edit_gateway", "gateway_id": gateway_id, "field": field, "step": "input"},
         )
-        labels = {
-            "name": "نام دروازه",
-            "api_key": "کلید API",
-            "merchant_id": "شناسه فروشنده",
-        }
+        labels = {"name": "نام دروازه", "api_key": "کلید API", "merchant_id": "شناسه فروشنده"}
         label = labels.get(field, field)
         text = f"✏️  مقدار جدید برای «{label}» را وارد کنید:"
         keyboard = self.create_keyboard(
@@ -4304,9 +4042,7 @@ UUID:  <code>{u.uuid}</code>
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
 
-    async def _handle_edit_gateway_field(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def _handle_edit_gateway_field(self, message: types.Message, user: User, state: BotState):
         """Apply gateway field edit"""
         gateway_id = state.state_data.get("gateway_id")
         field = state.state_data.get("field")

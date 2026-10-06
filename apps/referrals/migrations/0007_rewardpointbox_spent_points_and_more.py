@@ -4,6 +4,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
         ("referrals", "0006_referralprogram_lifetime_point_value_and_more"),
     ]

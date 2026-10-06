@@ -6,6 +6,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
         ("brands", "0001_initial"),
         ("referrals", "0007_rewardpointbox_spent_points_and_more"),

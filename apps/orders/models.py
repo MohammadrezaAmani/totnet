@@ -336,6 +336,9 @@ class Wallet(models.Model):
     )
 
     balance = models.DecimalField(max_digits=25, decimal_places=10, default=0)
+    challenge_frozen_balance = models.DecimalField(
+        max_digits=25, decimal_places=10, default=0
+    )
     currency = models.CharField(max_length=3, default="USD")
 
     is_active = models.BooleanField(default=True)
@@ -356,7 +359,11 @@ class Wallet(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["user", "brand"], name="uniq_wallet_per_user_brand"
-            )
+            ),
+            models.CheckConstraint(
+                condition=models.Q(challenge_frozen_balance__gte=0),
+                name="wallet_challenge_frozen_nonneg",
+            ),
         ]
 
 
@@ -462,11 +469,7 @@ class CouponUsage(models.Model):
         "accounts.User", on_delete=models.CASCADE, related_name="coupon_usages"
     )
     order = models.ForeignKey(
-        Order,
-        on_delete=models.CASCADE,
-        related_name="coupon_usages",
-        null=True,
-        blank=True,
+        Order, on_delete=models.CASCADE, related_name="coupon_usages", null=True, blank=True
     )
 
     discount_amount = models.DecimalField(max_digits=15, decimal_places=2)

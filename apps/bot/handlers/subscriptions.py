@@ -12,7 +12,12 @@ from aiogram import types
 from aiogram.types import BufferedInputFile
 from django.db.models import Q
 
-from apps.subscriptions.models import Subscription, SubscriptionConfig
+from apps.subscriptions.models import (
+    Subscription,
+    SubscriptionClaim,
+    SubscriptionConfig,
+    SubscriptionPlan,
+)
 from apps.vpn_providers.models import VPNProvider
 
 from .base import BaseHandler
@@ -24,45 +29,134 @@ class SubscriptionHandler(BaseHandler):
     """Handle subscription management and delivery"""
 
     async def show_my_subscriptions(self, callback: types.CallbackQuery):
-        """Show the XMind subscription-management landing page."""
+        """List subscriptions directly; selecting one opens its renewal choices."""
         user, _ = await self.get_or_create_user(callback.from_user)
-        own_count = await Subscription.objects.filter(
-            owner=user, brand=self.brand
-        ).acount()
-        others_count = (
-            await Subscription.objects.filter(user=user, brand=self.brand)
-            .exclude(owner=user)
-            .acount()
-        )
+        subscriptions = []
+        async for sub in (
+            Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand)
+            .select_related("plan", "owner", "user", "vpn_provider")
+            .exclude(status=Subscription.SubscriptionStatus.CANCELLED)
+            .order_by("-created_at")[:40]
+        ):
+            subscriptions.append(sub)
 
-        text = f"""
-📱 <b>اشتراک‌های من</b>
-
-• اشتراک‌های خودم: {own_count}
-• اشتراک اطرافیان: {others_count}
-
-بخش موردنظر را انتخاب کنید:
-        """
-        keyboard = self.create_keyboard(
-            [
-                [
-                    {
-                        "text": f"👤 لیست اشتراک‌های خودم ({own_count})",
-                        "callback_data": "my_own_subscriptions",
-                    }
+        claims = []
+        async for claim in (
+            SubscriptionClaim.objects.filter(
+                user=user,
+                brand=self.brand,
+                status__in=[
+                    SubscriptionClaim.Status.PENDING,
+                    SubscriptionClaim.Status.REJECTED,
                 ],
-                [
-                    {
-                        "text": f"👥 اشتراک اطرافیان ({others_count})",
-                        "callback_data": "family_subscriptions",
-                    }
-                ],
-                [{"text": "🔄 صفحه تمدید", "callback_data": "renewal_page"}],
+            )
+            .order_by("-created_at")[:20]
+        ):
+            claims.append(claim)
+
+        text = "📱 <b>اشتراک‌های من</b>\n\nاشتراک موردنظر را برای تمدید یا تغییر طرح انتخاب کنید."
+        if not subscriptions and not claims:
+            text += "\n\nهنوز اشتراکی برای شما ثبت نشده است."
+            rows = [
+                [{"text": "📎 ثبت اشتراک فعال", "callback_data": "onboarding_existing_subscription"}],
+                [{"text": "🛒 خرید اشتراک", "callback_data": "purchase_subscription"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
             ]
+        else:
+            rows = []
+            category_labels = {
+                SubscriptionPlan.ServiceCategory.NORMAL: "نرمال",
+                SubscriptionPlan.ServiceCategory.ROYAL: "رویال",
+                SubscriptionPlan.ServiceCategory.IRAN_IP: "آی‌پی ایران",
+            }
+            for sub in subscriptions:
+                username = (
+                    sub.connectix_username
+                    or sub.vpn_user_email
+                    or str(sub.subscription_id)[:8]
+                )
+                service_type = category_labels.get(
+                    sub.plan.service_category, sub.plan.name
+                )
+                traffic = (
+                    f"{sub.traffic_limit_gb:g}گ"
+                    if sub.traffic_limit_gb is not None
+                    else "نامحدود"
+                )
+                label = f"{username} • {service_type} • {traffic}"
+                if len(label) > 58:
+                    label = label[:57] + "…"
+                rows.append(
+                    [
+                        {
+                            "text": label,
+                            "callback_data": f"renewal_details_{sub.pk}",
+                        }
+                    ]
+                )
+            for claim in claims:
+                icon = "⏳" if claim.status == SubscriptionClaim.Status.PENDING else "❌"
+                status = "در انتظار بررسی" if claim.status == SubscriptionClaim.Status.PENDING else "رد شده"
+                label = f"{icon} {claim.username} • {status}"
+                if len(label) > 58:
+                    label = label[:57] + "…"
+                rows.append(
+                    [{"text": label, "callback_data": f"subscription_claim_{claim.pk}"}]
+                )
+            rows.extend(
+                [
+                    [{"text": "📎 ثبت اشتراک فعال", "callback_data": "onboarding_existing_subscription"}],
+                    [{"text": "🛒 خرید اشتراک جدید", "callback_data": "purchase_subscription"}],
+                    [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
+                ]
+            )
+
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id,
+            callback.message.message_id,
+            text,
+            self.create_keyboard(rows),
+        )
+        await callback.answer()
+
+    async def show_subscription_claim(
+        self, callback: types.CallbackQuery, claim_id: int
+    ):
+        """Show the review state for a safely-submitted legacy subscription claim."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        try:
+            claim = await SubscriptionClaim.objects.aget(
+                pk=claim_id, user=user, brand=self.brand
+            )
+        except SubscriptionClaim.DoesNotExist:
+            await callback.answer("❌ درخواست ثبت اشتراک یافت نشد.", show_alert=True)
+            return
+
+        status_text = {
+            SubscriptionClaim.Status.PENDING: "⏳ در انتظار بررسی",
+            SubscriptionClaim.Status.APPROVED: "✅ تأیید شده",
+            SubscriptionClaim.Status.REJECTED: "❌ رد شده",
+        }.get(claim.status, claim.status)
+        note = ""
+        if claim.admin_note:
+            note = f"\n\n📝 توضیح بررسی: {escape(claim.admin_note[:800])}"
+        text = (
+            "📎 <b>ثبت اشتراک فعال</b>\n\n"
+            f"👤 یوزرنیم: <code>{escape(claim.username)}</code>\n"
+            f"📊 وضعیت: {status_text}"
+            f"{note}\n\n"
+            "برای امنیت، مالکیت هیچ اشتراکی فقط با دانستن یوزرنیم منتقل نمی‌شود."
         )
         await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
+            callback.message.chat.id,
+            callback.message.message_id,
+            text,
+            self.create_keyboard(
+                [
+                    [{"text": "📎 ثبت/ارسال مجدد یوزرنیم", "callback_data": "onboarding_existing_subscription"}],
+                    [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
+                ]
+            ),
         )
         await callback.answer()
 
@@ -115,7 +209,9 @@ class SubscriptionHandler(BaseHandler):
                     days_left = (
                         sub.expires_at - datetime.now(sub.expires_at.tzinfo)
                     ).days
-                    remaining = f" • {days_left} روز" if days_left > 0 else " • منقضی"
+                    remaining = (
+                        f" • {days_left} روز" if days_left > 0 else " • منقضی"
+                    )
                 owner = sub.owner.full_name or sub.owner.username
                 owner_suffix = f" • {owner}" if sub.user_id != sub.owner_id else ""
                 rows.append(
@@ -126,11 +222,8 @@ class SubscriptionHandler(BaseHandler):
                         }
                     ]
                 )
-            rows.extend(
-                [
-                    [{"text": "🔄 صفحه تمدید", "callback_data": "renewal_page"}],
-                    [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
-                ]
+            rows.append(
+                [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}]
             )
 
         await self.edit_message_with_keyboard(
@@ -142,49 +235,13 @@ class SubscriptionHandler(BaseHandler):
         await callback.answer()
 
     async def show_renewal_page(self, callback: types.CallbackQuery):
-        """Show renewal/re-purchase options without pretending unsupported provider renewals exist."""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        subscriptions = []
-        async for sub in (
-            Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand)
-            .select_related("plan", "owner", "user", "vpn_provider")
-            .exclude(status=Subscription.SubscriptionStatus.CANCELLED)
-            .order_by("-created_at")[:30]
-        ):
-            subscriptions.append(sub)
-
-        text = "🔄 <b>صفحه تمدید</b>\n\nاشتراکی را برای تمدید یا خرید مجدد انتخاب کنید."
-        if not subscriptions:
-            rows = [
-                [{"text": "🛒 خرید اشتراک", "callback_data": "purchase_subscription"}],
-                [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
-            ]
-        else:
-            rows = []
-            for sub in subscriptions:
-                owner = sub.owner.full_name or sub.owner.username
-                rows.append(
-                    [
-                        {
-                            "text": f"🔄 {sub.plan.name} • {owner}",
-                            "callback_data": f"renewal_details_{sub.pk}",
-                        }
-                    ]
-                )
-            rows.append([{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}])
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id,
-            callback.message.message_id,
-            text,
-            self.create_keyboard(rows),
-        )
-        await callback.answer()
+        """Legacy callback: the standalone renewal page was removed."""
+        await self.show_my_subscriptions(callback)
 
     async def show_renewal_details(
         self, callback: types.CallbackQuery, subscription_id: int
     ):
-        """Explain renewal semantics and offer a safe same-plan re-purchase."""
+        """Show all purchasable plans for one subscription, with its current plan first."""
         user, _ = await self.get_or_create_user(callback.from_user)
         try:
             subscription = (
@@ -199,44 +256,84 @@ class SubscriptionHandler(BaseHandler):
             return
 
         plan = subscription.plan
-        owner_name = subscription.owner.full_name or subscription.owner.username
+        username = (
+            subscription.connectix_username
+            or subscription.vpn_user_email
+            or str(subscription.subscription_id)[:8]
+        )
+        category_labels = {
+            SubscriptionPlan.ServiceCategory.NORMAL: "نرمال",
+            SubscriptionPlan.ServiceCategory.ROYAL: "رویال",
+            SubscriptionPlan.ServiceCategory.IRAN_IP: "آی‌پی ایران",
+        }
+        current_category = category_labels.get(plan.service_category, plan.name)
+        current_traffic = (
+            f"{subscription.traffic_limit_gb:g} گیگ"
+            if subscription.traffic_limit_gb is not None
+            else "نامحدود"
+        )
         expiry = (
             subscription.expires_at.strftime("%Y/%m/%d %H:%M")
             if subscription.expires_at
             else "نامحدود"
         )
-        plan_available = plan.is_active and plan.is_visible
+
+        plans = []
+        async for candidate in SubscriptionPlan.objects.filter(
+            brand=self.brand, is_active=True, is_visible=True
+        ).order_by("display_order", "price", "id"):
+            plans.append(candidate)
+        plans.sort(key=lambda candidate: candidate.pk != plan.pk)
+        current_plan_available = any(candidate.pk == plan.pk for candidate in plans)
+        renewal_hint = (
+            "طرح موردنظر را انتخاب کنید. طرح فعلی شما در ابتدای فهرست قرار گرفته است."
+            if current_plan_available
+            else "طرح فعلی شما دیگر برای فروش فعال نیست؛ یکی از طرح‌های فعال زیر را انتخاب کنید."
+        )
+
         text = f"""
-🔄 <b>تمدید اشتراک</b>
+🔄 <b>تمدید / تغییر طرح</b>
 
-پلن: {escape(plan.name)}
-دارنده: {escape(owner_name)}
-انقضای فعلی: {expiry}
-قیمت فعلی همان پلن: {self.format_price(plan.discounted_price, plan.currency)}
+👤 یوزرنیم: <code>{escape(username)}</code>
+🏷 نوع فعلی: {escape(current_category)}
+📦 حجم فعلی: {current_traffic}
+⏰ انقضا: {expiry}
 
-در نسخه فعلی، تمدید مستقیم روی حساب موجودِ ارائه‌دهنده پیاده‌سازی نشده است. گزینه زیر یک اشتراک جدید با همین پلن می‌سازد تا تمدید جعلی یا تغییر تأییدنشده روی پنل VPN انجام نشود.
+{renewal_hint}
         """
+
         rows = []
-        if plan_available:
-            rows.append(
-                [
-                    {
-                        "text": "🛒 خرید مجدد همین پلن",
-                        "callback_data": f"repurchase_subscription_{subscription.pk}",
-                    }
-                ]
+        for candidate in plans:
+            category = category_labels.get(candidate.service_category, candidate.name)
+            details = [category]
+            if candidate.traffic_limit_gb is not None:
+                details.append(f"{candidate.traffic_limit_gb:g}گ")
+            elif candidate.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
+                details.append("نامحدود")
+            details.append(self.format_price(candidate.discounted_price, candidate.currency))
+            prefix = "♻️ طرح فعلی" if candidate.pk == plan.pk else "🔹"
+            label = f"{prefix} • " + " • ".join(details)
+            if len(label) > 58:
+                label = label[:57] + "…"
+            callback_data = (
+                f"repurchase_subscription_{subscription.pk}"
+                if candidate.pk == plan.pk
+                else f"renew_with_plan_{subscription.pk}_{candidate.pk}"
             )
-        else:
-            text += "\n⚠️ این پلن دیگر برای فروش فعال نیست."
+            rows.append([{"text": label, "callback_data": callback_data}])
+
+        if not plans:
+            text += "\n⚠️ در حال حاضر هیچ پلن فعالی برای خرید وجود ندارد."
+
         rows.extend(
             [
                 [
                     {
-                        "text": "🛒 انتخاب پلن دیگر",
-                        "callback_data": "purchase_subscription",
+                        "text": "📱 جزئیات و کانفیگ این اشتراک",
+                        "callback_data": f"subscription_details_{subscription.pk}",
                     }
                 ],
-                [{"text": "🔙 بازگشت", "callback_data": "renewal_page"}],
+                [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
             ]
         )
         await self.edit_message_with_keyboard(
@@ -255,9 +352,7 @@ class SubscriptionHandler(BaseHandler):
 
         try:
             subscription = (
-                await Subscription.objects.select_related(
-                    "plan", "vpn_provider", "owner", "user"
-                )
+                await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user")
                 .filter(Q(user=user) | Q(owner=user))
                 .aget(id=subscription_id, brand=self.brand)
             )
@@ -342,9 +437,7 @@ class SubscriptionHandler(BaseHandler):
                     }
                 ]
             )
-        keyboard_buttons.append(
-            [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}]
-        )
+        keyboard_buttons.append([{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}])
 
         keyboard = self.create_keyboard(keyboard_buttons)
 
@@ -386,13 +479,11 @@ class SubscriptionHandler(BaseHandler):
             return
 
         if provider_type == VPNProvider.ProviderType.HIDDIFY:
-            from apps.bot.handlers.subscription_hiddify import (
-                SubscriptionHiddifyHandler,
-            )
+            from apps.bot.handlers.subscription_hiddify import SubscriptionHiddifyHandler
 
-            await SubscriptionHiddifyHandler(
-                self.bot, self.brand
-            ).get_subscription_config(callback, subscription_id)
+            await SubscriptionHiddifyHandler(self.bot, self.brand).get_subscription_config(
+                callback, subscription_id
+            )
             return
 
         try:
@@ -426,7 +517,7 @@ class SubscriptionHandler(BaseHandler):
         text = f"""
 📱 اطلاعات اتصال - {subscription.plan.name}
 
-👤 نام کاربری: <code>{escape(subscription.connectix_username or "—")}</code>
+👤 نام کاربری: <code>{escape(subscription.connectix_username or '—')}</code>
 
 🔗 لینک اشتراک:
 <code>{escape(subscription_url)}</code>

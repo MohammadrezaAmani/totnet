@@ -72,9 +72,7 @@ class ConnectixOrderProvisioningTests(TestCase):
         async def activate(subscription):
             subscription.status = Subscription.SubscriptionStatus.ACTIVE
             subscription.subscription_url = "https://subscription.example.invalid/token"
-            await subscription.asave(
-                update_fields=("status", "subscription_url", "updated_at")
-            )
+            await subscription.asave(update_fields=("status", "subscription_url", "updated_at"))
             return True
 
         provision_mock = AsyncMock(side_effect=activate)
@@ -175,18 +173,14 @@ class ConnectixOrderProvisioningTests(TestCase):
         )
 
         async def get_clients(*, page):
-            return ConnectixClientPage(
-                (record,), current_page=page, last_page=1, total=1
-            )
+            return ConnectixClientPage((record,), current_page=page, last_page=1, total=1)
 
         async def close():
             return None
 
         with (
             patch("apps.vpn_providers.tasks._client", return_value=provider_client),
-            patch.object(
-                provider_client.client, "get_clients", side_effect=get_clients
-            ),
+            patch.object(provider_client.client, "get_clients", side_effect=get_clients),
             patch.object(provider_client, "close", side_effect=close),
         ):
             self.assertTrue(sync_connectix_status(self.provider))
@@ -201,7 +195,6 @@ class ConnectixOrderProvisioningTests(TestCase):
 class SubscriptionPlanPricingTests(TestCase):
     def test_expired_offer_does_not_apply_discount(self):
         from datetime import timedelta
-
         from django.utils import timezone
 
         plan = SubscriptionPlan(
@@ -213,7 +206,6 @@ class SubscriptionPlanPricingTests(TestCase):
 
     def test_active_offer_applies_discount(self):
         from datetime import timedelta
-
         from django.utils import timezone
 
         plan = SubscriptionPlan(
@@ -282,9 +274,7 @@ class ProvisioningDeliveryTests(TestCase):
 
         async def activate(_order_pk):
             subscription.status = Subscription.SubscriptionStatus.ACTIVE
-            subscription.subscription_url = (
-                "https://subscription.example.invalid/direct"
-            )
+            subscription.subscription_url = "https://subscription.example.invalid/direct"
             subscription.connectix_username = "client-123"
             await subscription.asave(
                 update_fields=(

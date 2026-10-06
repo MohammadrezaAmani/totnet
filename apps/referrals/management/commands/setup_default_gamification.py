@@ -9,6 +9,8 @@ from django.db.models import DecimalField, ExpressionWrapper, F
 from apps.brands.models import Brand
 from apps.referrals.models import (
     Achievement,
+    ChallengeProgram,
+    ChallengeTier,
     ReferralLevel,
     ReferralProgram,
     RewardBoxCapacity,
@@ -21,6 +23,7 @@ from apps.referrals.services import (
 )
 from apps.subscriptions.models import SubscriptionPlan
 from apps.vpn_providers.models import VPNProvider
+
 
 DEFAULT_LEVELS = (
     {
@@ -152,6 +155,7 @@ class Command(BaseCommand):
                         "is_active": False,
                         "require_purchase": True,
                         "minimum_purchase_amount": Decimal("0"),
+                        "purchase_reward_percent": Decimal("8"),
                         "conversion_window_days": 30,
                         "max_referrals_per_day": 10,
                         "max_referrals_per_month": 100,
@@ -199,6 +203,35 @@ class Command(BaseCommand):
                         name=defaults["name"],
                         defaults={**defaults, "is_active": True},
                     )
+
+                uses_toman_amounts = brand.currency in {"T", "IRT", "IRR"}
+                challenge, _ = ChallengeProgram.objects.get_or_create(
+                    brand=brand,
+                    defaults={
+                        "name": "پراپزینو",
+                        "is_active": uses_toman_amounts,
+                        "offer_delay_days": 5,
+                        "duration_days": 7,
+                        "reward_percent": Decimal("13"),
+                        "require_referral_join_during_challenge": True,
+                    },
+                )
+                if uses_toman_amounts:
+                    for target, fee, display_order in (
+                        (1, Decimal("50000"), 1),
+                        (3, Decimal("150000"), 2),
+                        (5, Decimal("250000"), 3),
+                        (8, Decimal("350000"), 4),
+                    ):
+                        ChallengeTier.objects.get_or_create(
+                            program=challenge,
+                            target_referrals=target,
+                            defaults={
+                                "entry_fee": fee,
+                                "display_order": display_order,
+                                "is_active": True,
+                            },
+                        )
             configured += 1
             self.stdout.write(
                 self.style.SUCCESS(

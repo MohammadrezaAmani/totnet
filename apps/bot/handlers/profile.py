@@ -8,11 +8,12 @@ import re
 
 from aiogram import types
 from django.db.models import Q
+from django.utils import timezone
 
-from apps.accounts.models import User
+from apps.accounts.models import User, UserProfile
 from apps.bot.models import BotState
+from apps.subscriptions.models import Subscription, SubscriptionClaim
 from apps.referrals.selectors import reward_summary
-from apps.subscriptions.models import Subscription
 
 from .base import BaseHandler
 
@@ -22,13 +23,34 @@ logger = logging.getLogger(__name__)
 class ProfileHandler(BaseHandler):
     """Handle user profile operations"""
 
+    DEVICE_LABELS = {
+        UserProfile.DeviceType.IPHONE: "آیفون",
+        UserProfile.DeviceType.ANDROID_SAMSUNG: "اندروید _ سامسونگ",
+        UserProfile.DeviceType.ANDROID_OTHER: "اندروید _ شیائومی و سایر",
+        UserProfile.DeviceType.WINDOWS: "ویندوز",
+        UserProfile.DeviceType.MACOS: "مکینتاش",
+        UserProfile.DeviceType.LINUX: "لینوکس",
+    }
+
     async def show_my_profile(self, callback: types.CallbackQuery):
         user, _ = await self.get_or_create_user(callback.from_user)
 
-        subscription_count = await Subscription.objects.filter(
-            (Q(user=user) | Q(owner=user)), brand=self.brand, status="active"
+        now = timezone.now()
+        subscription_count = await (
+            Subscription.objects.filter(
+                (Q(user=user) | Q(owner=user)),
+                brand=self.brand,
+                status=Subscription.SubscriptionStatus.ACTIVE,
+            )
+            .filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+            .acount()
+        )
+        pending_claim_count = await SubscriptionClaim.objects.filter(
+            user=user, brand=self.brand, status=SubscriptionClaim.Status.PENDING
         ).acount()
         rewards = await reward_summary(user_id=user.pk, brand_id=self.brand.pk)
+        profile, _ = await UserProfile.objects.aget_or_create(user=user)
+        device_label = self.DEVICE_LABELS.get(profile.device_type, "ثبت نشده")
 
         from apps.orders.models import Wallet
 
@@ -53,17 +75,22 @@ class ProfileHandler(BaseHandler):
 👤 نام کاربری: {display_username}
 📅 تاریخ عضویت: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
 
+📱 نوع دستگاه: {device_label}
+
 📊 وضعیت:
 • اشتراک‌های فعال: {subscription_count}
-• موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
-• سطح کاربری: {rewards["level_title"]}
-• امتیاز مادام‌العمر: {rewards["lifetime_points"]:g}
-• امتیاز کامل قابل استفاده: {rewards["liquid_points"]:g}
+• درخواست ثبت اشتراک در انتظار بررسی: {pending_claim_count}
+• موجودی نقد کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
+• سطح کاربری: {rewards['level_title']}
         """
 
         keyboard = self.create_keyboard(
             [
-                [{"text": "✏️ ویرایش پروفایل", "callback_data": "edit_profile"}],
+                [{"text": "✏️ ویرایش و تکمیل پروفایل", "callback_data": "edit_profile"}],
+                [
+                    {"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"},
+                    {"text": "👥 معرفی دوستان", "callback_data": "referral_system"},
+                ],
                 [{"text": "💰 کیف پول", "callback_data": "wallet"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
             ]
@@ -80,9 +107,9 @@ class ProfileHandler(BaseHandler):
         )
 
         text = """
-✏️ ویرایش پروفایل
+✏️ ویرایش و تکمیل پروفایل
 
-کدام بخش را می‌خواهید تغییر دهید؟
+کدام بخش را می‌خواهید تغییر دهید یا تکمیل کنید؟
         """
 
         keyboard = self.create_keyboard(
@@ -90,12 +117,48 @@ class ProfileHandler(BaseHandler):
                 [{"text": "👨‍💼 نام کامل", "callback_data": "edit_full_name"}],
                 [{"text": "📱 شماره تلفن", "callback_data": "edit_phone"}],
                 [{"text": "📧 ایمیل", "callback_data": "edit_email"}],
+                [{"text": "📱 نوع دستگاه", "callback_data": "edit_device"}],
                 [{"text": "🔙 بازگشت", "callback_data": "my_profile"}],
             ]
         )
 
         await self._render(callback, text, keyboard)
         await callback.answer()
+
+
+    async def show_device_options(self, callback: types.CallbackQuery):
+        """Let the user set the primary device used for the service."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        profile, _ = await UserProfile.objects.aget_or_create(user=user)
+
+        labels = self.DEVICE_LABELS
+        current = labels.get(profile.device_type, "ثبت نشده")
+        rows = [
+            [
+                {
+                    "text": f"{'✅ ' if profile.device_type == value else ''}{label}",
+                    "callback_data": f"set_device_{value}",
+                }
+            ]
+            for value, label in labels.items()
+        ]
+        rows.append([{"text": "🔙 بازگشت", "callback_data": "edit_profile"}])
+        text = f"📱 <b>نوع دستگاه</b>\n\nدستگاه فعلی: {current}\n\nنوع دستگاه اصلی خود را انتخاب کنید:"
+        await self._render(callback, text, self.create_keyboard(rows))
+        await callback.answer()
+
+    async def set_device_type(self, callback: types.CallbackQuery, device_type: str):
+        """Persist one of the supported profile device choices."""
+        valid = {choice for choice, _label in UserProfile.DeviceType.choices}
+        if device_type not in valid:
+            await callback.answer("❌ نوع دستگاه نامعتبر است.", show_alert=True)
+            return
+
+        user, _ = await self.get_or_create_user(callback.from_user)
+        profile, _ = await UserProfile.objects.aget_or_create(user=user)
+        profile.device_type = device_type
+        await profile.asave(update_fields=["device_type", "updated_at"])
+        await self.show_device_options(callback)
 
     async def request_field_update(self, callback: types.CallbackQuery, field: str):
         user, _ = await self.get_or_create_user(callback.from_user)
@@ -166,7 +229,7 @@ class ProfileHandler(BaseHandler):
         await self._render_message(
             message,
             "✅ تغییر با موفقیت اعمال شد\n\nمنوی اصلی:",
-            await self.get_main_menu_keyboard(),
+            await self.get_main_menu_keyboard(user),
         )
 
     async def _render(self, callback, text, keyboard):

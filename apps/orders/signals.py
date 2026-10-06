@@ -148,12 +148,9 @@ def payment_post_save(sender, instance, created, **kwargs):
     if instance.status == Payment.PaymentStatus.CONFIRMED:
         if instance.order:
             order = instance.order
-            confirmed_total = (
-                Payment.objects.filter(
-                    order=order, status=Payment.PaymentStatus.CONFIRMED
-                ).aggregate(total=Sum("amount"))["total"]
-                or 0
-            )
+            confirmed_total = Payment.objects.filter(
+                order=order, status=Payment.PaymentStatus.CONFIRMED
+            ).aggregate(total=Sum("amount"))["total"] or 0
             if confirmed_total < order.final_price:
                 if order.status != Order.OrderStatus.AWAITING_PAYMENT:
                     order.status = Order.OrderStatus.AWAITING_PAYMENT
@@ -191,8 +188,8 @@ def payment_post_save(sender, instance, created, **kwargs):
                         },
                     )
                     transaction.on_commit(
-                        lambda subscription_id=subscription.pk: (
-                            _enqueue_order_provisioning(subscription_id)
+                        lambda subscription_id=subscription.pk: _enqueue_order_provisioning(
+                            subscription_id
                         )
                     )
                 else:
@@ -223,9 +220,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                 # Referral rewards run outside the payment transaction. The task is
                 # idempotent and a periodic recovery task covers enqueue failures.
                 transaction.on_commit(
-                    lambda payment_id=instance.payment_id: _enqueue_referral_reward(
-                        payment_id
-                    )
+                    lambda payment_id=instance.payment_id: _enqueue_referral_reward(payment_id)
                 )
         if instance.wallet_id and not instance.order_id:
             _apply_payment_wallet_delta(
@@ -253,12 +248,9 @@ def payment_post_save(sender, instance, created, **kwargs):
     # ---------------------------------------------------------------
     elif instance.status == Payment.PaymentStatus.FAILED:
         if instance.order:
-            confirmed_total = (
-                Payment.objects.filter(
-                    order=instance.order, status=Payment.PaymentStatus.CONFIRMED
-                ).aggregate(total=Sum("amount"))["total"]
-                or 0
-            )
+            confirmed_total = Payment.objects.filter(
+                order=instance.order, status=Payment.PaymentStatus.CONFIRMED
+            ).aggregate(total=Sum("amount"))["total"] or 0
             instance.order.status = (
                 Order.OrderStatus.AWAITING_PAYMENT
                 if confirmed_total > 0
@@ -281,12 +273,9 @@ def payment_post_save(sender, instance, created, **kwargs):
     # ---------------------------------------------------------------
     elif instance.status == Payment.PaymentStatus.CANCELLED:
         if instance.order:
-            confirmed_total = (
-                Payment.objects.filter(
-                    order=instance.order, status=Payment.PaymentStatus.CONFIRMED
-                ).aggregate(total=Sum("amount"))["total"]
-                or 0
-            )
+            confirmed_total = Payment.objects.filter(
+                order=instance.order, status=Payment.PaymentStatus.CONFIRMED
+            ).aggregate(total=Sum("amount"))["total"] or 0
             instance.order.status = (
                 Order.OrderStatus.AWAITING_PAYMENT
                 if confirmed_total > 0

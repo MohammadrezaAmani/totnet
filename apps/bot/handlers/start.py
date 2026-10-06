@@ -4,6 +4,7 @@ Start and Welcome Handler for Multi-Tenant VPN Bot
 
 import logging
 import re
+from html import escape
 from typing import Optional
 
 from aiogram import types
@@ -11,10 +12,11 @@ from aiogram.filters import Command
 from asgiref.sync import sync_to_async
 from django.db.models import Q
 
-from apps.accounts.models import User
+from apps.accounts.models import User, UserProfile
 from apps.bot.models import BotState
 from apps.brands.models import BrandConfiguration
 from apps.brands.utils import renderer
+from apps.subscriptions.models import Subscription, SubscriptionClaim
 
 from .base import BaseHandler
 
@@ -43,9 +45,7 @@ class StartHandler(BaseHandler):
             await self.process_referral_safely(user, referral_code)
 
         if created:
-            # Show profile setup for new users
-            # await self.show_profile_setup(chat_id, user)
-            await self.show_main_menu(chat_id, user)
+            await self.show_profile_setup(chat_id, user)
         else:
             await self.show_main_menu(chat_id, user)
 
@@ -59,7 +59,9 @@ class StartHandler(BaseHandler):
     @sync_to_async
     def _process_referral_sync(self, user_id: int, referral_code: str, brand_id: int):
         """Execute the ORM transaction outside the asynchronous bot loop."""
-        from apps.referrals.services import attribute_referral, track_referral_click
+        from apps.referrals.services import attribute_referral
+
+        from apps.referrals.services import track_referral_click
 
         track_referral_click(code=referral_code, brand_id=brand_id, visitor_id=user_id)
         return attribute_referral(
@@ -72,24 +74,161 @@ class StartHandler(BaseHandler):
 
         name_status = "✅" if user.full_name else "❌"
         phone_status = "✅" if user.phone_number else "❌"
+        profile = await UserProfile.objects.filter(user=user).afirst()
+        device_status = "✅" if profile and profile.device_type else "❌"
 
         welcome_text = f"""
 🎉 خوش آمدید به {self.brand.name}!
 
-برای شروع، لطفاً پروفایل خود را تکمیل کنید:
+اگر از قبل اشتراک فعال دارید، ابتدا یوزرنیم آن را ثبت کنید.
+اگر اشتراک فعال ندارید، تکمیل اولیه پروفایل را ادامه دهید.
 
 👤 نام کامل: {name_status}
 📱 شماره تلفن: {phone_status}
+📱 نوع دستگاه: {device_status}
         """
 
         keyboard = self.create_keyboard(
             [
-                [{"text": "✏️ تکمیل پروفایل", "callback_data": "setup_profile"}],
-                [{"text": "⏭️ رد کردن", "callback_data": "skip_profile"}],
+                [
+                    {
+                        "text": "✅ اشتراک فعال دارم / ثبت اشتراک",
+                        "callback_data": "onboarding_existing_subscription",
+                    }
+                ],
+                [
+                    {
+                        "text": "🆕 اشتراک فعال ندارم",
+                        "callback_data": "onboarding_no_subscription",
+                    }
+                ],
             ]
         )
 
         await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
+
+    async def start_existing_subscription_registration(
+        self, callback: types.CallbackQuery
+    ):
+        """Collect an existing VPN username without trusting it as ownership proof."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(
+            user,
+            BotState.StateType.SUBSCRIPTION_MANAGEMENT,
+            {"step": "claim_existing_subscription"},
+        )
+        profile = await UserProfile.objects.filter(user=user).afirst()
+        profile_complete = bool(
+            user.full_name and user.phone_number and profile and profile.device_type
+        )
+        back_callback = "my_subscriptions" if profile_complete else "onboarding_no_subscription"
+        text = (
+            "📱 <b>ثبت اشتراک فعال</b>\n\n"
+            "یوزرنیم اشتراک فعال خود را وارد کنید.\n"
+            "اگر اشتراک از قبل به همین حساب متصل باشد فوراً شناسایی می‌شود؛ "
+            "در غیر این صورت برای جلوگیری از انتقال اشتراک دیگران، درخواست شما برای بررسی ثبت خواهد شد."
+        )
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id,
+            callback.message.message_id,
+            text,
+            self.get_back_keyboard(back_callback),
+        )
+        await callback.answer()
+
+    async def handle_existing_subscription_message(
+        self, message: types.Message, user: User, state: BotState
+    ):
+        """Record one existing-subscription username during onboarding."""
+        step = (state.state_data or {}).get("step")
+        if step != "claim_existing_subscription":
+            return
+        username = (message.text or "").strip()
+        if (
+            len(username) < 2
+            or len(username) > 100
+            or any(char.isspace() for char in username)
+            or any(ord(char) < 32 for char in username)
+        ):
+            await message.reply(
+                "❌ یوزرنیم معتبر نیست. یوزرنیم را بدون فاصله و حداکثر ۱۰۰ کاراکتر وارد کنید."
+            )
+            return
+
+        existing = await (
+            Subscription.objects.filter(brand=self.brand, owner=user)
+            .filter(
+                Q(connectix_username__iexact=username)
+                | Q(vpn_user_email__iexact=username)
+            )
+            .select_related("plan")
+            .afirst()
+        )
+        if existing:
+            result_text = (
+                "✅ این اشتراک از قبل به حساب شما متصل است.\n"
+                f"🏷 طرح: {existing.plan.name}"
+            )
+        else:
+            claim = await SubscriptionClaim.objects.filter(
+                user=user, brand=self.brand, username__iexact=username
+            ).afirst()
+            if claim is None:
+                claim = await SubscriptionClaim.objects.acreate(
+                    user=user,
+                    brand=self.brand,
+                    username=username,
+                    status=SubscriptionClaim.Status.PENDING,
+                )
+            elif claim.status != SubscriptionClaim.Status.APPROVED:
+                claim.username = username
+                claim.status = SubscriptionClaim.Status.PENDING
+                claim.admin_note = ""
+                claim.reviewed_by = None
+                claim.reviewed_at = None
+                await claim.asave(
+                    update_fields=[
+                        "username",
+                        "status",
+                        "admin_note",
+                        "reviewed_by",
+                        "reviewed_at",
+                        "updated_at",
+                    ]
+                )
+            result_text = (
+                "✅ درخواست ثبت اشتراک دریافت شد.\n"
+                f"👤 یوزرنیم: <code>{escape(username)}</code>\n\n"
+                "برای امنیت، دانستن یوزرنیم به‌تنهایی باعث انتقال مالکیت نمی‌شود. "
+                "پس از تأیید، اشتراک در «اشتراک‌های من» نمایش داده می‌شود."
+            )
+
+        await self.update_user_state(
+            user,
+            BotState.StateType.SUBSCRIPTION_MANAGEMENT,
+            {"step": "claim_existing_subscription"},
+        )
+        profile = await UserProfile.objects.filter(user=user).afirst()
+        profile_complete = bool(
+            user.full_name and user.phone_number and profile and profile.device_type
+        )
+        continue_button = (
+            {"text": "🏠 منوی اصلی", "callback_data": "main_menu"}
+            if profile_complete
+            else {"text": "➡️ تکمیل پروفایل", "callback_data": "onboarding_finish_claims"}
+        )
+        keyboard = self.create_keyboard(
+            [
+                [
+                    {
+                        "text": "➕ ثبت اشتراک دیگر",
+                        "callback_data": "onboarding_add_subscription",
+                    }
+                ],
+                [continue_button],
+            ]
+        )
+        await self.send_message_with_keyboard(message.chat.id, result_text, keyboard)
 
     async def get_config(self) -> BrandConfiguration:
         """Get brand configuration - use async properly"""
@@ -125,11 +264,18 @@ class StartHandler(BaseHandler):
         from apps.referrals.selectors import reward_summary
         from apps.subscriptions.models import Subscription
 
-        subscription_count = await Subscription.objects.filter(
-            (Q(user_id=user.id) | Q(owner_id=user.id)),
-            brand_id=self.brand.id,
-            status=Subscription.SubscriptionStatus.ACTIVE,
-        ).acount()
+        from django.utils import timezone
+
+        now = timezone.now()
+        subscription_count = await (
+            Subscription.objects.filter(
+                (Q(user_id=user.id) | Q(owner_id=user.id)),
+                brand_id=self.brand.id,
+                status=Subscription.SubscriptionStatus.ACTIVE,
+            )
+            .filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+            .acount()
+        )
         try:
             wallet = await Wallet.objects.aget(user_id=user.id, brand_id=self.brand.id)
             wallet_balance = wallet.balance
@@ -157,7 +303,7 @@ class StartHandler(BaseHandler):
 
 📊 وضعیت شما:
 • اشتراک‌های فعال: {subscriptions}
-• موجودی کیف پول: {wallet}
+• موجودی نقد کیف پول: {wallet}
 • تعداد معرفی‌ها: {referrals}
 • سطح: {level}
 
@@ -187,13 +333,23 @@ class StartHandler(BaseHandler):
         """Handle profile setup callback"""
         user, _ = await self.get_or_create_user(callback.from_user)
 
-        if callback.data == "setup_profile":
+        if callback.data in {"setup_profile", "onboarding_no_subscription", "onboarding_finish_claims"}:
             await self.start_profile_setup(callback.message.chat.id, user)
+        elif callback.data in {"onboarding_existing_subscription", "onboarding_add_subscription"}:
+            await self.start_existing_subscription_registration(callback)
+            return
         elif callback.data == "request_phone":
             await self.request_phone_contact(callback.message.chat.id)
-        elif callback.data == "skip_profile":
-            await self.show_main_menu(callback.message.chat.id, user)
-        elif callback.data == "main_menu":
+        elif callback.data == "skip_phone":
+            await self.show_device_setup(callback.message.chat.id, user)
+        elif callback.data.startswith("setup_device_"):
+            await self.set_initial_device(
+                callback.message.chat.id,
+                user,
+                callback.data.removeprefix("setup_device_"),
+            )
+        elif callback.data in {"skip_profile", "main_menu"}:
+            # Kept for compatibility with older messages already sent before this release.
             await self.show_main_menu(callback.message.chat.id, user)
 
         await callback.answer()
@@ -233,7 +389,7 @@ class StartHandler(BaseHandler):
         await message.answer(
             "✅ شماره تلفن ثبت شد.", reply_markup=types.ReplyKeyboardRemove()
         )
-        await self.show_main_menu(message.chat.id, user)
+        await self.show_device_setup(message.chat.id, user)
 
     async def start_profile_setup(self, chat_id: int, user: User):
         """Start profile setup process"""
@@ -270,17 +426,14 @@ class StartHandler(BaseHandler):
 
         # Update name using sync to avoid signal issues
         await self._update_user_name(user.id, name)
+        user.full_name = name
 
         await self.update_user_state(
             user, BotState.StateType.PROFILE_SETUP, {"step": "phone"}
         )
 
         keyboard = self.create_keyboard(
-            [
-                [{"text": "📱 ارسال شماره تلفن", "callback_data": "request_phone"}],
-                [{"text": "⏭️ رد کردن", "callback_data": "skip_phone"}],
-                [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
-            ]
+            [[{"text": "📱 ارسال شماره تلفن", "callback_data": "request_phone"}]]
         )
 
         await self.send_message_with_keyboard(
@@ -310,9 +463,47 @@ class StartHandler(BaseHandler):
             return
 
         await self._update_user_phone(user.id, phone)
+        user.phone_number = phone
+        await message.reply("✅ شماره تلفن ثبت شد.")
+        await self.show_device_setup(message.chat.id, user)
 
-        await message.reply("✅ پروفایل شما با موفقیت تکمیل شد!")
-        await self.show_main_menu(message.chat.id, user)
+    async def show_device_setup(self, chat_id: int, user: User):
+        """Collect the required device family during initial profile setup."""
+        await self.update_user_state(
+            user, BotState.StateType.PROFILE_SETUP, {"step": "device"}
+        )
+        choices = [
+            (UserProfile.DeviceType.IPHONE, "آیفون"),
+            (UserProfile.DeviceType.ANDROID_SAMSUNG, "اندروید _ سامسونگ"),
+            (UserProfile.DeviceType.ANDROID_OTHER, "اندروید _ شیائومی و سایر"),
+            (UserProfile.DeviceType.WINDOWS, "ویندوز"),
+            (UserProfile.DeviceType.MACOS, "مکینتاش"),
+            (UserProfile.DeviceType.LINUX, "لینوکس"),
+        ]
+        keyboard = self.create_keyboard(
+            [[{"text": label, "callback_data": f"setup_device_{value}"}] for value, label in choices]
+        )
+        await self.send_message_with_keyboard(
+            chat_id,
+            "📱 <b>نوع دستگاه</b>\n\nدستگاه اصلی خود را انتخاب کنید:",
+            keyboard,
+        )
+
+    async def set_initial_device(self, chat_id: int, user: User, device_type: str):
+        valid = {value for value, _ in UserProfile.DeviceType.choices}
+        if device_type not in valid:
+            await self.send_message_with_keyboard(
+                chat_id, "❌ نوع دستگاه معتبر نیست.", self.get_back_keyboard("setup_profile")
+            )
+            return
+        profile, _ = await UserProfile.objects.aget_or_create(user=user)
+        profile.device_type = device_type
+        await profile.asave(update_fields=["device_type", "updated_at"])
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        await self.send_message_with_keyboard(
+            chat_id, "✅ پروفایل شما با موفقیت تکمیل شد."
+        )
+        await self.show_main_menu(chat_id, user)
 
     @staticmethod
     def _normalize_phone(phone: str) -> str:

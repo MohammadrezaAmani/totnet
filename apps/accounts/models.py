@@ -93,8 +93,19 @@ class User(AbstractUser):
 class UserProfile(models.Model):
     """Extended profile information for users"""
 
+    class DeviceType(models.TextChoices):
+        IPHONE = "iphone", "iPhone"
+        ANDROID_SAMSUNG = "android_samsung", "Android - Samsung"
+        ANDROID_OTHER = "android_other", "Android - Xiaomi / Other"
+        WINDOWS = "windows", "Windows"
+        MACOS = "macos", "Macintosh"
+        LINUX = "linux", "Linux"
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
 
+    device_type = models.CharField(
+        max_length=32, choices=DeviceType.choices, null=True, blank=True
+    )
     country = models.CharField(max_length=100, null=True, blank=True)
     city = models.CharField(max_length=100, null=True, blank=True)
     timezone = models.CharField(max_length=50, default="UTC")

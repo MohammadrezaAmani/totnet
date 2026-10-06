@@ -1,8 +1,8 @@
 """Durable Celery entry points for subscription provisioning."""
 
 import logging
-from datetime import timedelta
 from html import escape
+from datetime import timedelta
 
 from asgiref.sync import async_to_sync
 from celery import shared_task
@@ -27,9 +27,7 @@ def provision_paid_order(order_pk: int):
         logger.warning("Provisioning skipped: order %s does not exist", order_pk)
         return False
     if order.status not in (Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING):
-        logger.info(
-            "Provisioning skipped for order %s in state %s", order.pk, order.status
-        )
+        logger.info("Provisioning skipped for order %s in state %s", order.pk, order.status)
         return False
 
     now = timezone.now()
@@ -41,9 +39,7 @@ def provision_paid_order(order_pk: int):
             .first()
         )
         if subscription is None:
-            logger.warning(
-                "Provisioning skipped: order %s has no local subscription", order.pk
-            )
+            logger.warning("Provisioning skipped: order %s has no local subscription", order.pk)
             return False
         if subscription.status == Subscription.SubscriptionStatus.ACTIVE:
             return True
@@ -208,12 +204,16 @@ def provision_paid_order(order_pk: int):
         if has_remote_identity:
             subscription.provisioning_state = "retryable_error"
             subscription.provisioning_error_code = "provider_reconciliation_incomplete"
-            subscription.provisioning_error = "The provider account exists, but its active subscription link could not be verified."
+            subscription.provisioning_error = (
+                "The provider account exists, but its active subscription link could not be verified."
+            )
             subscription.provisioning_retryable = True
         else:
             subscription.provisioning_state = "needs_review"
             subscription.provisioning_error_code = "provider_outcome_ambiguous"
-            subscription.provisioning_error = "No remote ID was saved after a provisioning attempt. Automatic retry is paused."
+            subscription.provisioning_error = (
+                "No remote ID was saved after a provisioning attempt. Automatic retry is paused."
+            )
             subscription.provisioning_retryable = False
         subscription.save(
             update_fields=(

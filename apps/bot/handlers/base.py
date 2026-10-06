@@ -33,7 +33,15 @@ class BaseHandler:
         if use_cache:
             cached = await cache.aget(CACHE_KEY)
             if cached:
-                return cached, created
+                # Cache only identity, never a serialized ORM instance. Cached model
+                # objects made profile/wallet/admin changes appear stale for up to the TTL.
+                cached_pk = cached if isinstance(cached, int) else getattr(cached, "pk", None)
+                if cached_pk:
+                    try:
+                        user = await User.objects.aget(pk=cached_pk, brand=self.brand)
+                        return user, created
+                    except User.DoesNotExist:
+                        await cache.adelete(CACHE_KEY)
         try:
             user = await User.objects.aget(
                 telegram_id=telegram_user.id, brand=self.brand
@@ -54,7 +62,7 @@ class BaseHandler:
                 user=user, brand=self.brand, current_state=BotState.StateType.MAIN_MENU
             )
         if use_cache:
-            await cache.aset(CACHE_KEY, user, timeout=cache_ttl)
+            await cache.aset(CACHE_KEY, user.pk, timeout=cache_ttl)
         return user, created
 
     async def get_user_state(self, user: User) -> BotState:
@@ -87,10 +95,11 @@ class BaseHandler:
             ).aget(pk=user.pk)
             if current.is_staff or current.is_superuser:
                 return True
-            if current.brand_id == self.brand.pk and current.user_type in {
-                User.UserType.BRAND_MANAGER,
-                User.UserType.BRAND_ADMIN,
-            }:
+            if (
+                current.brand_id == self.brand.pk
+                and current.user_type
+                in {User.UserType.BRAND_MANAGER, User.UserType.BRAND_ADMIN}
+            ):
                 return True
             return await current.admin_brands.filter(pk=self.brand.pk).aexists()
         except User.DoesNotExist:
@@ -151,6 +160,10 @@ class BaseHandler:
             [
                 {"text": "🛟 پشتیبانی", "callback_data": "support"},
                 {"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"},
+            ],
+            [
+                {"text": "🏆 چالش‌های فعال", "callback_data": "active_challenges"},
+                {"text": "📚 محتواهای کاربردی", "callback_data": "useful_content"},
             ],
         ]
 
@@ -214,7 +227,7 @@ class BaseHandler:
         if currency in {"T", "IRT"}:
             try:
                 formatted = f"{float(amount):,.2f}".rstrip("0").rstrip(".")
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 formatted = str(amount)
             return f"{formatted} تومان"
         if currency == "USD":

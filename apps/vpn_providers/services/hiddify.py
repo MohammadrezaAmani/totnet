@@ -216,7 +216,7 @@ class HiddifyUser:
         if data.get("start_date"):
             try:
                 start_date = datetime.strptime(data["start_date"], "%Y-%m-%d").date()
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 pass
 
         return cls(

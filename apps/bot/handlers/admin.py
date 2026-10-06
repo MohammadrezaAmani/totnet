@@ -528,7 +528,7 @@ class AdminHandler(BaseHandler):
                         search_user = await User.objects.aget(
                             telegram_id=int(query), brand=self.brand
                         )
-                    except ValueError, User.DoesNotExist:
+                    except (ValueError, User.DoesNotExist):
                         pass
 
                 if not search_user:
@@ -561,10 +561,10 @@ class AdminHandler(BaseHandler):
 
 📊 وضعیت:
 • اشتراک‌های فعال: {subs_count}
-• موجودی کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
-• سطح: {rewards["level_title"]}
-• امتیاز مادام‌العمر: {rewards["lifetime_points"]:g}
-• امتیاز کامل قابل استفاده: {rewards["liquid_points"]:g}
+• موجودی نقد کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
+• سطح: {rewards['level_title']}
+• امتیاز کل ثبت‌شده: {rewards['lifetime_points']:g}
+• امتیاز عادی در انتظار تکمیل قرص: {rewards['liquid_points']:g}
 
 🔄 عملیات:
                 """

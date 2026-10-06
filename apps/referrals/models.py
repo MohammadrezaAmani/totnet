@@ -6,6 +6,7 @@ Configurable per brand with flexible reward rules
 import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 class ReferralProgram(models.Model):
@@ -67,6 +68,12 @@ class ReferralProgram(models.Model):
     minimum_purchase_amount = models.DecimalField(
         max_digits=15, decimal_places=2, default=0
     )
+    purchase_reward_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=8,
+        help_text="درصد ارزش نقدی هر امتیاز معرفی از مبلغ خرید مستقیم کاربر سطح یک.",
+    )
 
     enable_level_rewards = models.BooleanField(default=False)
 
@@ -83,12 +90,9 @@ class ReferralProgram(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            previous = (
-                type(self)
-                .objects.filter(pk=self.pk)
-                .values("lifetime_reference_service_id", "lifetime_point_value")
-                .first()
-            )
+            previous = type(self).objects.filter(pk=self.pk).values(
+                "lifetime_reference_service_id", "lifetime_point_value"
+            ).first()
             if previous and previous["lifetime_reference_service_id"]:
                 self.lifetime_reference_service_id = previous[
                     "lifetime_reference_service_id"
@@ -109,21 +113,17 @@ class ReferralProgram(models.Model):
         super().clean()
         from django.core.exceptions import ValidationError
 
-        for service_id in (
-            self.reference_service_id,
-            self.lifetime_reference_service_id,
-        ):
-            if (
-                service_id
-                and RewardService.objects.filter(pk=service_id)
-                .exclude(brand_id=self.brand_id)
-                .exists()
-            ):
+        for service_id in (self.reference_service_id, self.lifetime_reference_service_id):
+            if service_id and RewardService.objects.filter(pk=service_id).exclude(
+                brand_id=self.brand_id
+            ).exists():
                 raise ValidationError("Reference services must belong to this brand")
         if self.lifetime_point_value is not None and self.lifetime_point_value <= 0:
-            raise ValidationError(
-                {"lifetime_point_value": "Point value must be positive"}
-            )
+            raise ValidationError({"lifetime_point_value": "Point value must be positive"})
+        if self.purchase_reward_percent <= 0 or self.purchase_reward_percent > 100:
+            raise ValidationError({
+                "purchase_reward_percent": "Referral purchase reward percent must be greater than 0 and at most 100."
+            })
 
 
 class ReferralLevel(models.Model):
@@ -307,7 +307,10 @@ class ReferralReward(models.Model):
 
     reward_type = models.CharField(max_length=20)
     amount = models.DecimalField(max_digits=20, decimal_places=8)
+    cash_value = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     currency = models.CharField(max_length=3, default="USD")
+    is_cashed_out = models.BooleanField(default=False)
+    cashed_out_at = models.DateTimeField(null=True, blank=True)
 
     status = models.CharField(
         max_length=20, choices=RewardStatus.choices, default=RewardStatus.PENDING
@@ -393,7 +396,7 @@ class Achievement(models.Model):
         blank=True,
         help_text=(
             "Thresholds: referrals, conversions, purchases, lifetime_points, "
-            'total_spent, wallet_deposits. Example: {"referrals": 5}.'
+            "total_spent, wallet_deposits. Example: {\"referrals\": 5}."
         ),
     )
 
@@ -499,12 +502,9 @@ class RewardService(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            previous = (
-                type(self)
-                .objects.filter(pk=self.pk)
-                .values_list("point_value_snapshot", flat=True)
-                .first()
-            )
+            previous = type(self).objects.filter(pk=self.pk).values_list(
+                "point_value_snapshot", flat=True
+            ).first()
             if previous is not None:
                 self.point_value_snapshot = previous
         if self.point_value_snapshot is None and self.plan_id:
@@ -533,9 +533,7 @@ class RewardBoxCapacity(models.Model):
             models.UniqueConstraint(
                 fields=["service", "sequence"], name="uniq_reward_box_sequence"
             ),
-            models.CheckConstraint(
-                condition=models.Q(capacity__gt=0), name="reward_box_capacity_positive"
-            ),
+            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_box_capacity_positive"),
         ]
 
 
@@ -607,26 +605,11 @@ class RewardPointBox(models.Model):
                 fields=["account", "service", "cycle", "sequence"],
                 name="uniq_reward_point_box_cycle",
             ),
-            models.CheckConstraint(
-                condition=models.Q(capacity__gt=0),
-                name="reward_point_box_capacity_positive",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(filled__gte=0),
-                name="reward_point_box_filled_nonnegative",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(filled__lte=models.F("capacity")),
-                name="reward_point_box_filled_within_capacity",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(spent_points__gte=0),
-                name="reward_point_box_spent_nonnegative",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(spent_points__lte=models.F("filled")),
-                name="reward_point_box_spent_within_filled",
-            ),
+            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_point_box_capacity_positive"),
+            models.CheckConstraint(condition=models.Q(filled__gte=0), name="reward_point_box_filled_nonnegative"),
+            models.CheckConstraint(condition=models.Q(filled__lte=models.F("capacity")), name="reward_point_box_filled_within_capacity"),
+            models.CheckConstraint(condition=models.Q(spent_points__gte=0), name="reward_point_box_spent_nonnegative"),
+            models.CheckConstraint(condition=models.Q(spent_points__lte=models.F("filled")), name="reward_point_box_spent_within_filled"),
         ]
 
 
@@ -714,3 +697,212 @@ class MarketingMaterial(models.Model):
     class Meta:
         db_table = "marketing_materials"
         ordering = ["name"]
+
+class ChallengeProgram(models.Model):
+    """Brand-level configuration for the one-time Propzino challenge."""
+
+    brand = models.OneToOneField(
+        "brands.Brand", on_delete=models.CASCADE, related_name="challenge_program"
+    )
+    name = models.CharField(max_length=100, default="پراپزینو")
+    is_active = models.BooleanField(default=True)
+    offer_delay_days = models.PositiveSmallIntegerField(default=5)
+    duration_days = models.PositiveSmallIntegerField(default=7)
+    reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=13)
+    require_referral_join_during_challenge = models.BooleanField(
+        default=True,
+        help_text=(
+            "اگر فعال باشد، فقط کاربری برای تارگت چالش حساب می‌شود که پس از شروع "
+            "چالش با لینک معرفی وارد شده باشد و در همان بازه خرید موفق انجام دهد."
+        ),
+    )
+    intro_text = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "challenge_programs"
+
+    def __str__(self):
+        return f"{self.brand.name} - {self.name}"
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.offer_delay_days < 1:
+            errors["offer_delay_days"] = "Offer delay must be at least one day."
+        if self.duration_days < 1:
+            errors["duration_days"] = "Challenge duration must be at least one day."
+        if self.reward_percent <= 0 or self.reward_percent > 100:
+            errors["reward_percent"] = "Challenge reward percent must be greater than 0 and at most 100."
+        if errors:
+            raise ValidationError(errors)
+
+
+class ChallengeTier(models.Model):
+    """Configurable challenge target and entry amount."""
+
+    program = models.ForeignKey(
+        ChallengeProgram, on_delete=models.CASCADE, related_name="tiers"
+    )
+    target_referrals = models.PositiveSmallIntegerField()
+    entry_fee = models.DecimalField(max_digits=20, decimal_places=2)
+    display_order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "challenge_tiers"
+        ordering = ["display_order", "target_referrals"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["program", "target_referrals"],
+                name="uniq_challenge_target_per_program",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(entry_fee__gte=0), name="challenge_entry_fee_nonneg"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.program.name}: {self.target_referrals}"
+
+
+class UserChallenge(models.Model):
+    """A user's single lifetime opportunity to take a configured challenge."""
+
+    class Status(models.TextChoices):
+        OFFERED = "offered", "Offered"
+        DECLINED = "declined", "Declined"
+        AWAITING_FUNDS = "awaiting_funds", "Awaiting funds"
+        ACTIVE = "active", "Active"
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="challenges"
+    )
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="user_challenges"
+    )
+    program = models.ForeignKey(
+        ChallengeProgram, on_delete=models.PROTECT, related_name="user_challenges"
+    )
+    tier = models.ForeignKey(
+        ChallengeTier, on_delete=models.PROTECT, null=True, blank=True, related_name="user_challenges"
+    )
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.OFFERED)
+    offered_at = models.DateTimeField(default=timezone.now)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    declined_at = models.DateTimeField(null=True, blank=True)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    entry_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    target_referrals = models.PositiveSmallIntegerField(default=0)
+    reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    successful_referrals = models.PositiveSmallIntegerField(default=0)
+    reward_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    settled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_challenges"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "program"], name="uniq_user_challenge_program"
+            )
+        ]
+        indexes = [
+            models.Index(fields=["brand", "status", "ends_at"]),
+            models.Index(fields=["user", "status"]),
+        ]
+
+
+class ChallengeReferralEvent(models.Model):
+    """A referred purchase reserved for an active challenge target."""
+
+    challenge = models.ForeignKey(
+        UserChallenge, on_delete=models.CASCADE, related_name="referral_events"
+    )
+    referral = models.ForeignKey(
+        Referral, on_delete=models.PROTECT, related_name="challenge_events"
+    )
+    order = models.OneToOneField(
+        "orders.Order", on_delete=models.PROTECT, related_name="challenge_referral_event"
+    )
+    reward = models.OneToOneField(
+        ReferralReward,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="challenge_event",
+    )
+    reward_value = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "challenge_referral_events"
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["challenge", "referral"],
+                name="uniq_challenge_referral_person",
+            )
+        ]
+
+
+class GamificationNotification(models.Model):
+    """Idempotency ledger for scheduled Telegram gamification notifications."""
+
+    class NotificationType(models.TextChoices):
+        SURVEY = "survey", "Survey"
+        REFERRAL_INTRO = "referral_intro", "Referral intro"
+        CHALLENGE_OFFER = "challenge_offer", "Challenge offer"
+        CHALLENGE_REMINDER = "challenge_reminder", "Challenge reminder"
+        EXPIRY_5D = "expiry_5d", "Subscription expiry 5d"
+        REFERRAL_REWARD = "referral_reward", "Referral reward"
+
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="gamification_notifications"
+    )
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="gamification_notifications"
+    )
+    notification_type = models.CharField(max_length=32, choices=NotificationType.choices)
+    dedupe_key = models.CharField(max_length=255, unique=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "gamification_notifications"
+        indexes = [models.Index(fields=["brand", "notification_type", "sent_at"])]
+
+
+class ServiceSurvey(models.Model):
+    """The three-part survey sent 24 hours after the first confirmed purchase."""
+
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="service_surveys"
+    )
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="service_surveys"
+    )
+    quality_rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    app_rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    support_rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "service_surveys"
+        constraints = [
+            models.UniqueConstraint(fields=["user", "brand"], name="uniq_service_survey_user_brand"),
+            models.CheckConstraint(condition=models.Q(quality_rating__isnull=True) | (models.Q(quality_rating__gte=1) & models.Q(quality_rating__lte=5)), name="survey_quality_1_5"),
+            models.CheckConstraint(condition=models.Q(app_rating__isnull=True) | (models.Q(app_rating__gte=1) & models.Q(app_rating__lte=5)), name="survey_app_1_5"),
+            models.CheckConstraint(condition=models.Q(support_rating__isnull=True) | (models.Q(support_rating__gte=1) & models.Q(support_rating__lte=5)), name="survey_support_1_5"),
+        ]
+

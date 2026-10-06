@@ -10,10 +10,12 @@ from html import escape
 
 from aiogram import types
 from aiogram.types import FSInputFile
-from django.db.models import F
+from django.db.models import Exists, F, OuterRef, Q, Sum
+from django.utils import timezone
 
 from apps.referrals.models import MarketingMaterial, Referral, ReferralLink
-from apps.referrals.selectors import referral_level_progress
+from apps.orders.models import Order, Payment
+from apps.subscriptions.models import Subscription
 
 from .base import BaseHandler
 
@@ -50,62 +52,71 @@ class ReferralsHandler(BaseHandler):
             )
             return referral_link
 
+    def _successful_referrals_queryset(self, user):
+        """Referrals whose referee has at least one fully-paid positive purchase."""
+        paid_orders = (
+            Order.objects.filter(
+                user_id=OuterRef("referee_id"),
+                brand=self.brand,
+                final_price__gt=0,
+                status__in=[
+                    Order.OrderStatus.PAID,
+                    Order.OrderStatus.PROCESSING,
+                    Order.OrderStatus.COMPLETED,
+                ],
+            )
+            .annotate(
+                confirmed_total=Sum(
+                    "payments__amount",
+                    filter=Q(payments__status=Payment.PaymentStatus.CONFIRMED),
+                )
+            )
+            .filter(confirmed_total__gte=F("final_price"))
+        )
+        return (
+            Referral.objects.filter(referrer=user, brand=self.brand)
+            .annotate(has_successful_purchase=Exists(paid_orders))
+            .filter(has_successful_purchase=True)
+        )
+
     async def show_referral_menu(self, callback: types.CallbackQuery):
-        """Show referral system menu"""
+        """Show the referral link and the two user-facing referral counters."""
         user, _ = await self.get_or_create_user(callback.from_user)
-
         referral_link = await self.get_or_create_referral_link(user)
-
         bot_username = await self.get_bot_username()
         referral_url = f"https://t.me/{bot_username}?start={referral_link.code}"
-        progress = await referral_level_progress(
-            user_id=user.pk, brand_id=self.brand.pk
-        )
-        successful_referrals = await Referral.objects.filter(
-            referrer=user,
-            brand=self.brand,
-            status=Referral.ReferralStatus.REWARDED,
-        ).acount()
-        account = progress["account"]
-        program = progress["program"]
-        lifetime_points = progress["lifetime_points"]
-        current_level = progress["current_level"]
-        level_label = (
-            f"{current_level.badge} {current_level.name}" if current_level else "—"
-        )
-        program_notice = (
-            "امتیازها پس از خرید سودآور دوستان معرفی‌شده محاسبه می‌شوند."
-            if program and program.reference_service_id
-            else "لینک معرفی فعال است؛ امتیاز و پاداش این برند هنوز پیکربندی نشده است."
-        )
+
+        successful_qs = self._successful_referrals_queryset(user)
+        successful_referrals = await successful_qs.acount()
+        now = timezone.now()
+        active_referrals = await successful_qs.filter(
+            referee__owned_subscriptions__brand=self.brand,
+            referee__owned_subscriptions__status=Subscription.SubscriptionStatus.ACTIVE,
+        ).filter(
+            Q(referee__owned_subscriptions__expires_at__isnull=True)
+            | Q(referee__owned_subscriptions__expires_at__gt=now)
+        ).distinct().acount()
 
         text = f"""
-👥 سیستم معرفی دوستان
+👥 <b>معرفی دوستان</b>
 
-🔗 لینک معرفی شما:
+🔗 <b>لینک معرفی شما:</b>
 {referral_url}
 
-📊 آمار معرفی:
-• ورودهای یکتا از لینک: {referral_link.click_count}
-• تعداد ثبت‌نام: {referral_link.conversion_count}
-• تعداد کل معرفی‌ها: {progress["referral_count"]}
-• معرفی‌های موفق دارای خرید: {successful_referrals}
+📊 <b>آمار معرفی:</b>
+• کل معرفی‌های موفق: {successful_referrals}
+• معرفی‌های فعال: {active_referrals}
 
-💰 درآمد از معرفی:
-• امتیاز مادام‌العمر: {lifetime_points:g}
-• امتیاز کامل قابل استفاده: {account.liquid_points if account else 0:g}
-• سطح فعلی: {level_label}
-
-{program_notice}
-
-این سیستم راه‌اندازی شده تا افراد به بالاترین کیفیت اینترنت بدون هزینه دسترسی پیدا کنند. فعالیت و معرفی بیشتر توسط شما، ضمن کاهش محسوس و دائمی هزینه‌های شما، به دسترسی افراد بیشتری به این امکان کمک می‌کند.
+👨🏽‍⚕ این سیستم راه اندازی شده تا افراد به بهترین کیفیت اینترنت اما بدون هزینه دسترسی داشته باشند.
+فعالیت و معرفی بیشتر توسط شما ضمن کاهش محسوس و دائمی هزینه های شما منجر به احقاق این حق مسلم برای افراد بیشتری میشود،
+شما عضو اصلی این تیم پزشکی هستید نه یک بیمار ساده!
         """
 
         keyboard = self.create_keyboard(
             [
                 [{"text": "📤 اشتراک‌گذاری لینک", "callback_data": "share_referral"}],
                 [{"text": "🧰 محتواهای کمکی", "callback_data": "referral_materials"}],
-                [{"text": "📈 آمار معرفی‌های موفق", "callback_data": "referral_stats"}],
+                [{"text": "📈 آمار معرفی", "callback_data": "referral_stats"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
             ]
         )
@@ -123,67 +134,29 @@ class ReferralsHandler(BaseHandler):
         await callback.answer()
 
     async def show_referral_stats(self, callback: types.CallbackQuery):
-        """Show detailed referral statistics"""
+        """Show the two product-defined referral counters."""
         user, _ = await self.get_or_create_user(callback.from_user)
+        successful_qs = self._successful_referrals_queryset(user)
+        successful_referrals = await successful_qs.acount()
+        now = timezone.now()
+        active_referrals = await successful_qs.filter(
+            referee__owned_subscriptions__brand=self.brand,
+            referee__owned_subscriptions__status=Subscription.SubscriptionStatus.ACTIVE,
+        ).filter(
+            Q(referee__owned_subscriptions__expires_at__isnull=True)
+            | Q(referee__owned_subscriptions__expires_at__gt=now)
+        ).distinct().acount()
 
-        try:
-            referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)
-        except ReferralLink.DoesNotExist:
-            await callback.answer("❌ لینک معرفی یافت نشد.")
-            return
-
-        all_referrals = Referral.objects.filter(referrer=user, brand=self.brand)
-        total_referrals = await all_referrals.acount()
-        completed_referrals = await all_referrals.filter(
-            status=Referral.ReferralStatus.REWARDED
-        ).acount()
-        pending_referrals = await all_referrals.filter(
-            status=Referral.ReferralStatus.PENDING
-        ).acount()
-        progress = await referral_level_progress(
-            user_id=user.pk, brand_id=self.brand.pk
-        )
-        account = progress["account"]
-        lifetime_points = progress["lifetime_points"]
-        program = progress["program"]
-        level_lines = []
-        if program and program.enable_level_rewards:
-            current_level = progress["current_level"]
-            async for level in program.levels.order_by("level"):
-                done = current_level and level.level <= current_level.level
-                level_lines.append(
-                    f"• {level.badge} {level.name}: {level.min_referrals} معرفی، "
-                    f"{level.min_lifetime_points:g} امتیاز و تبدیل {level.min_conversion_rate:g}% "
-                    f"{'✓' if done else ''}"
-                )
-        elif program:
-            level_lines.append("سطح‌ها برای این برند غیرفعال هستند.")
-        levels_text = "\n".join(level_lines) or "سطحی برای این برند تنظیم نشده است."
         text = f"""
-📈 آمار تفصیلی معرفی
+📈 <b>آمار معرفی</b>
 
-📊 آمار کلیک و ثبت:
-• ورودهای یکتا از لینک: {referral_link.click_count or 0}
-• تعداد ثبت‌نام: {total_referrals}
-• نرخ تبدیل به خرید: {(completed_referrals / max(referral_link.click_count or 1, 1)) * 100:.1f}%
-
-✅ معرفی‌های دارای خرید: {completed_referrals}
-⏳ معرفی‌های در انتظار: {pending_referrals}
-
-💰 درآمد:
-• امتیاز مادام‌العمر: {lifetime_points:g}
-• امتیاز کامل قابل استفاده: {account.liquid_points if account else 0:g}
-
-🏆 سطح‌ها:
-{levels_text}
+• کل معرفی‌های موفق: {successful_referrals}
+• معرفی‌های فعال: {active_referrals}
         """
 
         keyboard = self.create_keyboard(
-            [
-                [{"text": "🔙 بازگشت", "callback_data": "referral_system"}],
-            ]
+            [[{"text": "🔙 بازگشت", "callback_data": "referral_system"}]]
         )
-
         try:
             await self.edit_message_with_keyboard(
                 callback.message.chat.id, callback.message.message_id, text, keyboard
@@ -234,10 +207,7 @@ class ReferralsHandler(BaseHandler):
             rows.append([{"text": "🔙 بازگشت", "callback_data": "referral_system"}])
 
         await self.edit_message_with_keyboard(
-            callback.message.chat.id,
-            callback.message.message_id,
-            text,
-            self.create_keyboard(rows),
+            callback.message.chat.id, callback.message.message_id, text, self.create_keyboard(rows)
         )
         await callback.answer()
 
@@ -274,40 +244,30 @@ class ReferralsHandler(BaseHandler):
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
 
-        media = (
-            material.video
-            if material.material_type == MarketingMaterial.MaterialType.VIDEO
-            else material.image
-        )
+        media = material.video if material.material_type == MarketingMaterial.MaterialType.VIDEO else material.image
         if media:
             source = None
             try:
                 path = media.path
                 if path and os.path.isfile(path):
                     source = FSInputFile(path)
-            except AttributeError, NotImplementedError, ValueError:
+            except (AttributeError, NotImplementedError, ValueError):
                 source = None
             if source is None:
                 try:
                     url = media.url
-                except AttributeError, ValueError:
+                except (AttributeError, ValueError):
                     url = ""
                 if url.startswith(("http://", "https://")):
                     source = url
             if source is not None:
                 try:
                     if material.material_type == MarketingMaterial.MaterialType.VIDEO:
-                        await self.bot.send_video(
-                            callback.message.chat.id, video=source
-                        )
+                        await self.bot.send_video(callback.message.chat.id, video=source)
                     else:
-                        await self.bot.send_photo(
-                            callback.message.chat.id, photo=source
-                        )
+                        await self.bot.send_photo(callback.message.chat.id, photo=source)
                 except Exception as exc:
-                    logger.warning(
-                        "Could not send referral material %s: %s", material.pk, exc
-                    )
+                    logger.warning("Could not send referral material %s: %s", material.pk, exc)
 
         await callback.answer()
 

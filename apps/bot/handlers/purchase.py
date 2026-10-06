@@ -59,8 +59,7 @@ class PurchaseHandler(BaseHandler):
             queryset = queryset.filter(service_category=category)
         if special_only:
             queryset = queryset.filter(is_featured=True).filter(
-                Q(offer_expires_at__isnull=True)
-                | Q(offer_expires_at__gt=timezone.now())
+                Q(offer_expires_at__isnull=True) | Q(offer_expires_at__gt=timezone.now())
             )
 
         plans = []
@@ -117,7 +116,9 @@ class PurchaseHandler(BaseHandler):
                 [{"text": plan_text, "callback_data": f"select_plan_{plan.id}"}]
             )
 
-        keyboard_buttons.append([{"text": "🔙 بازگشت", "callback_data": back_callback}])
+        keyboard_buttons.append(
+            [{"text": "🔙 بازگشت", "callback_data": back_callback}]
+        )
         return text, self.create_keyboard(keyboard_buttons)
 
     async def show_subscription_plans(self, callback: types.CallbackQuery):
@@ -171,11 +172,7 @@ class PurchaseHandler(BaseHandler):
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
-            {
-                "step": "plan_selection",
-                "service_category": category,
-                "special_offers": False,
-            },
+            {"step": "plan_selection", "service_category": category, "special_offers": False},
         )
         text, keyboard = await self.get_plans(
             user, category=category, back_callback="purchase_subscription"
@@ -191,11 +188,7 @@ class PurchaseHandler(BaseHandler):
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
-            {
-                "step": "plan_selection",
-                "special_offers": True,
-                "service_category": None,
-            },
+            {"step": "plan_selection", "special_offers": True, "service_category": None},
         )
         text, keyboard = await self.get_plans(
             user, special_only=True, back_callback="purchase_subscription"
@@ -436,7 +429,18 @@ class PurchaseHandler(BaseHandler):
     async def repurchase_subscription(
         self, callback: types.CallbackQuery, subscription_id: int
     ):
-        """Create a new same-plan order from the renewal page without faking provider renewal."""
+        """Buy the current plan again for the same subscription owner."""
+        await self.purchase_plan_for_subscription(
+            callback, subscription_id=subscription_id, plan_id=None
+        )
+
+    async def purchase_plan_for_subscription(
+        self,
+        callback: types.CallbackQuery,
+        subscription_id: int,
+        plan_id: int | None,
+    ):
+        """Create a new order for the selected renewal plan and preserve the source owner."""
         user, _ = await self.get_or_create_user(callback.from_user)
         try:
             subscription = (
@@ -448,7 +452,20 @@ class PurchaseHandler(BaseHandler):
             await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
 
-        plan = subscription.plan
+        if plan_id is None:
+            plan = subscription.plan
+        else:
+            try:
+                plan = await SubscriptionPlan.objects.aget(
+                    pk=plan_id,
+                    brand=self.brand,
+                    is_active=True,
+                    is_visible=True,
+                )
+            except SubscriptionPlan.DoesNotExist:
+                await callback.answer("❌ پلن انتخاب‌شده در دسترس نیست.", show_alert=True)
+                return
+
         if not plan.is_active or not plan.is_visible:
             await callback.answer(
                 "❌ این پلن دیگر برای خرید فعال نیست.", show_alert=True
@@ -473,7 +490,10 @@ class PurchaseHandler(BaseHandler):
             final_price=plan.discounted_price,
             currency=plan.currency,
             status=Order.OrderStatus.PENDING,
-            notes=f"Same-plan re-purchase requested from subscription {subscription.pk}.",
+            notes=(
+                f"Renewal/re-purchase requested from subscription {subscription.pk}; "
+                f"selected plan {plan.pk}."
+            ),
         )
 
         if order.final_price <= 0:
@@ -499,8 +519,9 @@ class PurchaseHandler(BaseHandler):
             {
                 "step": PurchaseStep.PAYMENT_METHOD,
                 "order_id": str(order.order_id),
-                "purchase_type": "repurchase",
+                "purchase_type": "renewal_repurchase",
                 "source_subscription_id": subscription.pk,
+                "selected_plan_id": plan.pk,
             },
         )
         await self.show_payment_methods(callback, order)
@@ -522,14 +543,9 @@ class PurchaseHandler(BaseHandler):
             ).afirst()
         if provider is None:
             order.status = Order.OrderStatus.FAILED
-            order.admin_notes = (
-                "Free order could not be provisioned: no active provider."
-            )
+            order.admin_notes = "Free order could not be provisioned: no active provider."
             await order.asave(update_fields=("status", "admin_notes", "updated_at"))
-            return (
-                False,
-                "❌ برای این برند پنل فعالی تنظیم نشده است. با پشتیبانی تماس بگیرید.",
-            )
+            return False, "❌ برای این برند پنل فعالی تنظیم نشده است. با پشتیبانی تماس بگیرید."
 
         await Subscription.objects.aget_or_create(
             order=order,
@@ -573,15 +589,13 @@ class PurchaseHandler(BaseHandler):
                 username__iexact=username,
                 is_active=True,
             )
-        except SubscriptionPlan.DoesNotExist, User.DoesNotExist:
+        except (SubscriptionPlan.DoesNotExist, User.DoesNotExist):
             await message.reply(
                 "گیرنده پیدا نشد. او باید ابتدا همین ربات را شروع کند؛ سپس نام کاربری را دوباره بفرستید."
             )
             return
         if recipient.pk == user.pk:
-            await message.reply(
-                "برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید."
-            )
+            await message.reply("برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید.")
             return
 
         order = await Order.objects.acreate(
@@ -622,11 +636,7 @@ class PurchaseHandler(BaseHandler):
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
     async def show_payment_methods(
-        self,
-        callback: types.CallbackQuery,
-        order: Order,
-        *,
-        answer_callback: bool = True,
+        self, callback: types.CallbackQuery, order: Order, *, answer_callback: bool = True
     ):
         """Show available payment methods"""
         total_paid = await self._confirmed_order_payments(order)
@@ -1159,9 +1169,7 @@ class PurchaseHandler(BaseHandler):
                 )
                 notified += 1
             except Exception:
-                logger.exception(
-                    "Failed to send receipt notification to admin %s", user.pk
-                )
+                logger.exception("Failed to send receipt notification to admin %s", user.pk)
         if notified:
             logger.info(
                 "Sent payment receipt notification to %s admin(s) for brand %s, payment %s",

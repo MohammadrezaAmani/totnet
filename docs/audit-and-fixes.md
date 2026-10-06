@@ -124,3 +124,36 @@ After deploying this revision, run migrations. Existing plans default to `normal
   }
 }
 ```
+
+## 2026-10-06 — Profile, referral, renewal, content, and challenge UI revision
+
+### Requested bot changes
+
+- Profile no longer shows lifetime points or liquid-point totals. Wallet wording is now «موجودی نقد کیف پول», the edit action is «ویرایش و تکمیل پروفایل», and direct links to «اشتراک‌های من» and «معرفی دوستان» are present.
+- Added a profile device type with these choices: iPhone, Android/Samsung, Android/Xiaomi-or-other, Windows, Macintosh, and Linux. The field is editable from the bot and Django Admin. Migration: `accounts/0004_userprofile_device_type.py`.
+- Medical-grade/rewards copy was simplified: removed lifetime/cash-value totals and point-box percentage, added «تمام امتیازات کسب شده تا الان», updated the medical-grade explanation, and renamed the earn-points action to start with «نحوه».
+- Support landing copy now points users to educational/practical content before opening a ticket. FAQ/article buttons and working-hours/response-time claims were removed from support UI.
+- «محتواهای کاربردی» was added to the main menu with four admin-managed categories: application files/download links, install/import instructions, application usage, and FAQ. New model: `support.UsefulContent`; migration: `support/0002_usefulcontent.py`.
+- «اشتراک‌های من» now lists subscriptions directly with a concise username/service-category/traffic label. Selecting a subscription opens its renewal/change-plan page. The current plan is shown first when still purchasable, followed by all other active plans. The old standalone «صفحه تمدید» entry is removed; its legacy callback redirects to the new list.
+- Referral statistics now define «کل معرفی‌های موفق» from distinct referred users with an actual positive paid/processing/completed order, independent of reward-job success or current subscription state. «معرفی‌های فعال» counts successful referrals who currently own an active subscription. Referral-income values were removed from the user-facing referral pages and the requested explanatory copy was added.
+- «چالش‌های فعال» was added to the main menu. A dedicated monetary `challenge_frozen_balance` was added to `Wallet` instead of reusing `Wallet.is_frozen` (which means the whole wallet is locked). The balance is constrained non-negative and is shown as «وجه فریز شده». Migration: `orders/0011_wallet_challenge_frozen_balance.py`.
+
+### Gamification XMind implementation
+
+- Implemented the one-time «پراپزینو» state machine: offer after the configurable first-purchase delay (default 5 days), accept/decline, configurable tier selection, wallet-funded entry, frozen balance, configurable challenge duration (default 7 days), progress tracking, success/failure settlement, and 5/3/1-day reminders.
+- The default challenge percentage is 13% and normal direct-referral percentage remains controlled by `ReferralProgram.purchase_reward_percent` (default setup: 8%). Both are editable in Admin. Challenge tier entry amounts are data-driven; defaults are 1/50k, 3/150k, 5/250k and 8/350k.
+- Default 50k/150k/250k/350k entry amounts are seeded only for Toman/Rial-coded brands (`T`, `IRT`, `IRR`). Other currencies get an inactive challenge program with no hard-coded monetary tiers, avoiding accidental 50,000-unit fees in USD or another currency.
+- Each fully-paid direct referred purchase creates exactly one point. Normal points carry the configured percentage of that concrete purchase as their cash value; every complete group of three normal points is automatically converted to wallet cash. Challenge-target points stay provisional and do not increase medical-rank/lifetime counters until success. On success their cash values are paid directly without the three-point condition; on failure they are cancelled.
+- Challenge entry money is moved from the cash wallet into the separate `challenge_frozen_balance` ledger balance when the challenge starts. The exact entry amount is always released back to the cash wallet at settlement, whether the challenge succeeds or fails.
+- Referrals beyond the selected challenge target fall back to the normal referral percentage and three-point cash-out rule. Repeat purchases by the same referee cannot advance the challenge target twice.
+- The XMind question about pre-existing referral links is configurable through `ChallengeProgram.require_referral_join_during_challenge`. The seeded/default policy is strict: the referred user must enter through the referral relationship after the challenge starts and then complete a purchase within the challenge window.
+- Added scheduled notifications for: three-part 1–5 service survey 24 hours after the first fully-paid positive subscription purchase, referral-system introduction after 72 hours, one-time challenge offer, 5/3/1-day challenge reminders, 5-day subscription-expiry reminder, and one point-arrival notification after each eligible level-one purchase. Notifications have durable dedupe keys.
+- Added persisted survey results (`ServiceSurvey`) and bot flow for service quality/speed/stability, application usability/options, and support, followed by the requested thank-you message and ticket shortcut.
+- Added a safe onboarding branch for «اشتراک فعال دارم / ثبت اشتراک». If the username already belongs to the same local owner it is recognized immediately. Otherwise a `SubscriptionClaim` is created for admin review instead of transferring ownership from username knowledge alone. Pending/rejected claims are visible under «اشتراک‌های من» and pending count is visible in the profile. Admin can explicitly match, verify, and assign a subscription. Migration: `subscriptions/0011_subscriptionclaim.py`.
+
+### Verification for this revision
+
+- `python -m compileall -q apps config utils manage.py manage_bot.py`: passes on the available Python 3.13.5 interpreter.
+- AST parsing passes for all Python files in `apps`, `config`, and `utils`.
+- Static route scan confirms callback handlers for device selection, existing-subscription onboarding/claims, practical content, challenge accept/decline/tier/payment, survey ratings, and per-subscription renewal/change-plan paths.
+- Full Django runtime checks/tests remain unavailable in this sandbox because this project requires Python 3.14 and Django/aiogram/Celery are not installed in the current environment; network access is unavailable to fetch that runtime. No claim is made that database migrations or Telegram/Celery integration were runtime-executed here.

@@ -249,7 +249,9 @@ class ConnectixClient:
         if response.status_code == 422:
             fields = _validation_error_fields(response)
             detail = f": {', '.join(fields)}" if fields else ""
-            raise ConnectixValidationError(f"Connectix rejected request fields{detail}")
+            raise ConnectixValidationError(
+                f"Connectix rejected request fields{detail}"
+            )
         if response.status_code == 429:
             raise ConnectixUpstreamError("Connectix rate limit was reached")
         if response.status_code >= 500:

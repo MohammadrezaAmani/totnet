@@ -47,6 +47,10 @@ app.conf.beat_schedule = {
         "task": "apps.referrals.tasks.recover_pending_referral_rewards",
         "schedule": 300.0,
     },
+    "run-gamification-notifications": {
+        "task": "apps.referrals.tasks.run_gamification_notifications",
+        "schedule": 900.0,
+    },
 }
 
 app.conf.timezone = "UTC"

@@ -7,6 +7,10 @@ from django.utils.html import format_html
 
 from .models import (
     Achievement,
+    ChallengeProgram,
+    ChallengeReferralEvent,
+    ChallengeTier,
+    GamificationNotification,
     LoyaltyProgram,
     MarketingMaterial,
     Referral,
@@ -21,7 +25,9 @@ from .models import (
     RewardPointLedger,
     RewardRedemption,
     RewardService,
+    ServiceSurvey,
     UserAchievement,
+    UserChallenge,
 )
 
 
@@ -35,6 +41,7 @@ class ReferralProgramAdmin(admin.ModelAdmin):
         "referrer_reward_value",
         "referee_reward_type",
         "referee_reward_value",
+        "purchase_reward_percent",
         "conversion_window_days",
         "created_at",
     )
@@ -151,6 +158,8 @@ class ReferralRewardAdmin(admin.ModelAdmin):
         "brand",
         "reward_type",
         "amount",
+        "cash_value",
+        "is_cashed_out",
         "currency",
         "status",
         "processed_at",
@@ -305,9 +314,7 @@ class RewardServiceAdmin(admin.ModelAdmin):
         services = list(queryset.select_related("brand"))
         brand_ids = {service.brand_id for service in services}
         if len(services) != len(brand_ids):
-            self.message_user(
-                request, "Select at most one service per brand.", level="ERROR"
-            )
+            self.message_user(request, "Select at most one service per brand.", level="ERROR")
             return
         from .services import RewardConfigurationError, set_active_reference_service
 
@@ -323,28 +330,20 @@ class RewardServiceAdmin(admin.ModelAdmin):
                 )
                 continue
             updated += 1
-        self.message_user(
-            request, f"Updated active reference service for {updated} brand(s)."
-        )
+        self.message_user(request, f"Updated active reference service for {updated} brand(s).")
 
-    @admin.action(
-        description="Set selected service as the lifetime points reference (once)"
-    )
+    @admin.action(description="Set selected service as the lifetime points reference (once)")
     def set_as_lifetime_reference_service(self, request, queryset):
         services = list(queryset.select_related("brand"))
         if len({service.brand_id for service in services}) != len(services):
-            self.message_user(
-                request, "Select at most one service per brand.", level="ERROR"
-            )
+            self.message_user(request, "Select at most one service per brand.", level="ERROR")
             return
         from django.db import transaction
 
         updated = 0
         for service in services:
             with transaction.atomic():
-                program = ReferralProgram.objects.select_for_update().get(
-                    brand_id=service.brand_id
-                )
+                program = ReferralProgram.objects.select_for_update().get(brand_id=service.brand_id)
                 if program.lifetime_reference_service_id:
                     self.message_user(
                         request,
@@ -353,46 +352,23 @@ class RewardServiceAdmin(admin.ModelAdmin):
                     )
                     continue
                 if not service.is_active or not service.plan.is_active:
-                    self.message_user(
-                        request,
-                        f"{service.brand.name}: select an active service and plan.",
-                        level="ERROR",
-                    )
+                    self.message_user(request, f"{service.brand.name}: select an active service and plan.", level="ERROR")
                     continue
-                if (
-                    service.plan.currency != service.brand.currency
-                    or not service.box_capacities.exists()
-                ):
-                    self.message_user(
-                        request,
-                        f"{service.brand.name}: currency and point-box capacities must be configured.",
-                        level="ERROR",
-                    )
+                if service.plan.currency != service.brand.currency or not service.box_capacities.exists():
+                    self.message_user(request, f"{service.brand.name}: currency and point-box capacities must be configured.", level="ERROR")
                     continue
                 from .services import RewardConfigurationError, _service_value
 
                 try:
                     value = _service_value(service)
                 except RewardConfigurationError:
-                    self.message_user(
-                        request,
-                        f"{service.brand.name}: service profit configuration is invalid.",
-                        level="ERROR",
-                    )
+                    self.message_user(request, f"{service.brand.name}: service profit configuration is invalid.", level="ERROR")
                     continue
                 program.lifetime_reference_service = service
                 program.lifetime_point_value = value
-                program.save(
-                    update_fields=(
-                        "lifetime_reference_service",
-                        "lifetime_point_value",
-                        "updated_at",
-                    )
-                )
+                program.save(update_fields=("lifetime_reference_service", "lifetime_point_value", "updated_at"))
                 updated += 1
-        self.message_user(
-            request, f"Set lifetime reference service for {updated} brand(s)."
-        )
+        self.message_user(request, f"Set lifetime reference service for {updated} brand(s).")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -422,14 +398,7 @@ class RewardBoxCapacityAdmin(admin.ModelAdmin):
 
 @admin.register(RewardAccount)
 class RewardAccountAdmin(admin.ModelAdmin):
-    list_display = (
-        "user",
-        "brand",
-        "reference_service",
-        "liquid_points",
-        "lifetime_points",
-        "lifetime_profit",
-    )
+    list_display = ("user", "brand", "reference_service", "liquid_points", "lifetime_points", "lifetime_profit")
     list_filter = ("brand",)
     search_fields = ("user__username", "brand__name")
     readonly_fields = tuple(field.name for field in RewardAccount._meta.fields)
@@ -443,15 +412,7 @@ class RewardAccountAdmin(admin.ModelAdmin):
 
 @admin.register(RewardPointBox)
 class RewardPointBoxAdmin(admin.ModelAdmin):
-    list_display = (
-        "account",
-        "service",
-        "cycle",
-        "sequence",
-        "filled",
-        "capacity",
-        "state",
-    )
+    list_display = ("account", "service", "cycle", "sequence", "filled", "capacity", "state")
     list_filter = ("service__brand", "state", "service")
     readonly_fields = tuple(field.name for field in RewardPointBox._meta.fields)
 
@@ -464,14 +425,7 @@ class RewardPointBoxAdmin(admin.ModelAdmin):
 
 @admin.register(RewardPointLedger)
 class RewardPointLedgerAdmin(admin.ModelAdmin):
-    list_display = (
-        "account",
-        "entry_type",
-        "points_delta",
-        "value_delta",
-        "order",
-        "created_at",
-    )
+    list_display = ("account", "entry_type", "points_delta", "value_delta", "order", "created_at")
     list_filter = ("service__brand", "entry_type", "created_at")
     search_fields = ("idempotency_key", "account__user__username")
     readonly_fields = tuple(field.name for field in RewardPointLedger._meta.fields)
@@ -495,3 +449,135 @@ class RewardRedemptionAdmin(admin.ModelAdmin):
         if not request.user.is_superuser:
             return qs.filter(account__brand__in=request.user.admin_brands.all())
         return qs
+
+@admin.register(ChallengeProgram)
+class ChallengeProgramAdmin(admin.ModelAdmin):
+    list_display = (
+        "brand",
+        "name",
+        "is_active",
+        "offer_delay_days",
+        "duration_days",
+        "reward_percent",
+        "require_referral_join_during_challenge",
+    )
+    list_filter = ("is_active", "brand")
+    search_fields = ("brand__name", "name")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            return qs.filter(brand__in=request.user.admin_brands.all())
+        return qs
+
+
+@admin.register(ChallengeTier)
+class ChallengeTierAdmin(admin.ModelAdmin):
+    list_display = (
+        "program",
+        "target_referrals",
+        "entry_fee",
+        "display_order",
+        "is_active",
+    )
+    list_filter = ("is_active", "program__brand")
+    ordering = ("program", "display_order", "target_referrals")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            return qs.filter(program__brand__in=request.user.admin_brands.all())
+        return qs
+
+
+@admin.register(UserChallenge)
+class UserChallengeAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "brand",
+        "program",
+        "tier",
+        "status",
+        "successful_referrals",
+        "target_referrals",
+        "reward_percent",
+        "entry_amount",
+        "reward_amount",
+        "ends_at",
+    )
+    list_filter = ("status", "brand", "program")
+    search_fields = ("user__username", "user__telegram_id", "program__name")
+    readonly_fields = (
+        "offered_at",
+        "accepted_at",
+        "declined_at",
+        "starts_at",
+        "ends_at",
+        "successful_referrals",
+        "target_referrals",
+        "reward_percent",
+        "entry_amount",
+        "reward_amount",
+        "settled_at",
+        "created_at",
+        "updated_at",
+    )
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            return qs.filter(brand__in=request.user.admin_brands.all())
+        return qs
+
+
+@admin.register(ChallengeReferralEvent)
+class ChallengeReferralEventAdmin(admin.ModelAdmin):
+    list_display = ("challenge", "referral", "order", "reward_value", "created_at")
+    search_fields = (
+        "challenge__user__username",
+        "referral__referee__username",
+        "order__order_number",
+    )
+    readonly_fields = tuple(field.name for field in ChallengeReferralEvent._meta.fields)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            return qs.filter(challenge__brand__in=request.user.admin_brands.all())
+        return qs
+
+
+@admin.register(GamificationNotification)
+class GamificationNotificationAdmin(admin.ModelAdmin):
+    list_display = ("user", "brand", "notification_type", "dedupe_key", "sent_at")
+    list_filter = ("notification_type", "brand", "sent_at")
+    search_fields = ("user__username", "dedupe_key")
+    readonly_fields = tuple(field.name for field in GamificationNotification._meta.fields)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            return qs.filter(brand__in=request.user.admin_brands.all())
+        return qs
+
+
+@admin.register(ServiceSurvey)
+class ServiceSurveyAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "brand",
+        "quality_rating",
+        "app_rating",
+        "support_rating",
+        "completed_at",
+    )
+    list_filter = ("brand", "completed_at")
+    search_fields = ("user__username", "user__telegram_id")
+    readonly_fields = ("started_at", "completed_at", "created_at", "updated_at")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            return qs.filter(brand__in=request.user.admin_brands.all())
+        return qs
+

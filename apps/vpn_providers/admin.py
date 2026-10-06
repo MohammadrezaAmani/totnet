@@ -42,10 +42,9 @@ class VPNProviderAdminForm(forms.ModelForm):
         cleaned = super().clean()
         provider_type = cleaned.get("provider_type")
         status = cleaned.get("status")
-        if (
-            status == VPNProvider.ProviderStatus.ACTIVE
-            and not capabilities_for(provider_type or "").provision
-        ):
+        if status == VPNProvider.ProviderStatus.ACTIVE and not capabilities_for(
+            provider_type or ""
+        ).provision:
             raise forms.ValidationError(
                 "This provider adapter has no implemented subscription provisioning capability."
             )
@@ -306,10 +305,7 @@ class VPNProviderAdmin(admin.ModelAdmin):
 
     def save_model(self, request, obj, form, change):
         super().save_model(request, obj, form, change)
-        if (
-            obj.provider_type == VPNProvider.ProviderType.CONNECTIX
-            and obj.status == VPNProvider.ProviderStatus.ACTIVE
-        ):
+        if obj.provider_type == VPNProvider.ProviderType.CONNECTIX and obj.status == VPNProvider.ProviderStatus.ACTIVE:
             from .tasks import sync_connectix_plans
 
             transaction.on_commit(lambda: sync_connectix_plans.delay(obj.pk))
@@ -329,22 +325,19 @@ class VPNProviderAdmin(admin.ModelAdmin):
 
     def capability_summary(self, obj):
         caps = capabilities_for(obj.provider_type)
-        return (
-            ", ".join(
-                label
-                for field, label in (
-                    ("provision", "provision"),
-                    ("reconcile", "reconcile"),
-                    ("sync_status", "status sync"),
-                    ("sync_usage", "usage sync"),
-                    ("renew", "renew"),
-                    ("suspend", "suspend"),
-                    ("delete", "delete"),
-                )
-                if getattr(caps, field)
+        return ", ".join(
+            label
+            for field, label in (
+                ("provision", "provision"),
+                ("reconcile", "reconcile"),
+                ("sync_status", "status sync"),
+                ("sync_usage", "usage sync"),
+                ("renew", "renew"),
+                ("suspend", "suspend"),
+                ("delete", "delete"),
             )
-            or "No implemented subscription operations"
-        )
+            if getattr(caps, field)
+        ) or "No implemented subscription operations"
 
     capability_summary.short_description = "Implemented capabilities"
 

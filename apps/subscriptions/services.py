@@ -29,11 +29,9 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
     order = await Order.objects.select_related(
         "brand", "user", "recipient", "plan", "plan__vpn_provider"
     ).aget(pk=order_id)
-    subscription = (
-        await Subscription.objects.filter(order=order)
-        .select_related("vpn_provider", "plan", "owner")
-        .afirst()
-    )
+    subscription = await Subscription.objects.filter(order=order).select_related(
+        "vpn_provider", "plan", "owner"
+    ).afirst()
     if subscription and subscription.status == Subscription.SubscriptionStatus.ACTIVE:
         return subscription
 
@@ -53,9 +51,7 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
         if subscription:
             subscription.provisioning_state = "retryable_error"
             subscription.provisioning_error_code = "provider_not_configured"
-            subscription.provisioning_error = (
-                "No active provider is configured for this brand."
-            )
+            subscription.provisioning_error = "No active provider is configured for this brand."
             subscription.provisioning_retryable = True
             await subscription.asave(
                 update_fields=(
@@ -72,9 +68,7 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
         if subscription:
             subscription.provisioning_state = "retryable_error"
             subscription.provisioning_error_code = "provider_inactive"
-            subscription.provisioning_error = (
-                "The selected provider is currently inactive."
-            )
+            subscription.provisioning_error = "The selected provider is currently inactive."
             subscription.provisioning_retryable = True
             await subscription.asave(
                 update_fields=(
@@ -100,9 +94,7 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
         end_date = start_date + timedelta(days=duration_days)
 
     if not subscription:
-        vpn_email = (
-            f"user_{order.user_id}_{uuid.uuid4().hex[:8]}@{order.brand.slug}.vpn"
-        )
+        vpn_email = f"user_{order.user_id}_{uuid.uuid4().hex[:8]}@{order.brand.slug}.vpn"
         subscription = await Subscription.objects.acreate(
             brand=order.brand,
             user=order.user,
@@ -225,24 +217,14 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
                         "hiddify_uuid": str(created_user.uuid),
                         "created_at": timezone.now().isoformat(),
                     }
-                    subscription.vpn_user_email = (
-                        f"{created_user.uuid}@{order.brand.slug}.vpn"
-                    )
+                    subscription.vpn_user_email = f"{created_user.uuid}@{order.brand.slug}.vpn"
                     await subscription.asave(
-                        update_fields=(
-                            "connection_configs",
-                            "vpn_user_email",
-                            "updated_at",
-                        )
+                        update_fields=("connection_configs", "vpn_user_email", "updated_at")
                     )
                     provider.current_users += 1
                     provider.total_subscriptions += 1
                     await provider.asave(
-                        update_fields=(
-                            "current_users",
-                            "total_subscriptions",
-                            "updated_at",
-                        )
+                        update_fields=("current_users", "total_subscriptions", "updated_at")
                     )
                     provider_configs = await client.get_user_configs(
                         secret_uuid=str(created_user.uuid)
@@ -252,8 +234,7 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
                             config.link
                             for config in provider_configs or []
                             if config.link
-                            and (config.name or "").strip().lower()
-                            == "subscription link"
+                            and (config.name or "").strip().lower() == "subscription link"
                         ),
                         None,
                     )

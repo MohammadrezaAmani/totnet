@@ -24,11 +24,11 @@ async def referral_level_progress(*, user_id: int, brand_id: int) -> dict:
     ).afirst()
     clicks = link.click_count if link else 0
     conversion_rate = Decimal(conversions * 100) / Decimal(max(clicks, 1))
-    program = (
-        await ReferralProgram.objects.filter(brand_id=brand_id, is_active=True)
-        .select_related("reference_service__plan")
-        .afirst()
-    )
+    program = await ReferralProgram.objects.filter(
+        brand_id=brand_id, is_active=True
+    ).select_related(
+        "reference_service__plan"
+    ).afirst()
     levels = []
     if program and program.enable_level_rewards:
         async for level in program.levels.order_by("level"):
@@ -41,9 +41,7 @@ async def referral_level_progress(*, user_id: int, brand_id: int) -> dict:
         and level.min_conversion_rate <= conversion_rate
     ]
     current = max(qualified, key=lambda item: item.level) if qualified else None
-    remaining = [
-        level for level in levels if not current or level.level > current.level
-    ]
+    remaining = [level for level in levels if not current or level.level > current.level]
     next_level = min(remaining, key=lambda item: item.level) if remaining else None
     return {
         "program": program,

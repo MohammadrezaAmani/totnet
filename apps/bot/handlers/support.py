@@ -44,44 +44,36 @@ class SupportHandler(BaseHandler):
         open_tickets_count = await SupportTicket.objects.filter(
             customer=user,
             brand=self.brand,
-            status__in=["open", "in_progress", "pending_customer"],
+            status__in=["open", "in_progress", "pending_customer"]
         ).acount()
-
+        
         resolved_tickets_count = await SupportTicket.objects.filter(
-            customer=user, brand=self.brand, status__in=["resolved", "closed"]
+            customer=user,
+            brand=self.brand,
+            status__in=["resolved", "closed"]
         ).acount()
 
         text = f"""
 🛟 <b>مرکز پشتیبانی {self.brand.name}</b>
 
-👨‍💼 ما اینجا هستیم تا کمکتان کنیم!
+احتمال زیاد مشکل و سوال شما در بخش محتواهای آموزشی وجود دارد، در غیر این صورت تیکت ثبت کنید تا در اولین فرصت رسیدگی شود.
 
 📊 <b>وضعیت تیکت‌های شما:</b>
 • تیکت‌های باز: <b>{open_tickets_count}</b>
 • تیکت‌های بسته/حل شده: <b>{resolved_tickets_count}</b>
-
-⏰ <b>ساعات کاری:</b> ۲۴/۷
-⏱ <b>میانگین پاسخگویی:</b> کمتر از ۱ ساعت
-
-چگونه می‌توانیم به شما کمک کنیم؟
         """
 
-        keyboard = self.create_keyboard(
+        keyboard = self.create_keyboard([
             [
-                [
-                    {"text": "🎫 ایجاد تیکت جدید", "callback_data": "create_ticket"},
-                    {"text": "📋 تیکت‌های من", "callback_data": "my_tickets"},
-                ],
-                [
-                    {"text": "❓ سوالات متداول (FAQ)", "callback_data": "faq"},
-                    {"text": "🔍 جستجو در مقالات", "callback_data": "faq_search"},
-                ],
-                [
-                    {"text": "📞 اطلاعات تماس", "callback_data": "contact_info"},
-                    {"text": "🔙 بازگشت", "callback_data": "main_menu"},
-                ],
+                {"text": "🎫 ایجاد تیکت جدید", "callback_data": "create_ticket"},
+                {"text": "📋 تیکت‌های من", "callback_data": "my_tickets"},
+            ],
+            [{"text": "📚 محتواهای کاربردی", "callback_data": "useful_content"}],
+            [
+                {"text": "📞 اطلاعات تماس", "callback_data": "contact_info"},
+                {"text": "🔙 بازگشت", "callback_data": "main_menu"},
             ]
-        )
+        ])
 
         await self._safe_edit_or_send(callback, text, keyboard)
         await callback.answer()
@@ -97,14 +89,10 @@ class SupportHandler(BaseHandler):
             categories.append(cat)
 
         if not categories:
-            await callback.answer(
-                "❌ در حال حاضر دسته‌بندی فعالی وجود ندارد.", show_alert=True
-            )
+            await callback.answer("❌ در حال حاضر دسته‌بندی فعالی وجود ندارد.", show_alert=True)
             return
 
-        await self.update_user_state(
-            user, BotState.StateType.SUPPORT_TICKET, {"step": "category"}
-        )
+        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, {"step": "category"})
 
         text = """
 🎫 <b>ایجاد تیکت جدید</b>
@@ -114,9 +102,7 @@ class SupportHandler(BaseHandler):
 
         buttons = []
         for cat in categories:
-            buttons.append(
-                [{"text": f"🔹 {cat.name}", "callback_data": f"ticket_cat_{cat.id}"}]
-            )
+            buttons.append([{"text": f"🔹 {cat.name}", "callback_data": f"ticket_cat_{cat.id}"}])
 
         buttons.append([{"text": "🔙 بازگشت", "callback_data": "support"}])
 
@@ -127,9 +113,7 @@ class SupportHandler(BaseHandler):
     # 2. Ticket Creation Flow
     # ──────────────────────────────────────────────────────────────
 
-    async def handle_ticket_category(
-        self, callback: types.CallbackQuery, category_id: int
-    ):
+    async def handle_ticket_category(self, callback: types.CallbackQuery, category_id: int):
         """Handle category selection and ask for subject"""
         user, _ = await self.get_or_create_user(callback.from_user)
 
@@ -141,11 +125,10 @@ class SupportHandler(BaseHandler):
             await callback.answer("❌ دسته‌بندی نامعتبر است.", show_alert=True)
             return
 
-        await self.update_user_state(
-            user,
-            BotState.StateType.SUPPORT_TICKET,
-            {"step": "subject", "category_id": category_id},
-        )
+        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, {
+            "step": "subject",
+            "category_id": category_id
+        })
 
         text = f"""
 🎫 <b>ایجاد تیکت جدید</b>
@@ -160,30 +143,22 @@ class SupportHandler(BaseHandler):
         await self._safe_edit_or_send(callback, text, keyboard)
         await callback.answer()
 
-    async def handle_ticket_subject(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def handle_ticket_subject(self, message: types.Message, user: User, state: BotState):
         """Handle ticket subject entry"""
         subject = message.text.strip()
 
         if len(subject) < 10:
-            await message.reply(
-                "❌ موضوع باید حداقل ۱۰ کاراکتر باشد. لطفاً دوباره وارد کنید:"
-            )
+            await message.reply("❌ موضوع باید حداقل ۱۰ کاراکتر باشد. لطفاً دوباره وارد کنید:")
             return
         if len(subject) > 100:
-            await message.reply(
-                "❌ موضوع نباید بیش از ۱۰۰ کاراکتر باشد. لطفاً خلاصه‌تر بنویسید:"
-            )
+            await message.reply("❌ موضوع نباید بیش از ۱۰۰ کاراکتر باشد. لطفاً خلاصه‌تر بنویسید:")
             return
 
         state_data = state.state_data or {}
         state_data["step"] = "description"
         state_data["subject"] = subject
 
-        await self.update_user_state(
-            user, BotState.StateType.SUPPORT_TICKET, state_data
-        )
+        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, state_data)
 
         text = f"""
 🎫 <b>ایجاد تیکت جدید</b>
@@ -196,16 +171,12 @@ class SupportHandler(BaseHandler):
         keyboard = self.get_back_keyboard("create_ticket")
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
-    async def handle_ticket_description(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def handle_ticket_description(self, message: types.Message, user: User, state: BotState):
         """Handle ticket description entry and create ticket"""
         description = message.text.strip()
 
         if len(description) < 20:
-            await message.reply(
-                "❌ توضیحات باید حداقل ۲۰ کاراکتر باشد. لطفاً کامل‌تر بنویسید:"
-            )
+            await message.reply("❌ توضیحات باید حداقل ۲۰ کاراکتر باشد. لطفاً کامل‌تر بنویسید:")
             return
 
         state_data = state.state_data or {}
@@ -213,13 +184,11 @@ class SupportHandler(BaseHandler):
         subject = state_data.get("subject")
 
         try:
-            category = await SupportCategory.objects.aget(
-                id=category_id, brand=self.brand
-            )
-
+            category = await SupportCategory.objects.aget(id=category_id, brand=self.brand)
+            
             # Create ticket atomically
             ticket = await self._create_ticket(user, category, subject, description)
-
+            
             await self.update_user_state(user, BotState.StateType.MAIN_MENU, {})
 
             text = f"""
@@ -232,18 +201,11 @@ class SupportHandler(BaseHandler):
 تیم پشتیبانی ما در اسرع وقت به شما پاسخ خواهد داد.
             """
 
-            keyboard = self.create_keyboard(
-                [
-                    [
-                        {
-                            "text": "👁 مشاهده تیکت",
-                            "callback_data": f"ticket_details_{ticket.id}",
-                        }
-                    ],
-                    [{"text": "📋 تیکت‌های من", "callback_data": "my_tickets"}],
-                    [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
-                ]
-            )
+            keyboard = self.create_keyboard([
+                [{"text": "👁 مشاهده تیکت", "callback_data": f"ticket_details_{ticket.id}"}],
+                [{"text": "📋 تیکت‌های من", "callback_data": "my_tickets"}],
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}]
+            ])
 
             await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
@@ -255,9 +217,7 @@ class SupportHandler(BaseHandler):
             await message.reply("❌ خطایی در ایجاد تیکت رخ داد. لطفاً دوباره تلاش کنید.")
 
     @sync_to_async
-    def _create_ticket(
-        self, user: User, category: SupportCategory, subject: str, description: str
-    ) -> SupportTicket:
+    def _create_ticket(self, user: User, category: SupportCategory, subject: str, description: str) -> SupportTicket:
         with db_transaction.atomic():
             return SupportTicket.objects.create(
                 brand=self.brand,
@@ -267,7 +227,7 @@ class SupportHandler(BaseHandler):
                 description=description,
                 status=SupportTicket.TicketStatus.OPEN,
                 priority=category.default_priority,
-                source=SupportTicket.TicketSource.TELEGRAM,
+                source=SupportTicket.TicketSource.TELEGRAM
             )
 
     # ──────────────────────────────────────────────────────────────
@@ -288,7 +248,7 @@ class SupportHandler(BaseHandler):
         tickets = []
         async for t in SupportTicket.objects.filter(
             customer=user, brand=self.brand
-        ).order_by("-created_at")[offset : offset + self.TICKETS_PER_PAGE]:
+        ).order_by("-created_at")[offset:offset + self.TICKETS_PER_PAGE]:
             tickets.append(t)
 
         text = f"""
@@ -299,45 +259,31 @@ class SupportHandler(BaseHandler):
 
         if not tickets:
             text += "\n\nشما هیچ تیکتی ندارید. برای ایجاد تیکت جدید از دکمه زیر استفاده کنید."
-            keyboard = self.create_keyboard(
-                [
-                    [{"text": "🎫 ایجاد تیکت جدید", "callback_data": "create_ticket"}],
-                    [{"text": "🔙 بازگشت", "callback_data": "support"}],
-                ]
-            )
+            keyboard = self.create_keyboard([
+                [{"text": "🎫 ایجاد تیکت جدید", "callback_data": "create_ticket"}],
+                [{"text": "🔙 بازگشت", "callback_data": "support"}]
+            ])
         else:
             text += "\n\n<i>برای مشاهده جزئیات روی تیکت مورد نظر کلیک کنید:</i>\n"
             buttons = []
             for t in tickets:
                 status_emoji = self._get_status_emoji(t.status)
-                buttons.append(
-                    [
-                        {
-                            "text": f"{status_emoji} {t.ticket_number} | {t.subject[:30]}",
-                            "callback_data": f"ticket_details_{t.id}",
-                        }
-                    ]
-                )
+                buttons.append([{
+                    "text": f"{status_emoji} {t.ticket_number} | {t.subject[:30]}",
+                    "callback_data": f"ticket_details_{t.id}"
+                }])
 
             # Pagination buttons
             nav_row = []
             if page > 1:
-                nav_row.append(
-                    {"text": "⬅️ قبلی", "callback_data": f"tickets_page_{page - 1}"}
-                )
-            nav_row.append(
-                {"text": f"📄 {page}/{total_pages}", "callback_data": "ticket_noop"}
-            )
+                nav_row.append({"text": "⬅️ قبلی", "callback_data": f"tickets_page_{page-1}"})
+            nav_row.append({"text": f"📄 {page}/{total_pages}", "callback_data": "ticket_noop"})
             if page < total_pages:
-                nav_row.append(
-                    {"text": "بعدی ➡️", "callback_data": f"tickets_page_{page + 1}"}
-                )
+                nav_row.append({"text": "بعدی ➡️", "callback_data": f"tickets_page_{page+1}"})
             if len(nav_row) > 1:
                 buttons.append(nav_row)
 
-            buttons.append(
-                [{"text": "🎫 ایجاد تیکت جدید", "callback_data": "create_ticket"}]
-            )
+            buttons.append([{"text": "🎫 ایجاد تیکت جدید", "callback_data": "create_ticket"}])
             buttons.append([{"text": "🔙 بازگشت", "callback_data": "support"}])
             keyboard = self.create_keyboard(buttons)
 
@@ -368,11 +314,7 @@ class SupportHandler(BaseHandler):
 
         sla_text = ""
         if ticket.status in ["open", "in_progress", "pending_customer"]:
-            sla_text = (
-                "\n🔴 <b>SLA اوردرو شده!</b>"
-                if ticket.is_overdue
-                else "\n🟢 <b>SLA در زمان مجاز</b>"
-            )
+            sla_text = "\n🔴 <b>SLA اوردرو شده!</b>" if ticket.is_overdue else "\n🟢 <b>SLA در زمان مجاز</b>"
 
         text = f"""
 🎫 <b>جزئیات تیکت</b>
@@ -395,36 +337,16 @@ class SupportHandler(BaseHandler):
             text += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
             text += "💬 <b>آخرین پیام‌ها:</b>\n"
             for msg in reversed(messages):  # Show in chronological order
-                sender_role = (
-                    "👤 شما"
-                    if msg.message_type == SupportMessage.MessageType.CUSTOMER
-                    else "🛠 پشتیبانی"
-                )
+                sender_role = "👤 شما" if msg.message_type == SupportMessage.MessageType.CUSTOMER else "🛠 پشتیبانی"
                 date_str = msg.created_at.strftime("%m/%d %H:%M")
                 text += f"\n<b>{sender_role}</b> ({date_str}):\n{msg.content}\n"
 
         buttons = []
         if ticket.status in ["open", "in_progress", "pending_customer"]:
-            buttons.append(
-                [
-                    {
-                        "text": "💬 پاسخ به تیکت",
-                        "callback_data": f"ticket_reply_{ticket.id}",
-                    }
-                ]
-            )
-            buttons.append(
-                [{"text": "❌ بستن تیکت", "callback_data": f"ticket_close_{ticket.id}"}]
-            )
+            buttons.append([{"text": "💬 پاسخ به تیکت", "callback_data": f"ticket_reply_{ticket.id}"}])
+            buttons.append([{"text": "❌ بستن تیکت", "callback_data": f"ticket_close_{ticket.id}"}])
         elif ticket.status in ["resolved", "closed"] and not ticket.customer_rating:
-            buttons.append(
-                [
-                    {
-                        "text": "⭐ امتیازدهی به پشتیبانی",
-                        "callback_data": f"ticket_rate_{ticket.id}",
-                    }
-                ]
-            )
+            buttons.append([{"text": "⭐ امتیازدهی به پشتیبانی", "callback_data": f"ticket_rate_{ticket.id}"}])
 
         buttons.append([{"text": "🔙 بازگشت به لیست", "callback_data": "my_tickets"}])
 
@@ -450,26 +372,23 @@ class SupportHandler(BaseHandler):
             await callback.answer("❌ تیکت یافت نشد.", show_alert=True)
             return
 
-        await self.update_user_state(
-            user,
-            BotState.StateType.SUPPORT_TICKET,
-            {"step": "reply", "ticket_id": ticket_id},
-        )
+        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, {
+            "step": "reply",
+            "ticket_id": ticket_id
+        })
 
         text = f"""
 💬 <b>پاسخ به تیکت {ticket.ticket_number}</b>
 
 لطفاً پیام خود را بنویسید:
         """
-        keyboard = self.create_keyboard(
-            [[{"text": "❌ انصراف", "callback_data": f"ticket_details_{ticket_id}"}]]
-        )
+        keyboard = self.create_keyboard([
+            [{"text": "❌ انصراف", "callback_data": f"ticket_details_{ticket_id}"}]
+        ])
         await self._safe_edit_or_send(callback, text, keyboard)
         await callback.answer()
 
-    async def handle_ticket_reply(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def handle_ticket_reply(self, message: types.Message, user: User, state: BotState):
         """Save the reply message and notify admins"""
         state_data = state.state_data or {}
         ticket_id = state_data.get("ticket_id")
@@ -484,9 +403,7 @@ class SupportHandler(BaseHandler):
             return
 
         try:
-            ticket = await SupportTicket.objects.aget(
-                id=ticket_id, customer=user, brand=self.brand
-            )
+            ticket = await SupportTicket.objects.aget(id=ticket_id, customer=user, brand=self.brand)
 
             # Save message
             await self._save_ticket_message(ticket, user, content)
@@ -504,17 +421,10 @@ class SupportHandler(BaseHandler):
 🎫 تیکت <code>{ticket.ticket_number}</code>
 تیم پشتیبانی در اسرع وقت پاسخ خواهد داد.
             """
-            keyboard = self.create_keyboard(
-                [
-                    [
-                        {
-                            "text": "👁 مشاهده تیکت",
-                            "callback_data": f"ticket_details_{ticket.id}",
-                        }
-                    ],
-                    [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
-                ]
-            )
+            keyboard = self.create_keyboard([
+                [{"text": "👁 مشاهده تیکت", "callback_data": f"ticket_details_{ticket.id}"}],
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}]
+            ])
             await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
             # Notify admins
@@ -525,9 +435,7 @@ class SupportHandler(BaseHandler):
             await message.reply("❌ خطا در ارسال پیام. لطفاً دوباره تلاش کنید.")
 
     @sync_to_async
-    def _save_ticket_message(
-        self, ticket: SupportTicket, user: User, content: str
-    ) -> SupportMessage:
+    def _save_ticket_message(self, ticket: SupportTicket, user: User, content: str) -> SupportMessage:
         with db_transaction.atomic():
             return SupportMessage.objects.create(
                 ticket=ticket,
@@ -535,7 +443,7 @@ class SupportHandler(BaseHandler):
                 sender=user,
                 content=content,
                 is_public=True,
-                is_read_by_customer=True,
+                is_read_by_customer=True
             )
 
     async def close_ticket(self, callback: types.CallbackQuery, ticket_id: int):
@@ -543,9 +451,7 @@ class SupportHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            ticket = await SupportTicket.objects.aget(
-                id=ticket_id, customer=user, brand=self.brand
-            )
+            ticket = await SupportTicket.objects.aget(id=ticket_id, customer=user, brand=self.brand)
             if ticket.status in ["closed", "cancelled"]:
                 await callback.answer("این تیکت از قبل بسته شده است.", show_alert=True)
                 return
@@ -562,17 +468,10 @@ class SupportHandler(BaseHandler):
 
 از بازخورد شما متشکریم!
             """
-            keyboard = self.create_keyboard(
-                [
-                    [
-                        {
-                            "text": "⭐ امتیازدهی به پشتیبانی",
-                            "callback_data": f"ticket_rate_{ticket.id}",
-                        }
-                    ],
-                    [{"text": "🔙 بازگشت", "callback_data": "my_tickets"}],
-                ]
-            )
+            keyboard = self.create_keyboard([
+                [{"text": "⭐ امتیازدهی به پشتیبانی", "callback_data": f"ticket_rate_{ticket.id}"}],
+                [{"text": "🔙 بازگشت", "callback_data": "my_tickets"}]
+            ])
             await self._safe_edit_or_send(callback, text, keyboard)
             await callback.answer()
 
@@ -588,7 +487,7 @@ class SupportHandler(BaseHandler):
                 message_type=SupportMessage.MessageType.SYSTEM,
                 sender=ticket.customer,  # System acts on behalf of customer
                 content=content,
-                is_public=True,
+                is_public=True
             )
 
     # ──────────────────────────────────────────────────────────────
@@ -600,9 +499,7 @@ class SupportHandler(BaseHandler):
         try:
             ticket = await SupportTicket.objects.aget(id=ticket_id, brand=self.brand)
             if ticket.customer_rating:
-                await callback.answer(
-                    "شما قبلاً به این تیکت امتیاز داده‌اید.", show_alert=True
-                )
+                await callback.answer("شما قبلاً به این تیکت امتیاز داده‌اید.", show_alert=True)
                 return
         except SupportTicket.DoesNotExist:
             await callback.answer("❌ تیکت یافت نشد.", show_alert=True)
@@ -624,14 +521,12 @@ class SupportHandler(BaseHandler):
                 {"text": "4️⃣", "callback_data": f"ticket_rate_submit_{ticket_id}_4"},
                 {"text": "5️⃣", "callback_data": f"ticket_rate_submit_{ticket_id}_5"},
             ],
-            [{"text": "🔙 بازگشت", "callback_data": f"ticket_details_{ticket_id}"}],
+            [{"text": "🔙 بازگشت", "callback_data": f"ticket_details_{ticket_id}"}]
         ]
         await self._safe_edit_or_send(callback, text, self.create_keyboard(buttons))
         await callback.answer()
 
-    async def submit_rating(
-        self, callback: types.CallbackQuery, ticket_id: int, rating: int
-    ):
+    async def submit_rating(self, callback: types.CallbackQuery, ticket_id: int, rating: int):
         """Save the rating to the ticket"""
         try:
             ticket = await SupportTicket.objects.aget(id=ticket_id, brand=self.brand)
@@ -646,18 +541,11 @@ class SupportHandler(BaseHandler):
             text = f"""
 ✅ <b>از امتیاز شما متشکریم!</b>
 
-امتیاز ثبت شده: {"⭐" * rating}
+امتیاز ثبت شده: {'⭐' * rating}
             """
-            keyboard = self.create_keyboard(
-                [
-                    [
-                        {
-                            "text": "🔙 بازگشت",
-                            "callback_data": f"ticket_details_{ticket_id}",
-                        }
-                    ]
-                ]
-            )
+            keyboard = self.create_keyboard([
+                [{"text": "🔙 بازگشت", "callback_data": f"ticket_details_{ticket_id}"}]
+            ])
             await self._safe_edit_or_send(callback, text, keyboard)
             await callback.answer()
 
@@ -681,7 +569,7 @@ class SupportHandler(BaseHandler):
         articles = []
         async for a in SupportKnowledgeBase.objects.filter(
             brand=self.brand, status="published"
-        ).order_by("-is_featured", "-view_count")[offset : offset + self.FAQ_PER_PAGE]:
+        ).order_by("-is_featured", "-view_count")[offset:offset + self.FAQ_PER_PAGE]:
             articles.append(a)
 
         text = f"""
@@ -695,15 +583,13 @@ class SupportHandler(BaseHandler):
         buttons = []
         for a in articles:
             icon = "⭐" if a.is_featured else "📖"
-            buttons.append(
-                [{"text": f"{icon} {a.title}", "callback_data": f"faq_article_{a.id}"}]
-            )
+            buttons.append([{"text": f"{icon} {a.title}", "callback_data": f"faq_article_{a.id}"}])
 
         nav_row = []
         if page > 1:
-            nav_row.append({"text": "⬅️ قبلی", "callback_data": f"faq_page_{page - 1}"})
+            nav_row.append({"text": "⬅️ قبلی", "callback_data": f"faq_page_{page-1}"})
         if page < total_pages:
-            nav_row.append({"text": "بعدی ➡️", "callback_data": f"faq_page_{page + 1}"})
+            nav_row.append({"text": "بعدی ➡️", "callback_data": f"faq_page_{page+1}"})
         if len(nav_row) > 0:
             buttons.append(nav_row)
 
@@ -741,12 +627,9 @@ class SupportHandler(BaseHandler):
         buttons = [
             [
                 {"text": "👍 مفید بود", "callback_data": f"faq_helpful_{article.id}"},
-                {
-                    "text": "👎 مفید نبود",
-                    "callback_data": f"faq_not_helpful_{article.id}",
-                },
+                {"text": "👎 مفید نبود", "callback_data": f"faq_not_helpful_{article.id}"}
             ],
-            [{"text": "🔙 بازگشت به لیست", "callback_data": "faq"}],
+            [{"text": "🔙 بازگشت به لیست", "callback_data": "faq"}]
         ]
 
         await self._safe_edit_or_send(callback, text, self.create_keyboard(buttons))
@@ -754,47 +637,33 @@ class SupportHandler(BaseHandler):
 
     @sync_to_async
     def _increment_article_views(self, article: SupportKnowledgeBase):
-        SupportKnowledgeBase.objects.filter(pk=article.pk).update(
-            view_count=F("view_count") + 1
-        )
+        SupportKnowledgeBase.objects.filter(pk=article.pk).update(view_count=F("view_count") + 1)
 
-    async def vote_faq(
-        self, callback: types.CallbackQuery, article_id: int, is_helpful: bool
-    ):
+    async def vote_faq(self, callback: types.CallbackQuery, article_id: int, is_helpful: bool):
         """Record user vote on FAQ article helpfulness"""
         try:
-            article = await SupportKnowledgeBase.objects.aget(
-                id=article_id, brand=self.brand
-            )
+            article = await SupportKnowledgeBase.objects.aget(id=article_id, brand=self.brand)
             if is_helpful:
-                await self._increment_article_votes(article, "helpful")
+                await self._increment_article_votes(article, 'helpful')
                 await callback.answer("✅ از بازخورد شما متشکریم!", show_alert=False)
             else:
-                await self._increment_article_votes(article, "not_helpful")
-                await callback.answer(
-                    "✅ بازخورد شما ثبت شد. برای بهبود تلاش می‌کنیم.", show_alert=False
-                )
+                await self._increment_article_votes(article, 'not_helpful')
+                await callback.answer("✅ بازخورد شما ثبت شد. برای بهبود تلاش می‌کنیم.", show_alert=False)
         except Exception as e:
             logger.error(f"Error voting FAQ: {e}")
             await callback.answer("❌ خطا در ثبت نظر.", show_alert=True)
 
     @sync_to_async
     def _increment_article_votes(self, article: SupportKnowledgeBase, vote_type: str):
-        if vote_type == "helpful":
-            SupportKnowledgeBase.objects.filter(pk=article.pk).update(
-                helpful_votes=F("helpful_votes") + 1
-            )
+        if vote_type == 'helpful':
+            SupportKnowledgeBase.objects.filter(pk=article.pk).update(helpful_votes=F("helpful_votes") + 1)
         else:
-            SupportKnowledgeBase.objects.filter(pk=article.pk).update(
-                not_helpful_votes=F("not_helpful_votes") + 1
-            )
+            SupportKnowledgeBase.objects.filter(pk=article.pk).update(not_helpful_votes=F("not_helpful_votes") + 1)
 
     async def start_faq_search(self, callback: types.CallbackQuery):
         """Prompt user to enter search query"""
         user, _ = await self.get_or_create_user(callback.from_user)
-        await self.update_user_state(
-            user, BotState.StateType.SUPPORT_TICKET, {"step": "search_faq"}
-        )
+        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, {"step": "search_faq"})
 
         text = """
 🔍 <b>جستجو در مقالات</b>
@@ -805,9 +674,7 @@ class SupportHandler(BaseHandler):
         await self._safe_edit_or_send(callback, text, keyboard)
         await callback.answer()
 
-    async def handle_faq_search(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def handle_faq_search(self, message: types.Message, user: User, state: BotState):
         """Process FAQ search query"""
         query = message.text.strip()
         if len(query) < 3:
@@ -818,7 +685,9 @@ class SupportHandler(BaseHandler):
 
         articles = []
         async for a in SupportKnowledgeBase.objects.filter(
-            brand=self.brand, status="published", title__icontains=query
+            brand=self.brand,
+            status="published",
+            title__icontains=query
         ).order_by("-view_count")[:10]:
             articles.append(a)
 
@@ -828,12 +697,10 @@ class SupportHandler(BaseHandler):
 
 ❌ هیچ مقاله‌ای یافت نشد.
             """
-            keyboard = self.create_keyboard(
-                [
-                    [{"text": "🔍 جستجوی مجدد", "callback_data": "faq_search"}],
-                    [{"text": "🔙 بازگشت", "callback_data": "faq"}],
-                ]
-            )
+            keyboard = self.create_keyboard([
+                [{"text": "🔍 جستجوی مجدد", "callback_data": "faq_search"}],
+                [{"text": "🔙 بازگشت", "callback_data": "faq"}]
+            ])
         else:
             text = f"""
 🔍 <b>نتیجه جستجو برای: {query}</b>
@@ -842,9 +709,7 @@ class SupportHandler(BaseHandler):
             """
             buttons = []
             for a in articles:
-                buttons.append(
-                    [{"text": f"📖 {a.title}", "callback_data": f"faq_article_{a.id}"}]
-                )
+                buttons.append([{"text": f"📖 {a.title}", "callback_data": f"faq_article_{a.id}"}])
             buttons.append([{"text": "🔍 جستجوی مجدد", "callback_data": "faq_search"}])
             buttons.append([{"text": "🔙 بازگشت", "callback_data": "faq"}])
             keyboard = self.create_keyboard(buttons)
@@ -869,26 +734,16 @@ class SupportHandler(BaseHandler):
 💬 <b>شناسه تلگرام:</b>
 @{bot_username}
 
-⏰ <b>ساعات کاری:</b>
-۲۴ ساعت در روز، ۷ روز هفته
-
-🚀 <b>میانگین پاسخگویی:</b>
-کمتر از ۱ ساعت
-
-ℹ️ <i>برای پیگیری سریع‌تر، لطفاً از طریق سیستم تیکت‌سازی اقدام کنید.</i>
+ℹ️ <i>برای پیگیری درخواست، لطفاً از طریق سیستم تیکت‌سازی اقدام کنید.</i>
         """
-        keyboard = self.create_keyboard(
-            [
-                [{"text": "🎫 ایجاد تیکت", "callback_data": "create_ticket"}],
-                [{"text": "🔙 بازگشت", "callback_data": "support"}],
-            ]
-        )
+        keyboard = self.create_keyboard([
+            [{"text": "🎫 ایجاد تیکت", "callback_data": "create_ticket"}],
+            [{"text": "🔙 بازگشت", "callback_data": "support"}]
+        ])
         await self._safe_edit_or_send(callback, text, keyboard)
         await callback.answer()
 
-    async def handle_text_message(
-        self, message: types.Message, user: User, state: BotState
-    ):
+    async def handle_text_message(self, message: types.Message, user: User, state: BotState):
         """Unified text router for support states"""
         step = state.state_data.get("step") if state.state_data else None
 
@@ -903,7 +758,7 @@ class SupportHandler(BaseHandler):
         else:
             await message.reply(
                 "لطفاً از منوی زیر استفاده کنید:",
-                reply_markup=await self.get_main_menu_keyboard(user),
+                reply_markup=await self.get_main_menu_keyboard(user)
             )
 
     # ──────────────────────────────────────────────────────────────
@@ -918,22 +773,26 @@ class SupportHandler(BaseHandler):
             "pending_internal": "⏳",
             "resolved": "✅",
             "closed": "⚫",
-            "cancelled": "❌",
+            "cancelled": "❌"
         }.get(status, "❓")
 
     def _get_priority_emoji(self, priority: str) -> str:
-        return {"low": "🟢", "normal": "⚪", "high": "🟠", "urgent": "🔴"}.get(
-            priority, "⚪"
-        )
+        return {
+            "low": "🟢",
+            "normal": "⚪",
+            "high": "🟠",
+            "urgent": "🔴"
+        }.get(priority, "⚪")
 
-    async def _safe_edit_or_send(
-        self, source, text: str, keyboard: InlineKeyboardMarkup
-    ):
+    async def _safe_edit_or_send(self, source, text: str, keyboard: InlineKeyboardMarkup):
         """Try to edit the message, fall back to sending a new one."""
         try:
             if hasattr(source, "message"):
                 await self.edit_message_with_keyboard(
-                    source.message.chat.id, source.message.message_id, text, keyboard
+                    source.message.chat.id,
+                    source.message.message_id,
+                    text,
+                    keyboard
                 )
             else:
                 await self.send_message_with_keyboard(source, text, keyboard)
@@ -963,16 +822,14 @@ class SupportHandler(BaseHandler):
             if admin.telegram_id:
                 try:
                     await self.bot.send_message(
-                        chat_id=admin.telegram_id, text=admin_text, parse_mode="HTML"
+                        chat_id=admin.telegram_id,
+                        text=admin_text,
+                        parse_mode="HTML"
                     )
                 except Exception as e:
-                    logger.warning(
-                        f"Could not notify admin {admin.id} about new ticket: {e}"
-                    )
+                    logger.warning(f"Could not notify admin {admin.id} about new ticket: {e}")
 
-    async def _notify_admins_new_reply(
-        self, user: User, ticket: SupportTicket, content: str
-    ):
+    async def _notify_admins_new_reply(self, user: User, ticket: SupportTicket, content: str):
         """Notify assigned agent or all staff about a new reply"""
         from apps.accounts.models import User as UserModel
 
@@ -994,9 +851,9 @@ class SupportHandler(BaseHandler):
             if admin.telegram_id:
                 try:
                     await self.bot.send_message(
-                        chat_id=admin.telegram_id, text=admin_text, parse_mode="HTML"
+                        chat_id=admin.telegram_id,
+                        text=admin_text,
+                        parse_mode="HTML"
                     )
                 except Exception as e:
-                    logger.warning(
-                        f"Could not notify admin {admin.id} about reply: {e}"
-                    )
+                    logger.warning(f"Could not notify admin {admin.id} about reply: {e}")

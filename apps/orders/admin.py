@@ -219,6 +219,7 @@ class WalletAdmin(admin.ModelAdmin):
         "user",
         "brand",
         "balance",
+        "challenge_frozen_balance",
         "currency",
         "is_active",
         "is_frozen",

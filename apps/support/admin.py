@@ -14,6 +14,7 @@ from .models import (
     SupportMetrics,
     SupportTemplate,
     SupportTicket,
+    UsefulContent,
 )
 
 
@@ -276,6 +277,27 @@ class SupportAutomationAdmin(admin.ModelAdmin):
     )
     list_filter = ("trigger_type", "action_type", "is_active", "brand")
     search_fields = ("brand__name", "name", "description")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            return qs.filter(brand__in=request.user.admin_brands.all())
+        return qs
+
+
+@admin.register(UsefulContent)
+class UsefulContentAdmin(admin.ModelAdmin):
+    list_display = (
+        "brand",
+        "category",
+        "title",
+        "display_order",
+        "is_active",
+        "updated_at",
+    )
+    list_filter = ("category", "is_active", "brand")
+    search_fields = ("brand__name", "title", "description", "content", "download_url")
+    list_editable = ("display_order", "is_active")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
