@@ -340,7 +340,8 @@ class ReferralCashPointTests(TestCase):
             order=order,
             brand=self.brand,
             user=self.referee,
-            payment_method=Payment.PaymentMethod.CARD_TRANSFER,
+            # Supported split checkout is a wallet part plus one external payment.
+            payment_method=Payment.PaymentMethod.WALLET,
             status=Payment.PaymentStatus.CONFIRMED,
             amount=Decimal("40.00"),
             currency="USD",
@@ -588,4 +589,3 @@ class PropzinoChallengeTests(TestCase):
         self.assertEqual(challenge.status, UserChallenge.Status.ACTIVE)
         self.assertEqual(reward.reward_type, "normal_point")
         self.assertEqual(reward.cash_value, Decimal("8.00"))
-

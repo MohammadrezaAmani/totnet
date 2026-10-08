@@ -8,6 +8,7 @@ from asgiref.sync import async_to_sync
 from celery import shared_task
 from django.conf import settings
 from django.core.management import call_command
+from django.db import transaction
 from django.utils import timezone
 
 from apps.subscriptions.models import (
@@ -15,6 +16,7 @@ from apps.subscriptions.models import (
     Subscription,
     SubscriptionPlan,
 )
+from apps.subscriptions.catalog import refresh_plan_catalog
 
 from .models import VPNProvider, VPNProviderHealthCheck, VPNProviderStats
 from .services.base import VPNProviderFactory, VPNUser
@@ -218,6 +220,7 @@ def _connectix_duration_unit(value):
 
 
 @shared_task(bind=True, max_retries=3)
+@transaction.atomic
 def sync_connectix_plans(self, provider_id: int):
     """Import the provider's current sellable plans into its local brand."""
     try:
@@ -235,14 +238,16 @@ def sync_connectix_plans(self, provider_id: int):
 
     async def fetch_plans():
         try:
-            return await client.client.get_seller_plans(
-                for_client_page=False, is_archived=False
-            )
+            plans = await client.client.get_seller_plans(for_client_page=False, is_archived=False)
+            metadata = await client.client.get_client_metadata()
+            allowed_ids = {str(item["id"]) for item in metadata["seller_plans"]
+                           if isinstance(item, dict) and item.get("id")}
+            return plans, allowed_ids
         finally:
             await client.close()
 
     try:
-        plans = async_to_sync(fetch_plans)()
+        plans, allowed_ids = async_to_sync(fetch_plans)()
     except Exception as exc:
         logger.error(
             "Connectix plan sync failed for provider %s (%s)",
@@ -254,7 +259,8 @@ def sync_connectix_plans(self, provider_id: int):
     currency = str((provider.configuration or {}).get("currency", "T"))[:3] or "T"
     synced_ids = set()
     for position, upstream in enumerate(plans):
-        group_is_mapped = bool(upstream.group_id)
+        group_is_mapped = bool(upstream.group_id and upstream.count_of_devices)
+        purchasable = group_is_mapped and upstream.plan_id in allowed_ids
         if not group_is_mapped:
             logger.warning(
                 "Connectix plan %s has no matched group ID (%r); importing hidden",
@@ -306,8 +312,8 @@ def sync_connectix_plans(self, provider_id: int):
             "duration_unit": duration_unit,
             "traffic_limit_gb": traffic,
             "max_users": upstream.count_of_devices or 1,
-            "is_active": group_is_mapped,
-            "is_visible": group_is_mapped and upstream.displayed_in_robot is not False,
+            "is_active": purchasable,
+            "is_visible": purchasable and upstream.displayed_in_robot is not False,
             "display_order": position,
         }
         # Keep brand/name unique even if the seller reuses a translated title.
@@ -337,6 +343,7 @@ def sync_connectix_plans(self, provider_id: int):
     ).update(is_active=False, is_visible=False)
     provider.last_sync = timezone.now()
     provider.save(update_fields=("last_sync", "updated_at"))
+    transaction.on_commit(lambda: refresh_plan_catalog(provider.brand_id))
     try:
         call_command("setup_default_gamification", brand=provider.brand.slug)
     except Exception as exc:

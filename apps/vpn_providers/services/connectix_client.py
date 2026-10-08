@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -150,6 +151,7 @@ class ConnectixClient:
         username: str,
         password: str,
         timeout_seconds: float = 20,
+        proxy_url: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.base_url = base_url.rstrip("/")
@@ -165,6 +167,7 @@ class ConnectixClient:
                 pool=min(timeout_seconds, 5),
             ),
             transport=transport,
+            proxy=proxy_url if transport is None else None,
             trust_env=False,
             headers={
                 "Accept": "application/json, text/plain, */*",
@@ -176,8 +179,8 @@ class ConnectixClient:
 
     async def _login(self) -> None:
         try:
-            response = await self._client.post(
-                f"{self.base_url}{self.LOGIN_PATH}",
+            response = await self._send(
+                "POST", self.LOGIN_PATH,
                 json={
                     "email": self.username,
                     "password": self._password,
@@ -207,6 +210,17 @@ class ConnectixClient:
             raise ConnectixMalformedResponse("Connectix login response has no token")
         self._token = token
 
+    async def _send(self, method, path, **kwargs):
+        """Retry read/transport failures only for reads and token acquisition."""
+        attempts = 3 if method.upper() == "GET" or path == self.LOGIN_PATH else 1
+        for attempt in range(attempts):
+            try:
+                return await self._client.request(method, f"{self.base_url}{path}", **kwargs)
+            except httpx.RequestError:
+                if attempt + 1 == attempts:
+                    raise
+                await asyncio.sleep(0.25 * (attempt + 1))
+
     async def _request_json(
         self,
         method: str,
@@ -222,9 +236,9 @@ class ConnectixClient:
         headers = {"Authorization": f"Bearer {self._token}"}
         logger.debug("Connectix request method=%s path=%s", method, urlsplit(path).path)
         try:
-            response = await self._client.request(
+            response = await self._send(
                 method,
-                f"{self.base_url}{path}",
+                path,
                 params=params,
                 json=json_body,
                 headers=headers,
@@ -288,7 +302,7 @@ class ConnectixClient:
         )
 
     async def get_seller_plans(
-        self, *, for_client_page: bool = True, is_archived: bool = False
+        self, *, for_client_page: bool = False, is_archived: bool = False
     ) -> tuple[ConnectixSellerPlan, ...]:
         body = await self._request_json(
             "GET",

@@ -11,16 +11,6 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RenameIndex(
-            model_name="subscription",
-            new_name="subscriptio_brand_i_22de41_idx",
-            old_name="subscriptio_brand_i_a55573_idx",
-        ),
-        migrations.RenameIndex(
-            model_name="subscription",
-            new_name="subscriptio_user_id_e33833_idx",
-            old_name="subscriptio_user_id_8d58fd_idx",
-        ),
-        migrations.RenameIndex(
             model_name="subscriptionclaim",
             new_name="subscriptio_brand_i_e6a388_idx",
             old_name="subscriptio_brand_i_22de41_idx",
@@ -29,5 +19,15 @@ class Migration(migrations.Migration):
             model_name="subscriptionclaim",
             new_name="subscriptio_user_id_a326eb_idx",
             old_name="subscriptio_user_id_e33833_idx",
+        ),
+        migrations.RenameIndex(
+            model_name="subscription",
+            new_name="subscriptio_brand_i_22de41_idx",
+            old_name="subscriptio_brand_i_a55573_idx",
+        ),
+        migrations.RenameIndex(
+            model_name="subscription",
+            new_name="subscriptio_user_id_e33833_idx",
+            old_name="subscriptio_user_id_8d58fd_idx",
         ),
     ]

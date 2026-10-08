@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 
 import django
+from asgiref.sync import sync_to_async
+from django.core.management import call_command
+from django.core.management.base import CommandError
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.append(str(BASE_DIR))
@@ -34,6 +37,11 @@ async def main():
     """Main function to start all brand bots"""
     try:
         logger.info("Starting Multi-Tenant VPN Bot Platform...")
+
+        try:
+            await sync_to_async(call_command)("setup_bot", sync_plans=True)
+        except CommandError as exc:
+            logger.warning("Bot setup incomplete: %s; starting existing brands", exc)
 
         await start_bots()
 

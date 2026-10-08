@@ -17,6 +17,7 @@ from apps.brands.models import BrandConfiguration
 from apps.orders.models import Order, Payment, Wallet
 from apps.orders.services import WalletCheckoutError, pay_order_with_wallet
 from apps.subscriptions.models import Subscription, SubscriptionPlan
+from apps.subscriptions.catalog import get_cached_plans
 from apps.subscriptions.tasks import provision_paid_order
 from apps.vpn_providers.models import VPNProvider
 
@@ -50,21 +51,24 @@ class PurchaseHandler(BaseHandler):
         category: str | None = None,
         special_only: bool = False,
         back_callback: str = "purchase_subscription",
+        page: int = 1,
     ):
         """Build a plan list for one XMind service group or the inline picker."""
-        queryset = SubscriptionPlan.objects.filter(
-            brand=self.brand, is_active=True, is_visible=True
-        )
+        catalog = await get_cached_plans(self.brand.pk)
         if category:
-            queryset = queryset.filter(service_category=category)
+            catalog = [plan for plan in catalog if plan.service_category == category]
         if special_only:
-            queryset = queryset.filter(is_featured=True).filter(
-                Q(offer_expires_at__isnull=True) | Q(offer_expires_at__gt=timezone.now())
-            )
+            now = timezone.now()
+            catalog = [plan for plan in catalog if plan.is_featured and (
+                plan.offer_expires_at is None or plan.offer_expires_at > now
+            )]
 
-        plans = []
-        async for plan in queryset.order_by("display_order", "price"):
-            plans.append(plan)
+        total = len(catalog)
+        page_size = 10
+        last_page = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, last_page))
+        start = (page - 1) * page_size
+        plans = catalog[start:start + page_size]
 
         if not plans:
             text = "❌ در حال حاضر پلن فعالی در این بخش موجود نیست."
@@ -75,9 +79,11 @@ class PurchaseHandler(BaseHandler):
         elif category:
             title = f"🛒 {self.CATEGORY_LABELS.get(category, 'پلن‌های اشتراک')}"
         else:
-            title = f"🛒 پلن‌های اشتراک {self.brand.name}"
+            title = f"🛒 پلن‌های اشتراک {escape(self.brand.name)}"
 
         text = f"{title}\n\nلطفاً یکی از پلن‌های زیر را انتخاب کنید:"
+        if last_page > 1:
+            text += f"\nصفحهٔ {page} از {last_page}"
         keyboard_buttons = []
         for plan in plans:
             details = []
@@ -116,46 +122,68 @@ class PurchaseHandler(BaseHandler):
                 [{"text": plan_text, "callback_data": f"select_plan_{plan.id}"}]
             )
 
+        navigation = []
+        for target_page, label in ((page - 1, "◀️ قبلی"), (page + 1, "بعدی ▶️")):
+            if 1 <= target_page <= last_page:
+                navigation.append({
+                    "text": label,
+                    "callback_data": f"plans_page_{category or 'all'}_{int(special_only)}_{target_page}",
+                })
+        if navigation:
+            keyboard_buttons.append(navigation)
         keyboard_buttons.append(
             [{"text": "🔙 بازگشت", "callback_data": back_callback}]
         )
         return text, self.create_keyboard(keyboard_buttons)
 
+    async def show_plans_page(self, callback, category, special_only, page):
+        category = None if category == "all" else category
+        if category is not None and category not in self.CATEGORY_LABELS:
+            await callback.answer("❌ دستهٔ سرویس نامعتبر است.", show_alert=True)
+            return
+        user, _ = await self.get_or_create_user(callback.from_user)
+        await self.update_user_state(user, BotState.StateType.PURCHASE_FLOW, {
+            "step": "plan_selection", "service_category": category, "special_offers": special_only,
+        })
+        text, keyboard = await self.get_plans(user, category=category, special_only=special_only, page=page)
+        await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, keyboard)
+        await callback.answer()
+
     async def show_subscription_plans(self, callback: types.CallbackQuery):
         """Show the XMind purchase landing page."""
         user, _ = await self.get_or_create_user(callback.from_user)
+        catalog = await get_cached_plans(self.brand.pk)
+        categories = {plan.service_category for plan in catalog}
+        has_special = any(plan.is_featured and (
+            plan.offer_expires_at is None or plan.offer_expires_at > timezone.now()
+        ) for plan in catalog)
+        if len(categories) <= 1 and not has_special:
+            category = next(iter(categories), None)
+            await self.update_user_state(user, BotState.StateType.PURCHASE_FLOW, {
+                "step": "plan_selection", "service_category": category, "special_offers": False,
+            })
+            text, keyboard = await self.get_plans(user, category=category, back_callback="main_menu")
+            await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, keyboard)
+            await callback.answer()
+            return
         await self.update_user_state(
             user, BotState.StateType.PURCHASE_FLOW, {"step": "service_selection"}
         )
 
         text = f"""
-🛒 خرید اشتراک {self.brand.name}
+🛒 خرید اشتراک {escape(self.brand.name)}
 
 نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای سرویس‌ها را ببینید.
         """
-        keyboard = self.create_keyboard(
-            [
-                [
-                    {
-                        "text": "🌐 سرویس نرمال",
-                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.NORMAL}",
-                    },
-                    {
-                        "text": "👑 سرویس رویال",
-                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.ROYAL}",
-                    },
-                ],
-                [
-                    {
-                        "text": "🇮🇷 سرویس آی‌پی ایران",
-                        "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.IRAN_IP}",
-                    },
-                    {"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"},
-                ],
-                [{"text": "📖 راهنمای سرویس‌ها", "callback_data": "service_guide"}],
-                [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
-            ]
-        )
+        buttons = [[{"text": label, "callback_data": f"purchase_category_{category}"}]
+                   for category, label in self.CATEGORY_LABELS.items() if category in categories]
+        if has_special:
+            buttons.append([{"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"}])
+        buttons.extend([
+            [{"text": "📖 راهنمای سرویس‌ها", "callback_data": "service_guide"}],
+            [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
+        ])
+        keyboard = self.create_keyboard(buttons)
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
@@ -285,7 +313,7 @@ class PurchaseHandler(BaseHandler):
         )
 
         text = f"""
-📋 جزئیات پلن {plan.name}
+📋 جزئیات پلن {escape(plan.name)}
 
 🏷️ دسته: {self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display())}
 💰 قیمت: {self.format_price(plan.price, plan.currency)}
@@ -313,10 +341,10 @@ class PurchaseHandler(BaseHandler):
         if plan.features:
             text += "\n✨ ویژگی‌ها:\n"
             for feature in plan.features:
-                text += f"• {feature}\n"
+                text += f"• {escape(str(feature))}\n"
 
         if plan.description:
-            text += f"\n📝 توضیحات:\n{plan.description}\n"
+            text += f"\n📝 توضیحات:\n{escape(plan.description)}\n"
 
         keyboard = self.create_keyboard(
             [
@@ -650,7 +678,7 @@ class PurchaseHandler(BaseHandler):
 💳 انتخاب روش پرداخت
 
 سفارش شما: {order.order_number}
-پلن: {order.plan.name}
+پلن: {escape(order.plan.name)}
 مبلغ کل: {self.format_price(order.final_price, order.currency)}
 {paid_line}مبلغ باقی‌مانده: {self.format_price(remaining_due, order.currency)}
 
@@ -663,6 +691,17 @@ class PurchaseHandler(BaseHandler):
             {"step": PurchaseStep.PAYMENT_METHOD, "order_id": str(order.order_id)},
         )
         keyboard = await self._payment_methods_keyboard(user, order)
+        if not any(
+            button.callback_data and button.callback_data.startswith("payment_")
+            for row in keyboard.inline_keyboard for button in row
+        ):
+            text = text.replace(
+                "لطفاً روش پرداخت خود را انتخاب کنید:",
+                "در حال حاضر روش پرداختی برای این سفارش در دسترس نیست. برای تکمیل خرید با پشتیبانی تماس بگیرید.",
+            )
+            keyboard.inline_keyboard.insert(0, [types.InlineKeyboardButton(
+                text="🛟 پشتیبانی", callback_data="support"
+            )])
 
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
@@ -685,6 +724,7 @@ class PurchaseHandler(BaseHandler):
 
     async def _payment_methods_keyboard(self, user, order):
         keyboard_buttons = []
+        cards_available = await self.brand.payment_cards.filter(is_active=True).aexists()
         async for method in self.brand.payment_methods.filter(is_enabled=True).order_by(
             "display_order"
         ):
@@ -696,6 +736,8 @@ class PurchaseHandler(BaseHandler):
                     method.payment_type,
                     self.brand.slug,
                 )
+                continue
+            if not cards_available:
                 continue
             keyboard_buttons.append(
                 [
@@ -864,9 +906,9 @@ class PurchaseHandler(BaseHandler):
         keyboard_buttons = []
         for i, card in enumerate(cards):
             text += f"""
-🏦 {card.bank_name}
+🏦 {escape(card.bank_name)}
 💳 شماره کارت: <code>{card.card_number}</code> 
-👤 نام صاحب کارت: {card.cardholder_name}
+👤 نام صاحب کارت: {escape(card.cardholder_name)}
 
 """
         keyboard_buttons.append(

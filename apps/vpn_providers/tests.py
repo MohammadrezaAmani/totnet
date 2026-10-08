@@ -1,5 +1,6 @@
 import inspect
 import json
+from unittest.mock import patch
 
 import httpx
 from django.test import SimpleTestCase
@@ -101,6 +102,36 @@ class ConnectixClientContractTests(SimpleTestCase):
         self.assertEqual(calls[0].url.path, "/v1/seller/auth/login")
         self.assertEqual(calls[1].headers["Authorization"], "Bearer test-token")
 
+    async def test_plan_catalog_uses_working_seller_query_and_maps_translated_groups(self):
+        async def handler(request):
+            if request.url.path.endswith("/auth/login"):
+                return httpx.Response(200, json={"token": "test-token"})
+            self.assertEqual(request.url.params["forClientPage"], "false")
+            self.assertEqual(request.url.params["is_archived"], "false")
+            return httpx.Response(200, json={
+                "groups": [{"id": "group-1", "name": "Sublink", "name_translations": {"fa": "ساب‌لینک"}}],
+                "seller_plan_group": [{"count_of_devices": 2, "seller_plans": [{
+                    "id": "plan-1", "title": "Monthly", "price": "98,000",
+                    "sell_price": "0", "period": 1, "period_unit": "Months",
+                    "traffic_amount": 15, "count_of_devices": 2,
+                    "group_name_translations": {"fa": "ساب‌لینک", "en": "Sublink"},
+                    "is_displayed_in_robot": True,
+                }]}],
+            })
+        client = self.make_client(handler)
+        try:
+            plans = await client.get_seller_plans()
+        finally:
+            await client.close()
+        self.assertEqual(plans[0].group_id, "group-1")
+        self.assertEqual(plans[0].price, "98,000")
+
+    def test_proxy_is_passed_to_httpx(self):
+        with patch("apps.vpn_providers.services.connectix_client.httpx.AsyncClient") as mock:
+            ConnectixClient(base_url="https://example.invalid", username="seller", password="secret",
+                            proxy_url="socks5://127.0.0.1:2080")
+        self.assertEqual(mock.call_args.kwargs["proxy"], "socks5://127.0.0.1:2080")
+
     async def test_client_list_parses_pagination_and_redacts_secret_repr(self):
         async def handler(request):
             if request.url.path.endswith("/auth/login"):
@@ -176,6 +207,39 @@ class ConnectixClientContractTests(SimpleTestCase):
         finally:
             await client.close()
         self.assertEqual(create_calls, 1)
+
+    async def test_transient_read_transport_failure_is_retried(self):
+        reads = 0
+        async def handler(request):
+            nonlocal reads
+            if request.url.path.endswith("/auth/login"):
+                return httpx.Response(200, json={"token": "test-token"})
+            reads += 1
+            if reads == 1:
+                raise httpx.ReadError("connection reset", request=request)
+            return httpx.Response(200, json={"seller": {}})
+        client = self.make_client(handler)
+        try:
+            self.assertIn("seller", await client.get_seller_data())
+        finally:
+            await client.close()
+        self.assertEqual(reads, 2)
+
+    async def test_create_transport_failure_is_never_retried(self):
+        creates = 0
+        async def handler(request):
+            nonlocal creates
+            if request.url.path.endswith("/auth/login"):
+                return httpx.Response(200, json={"token": "test-token"})
+            creates += 1
+            raise httpx.ReadError("connection reset", request=request)
+        client = self.make_client(handler)
+        try:
+            with self.assertRaises(ConnectixUpstreamError):
+                await client.create_client({})
+        finally:
+            await client.close()
+        self.assertEqual(creates, 1)
 
     async def test_provider_creates_from_mapped_plan_without_retaining_password(self):
         submitted_payloads = []

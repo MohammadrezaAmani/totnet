@@ -6,6 +6,8 @@ This integration uses only the seller-panel requests captured in `connectix.md`.
 
 Set `CONNECTIX_BASE_URL` (defaults to `https://api.connectix.vip`), `CONNECTIX_USERNAME`, `CONNECTIX_PASSWORD`, and optionally `CONNECTIX_TIMEOUT_SECONDS`. The Python setting is named `CONNECTIX_API_BASE_URL`. The panel URL is `https://seller.connectix.vip/`; API calls use `/v1/seller` and bearer authentication obtained from the login endpoint. Never put credentials or tokens in source control or logs.
 
+Set `SOCKS5_PROXY=socks5://127.0.0.1:2080` for Telegram and optionally `CONNECTIX_PROXY_URL` for Connectix. `socks://` and bare `host:port` are normalized to `socks5://`. HTTPX's SOCKS dependency is included in the lockfile. `python manage.py setup_bot --sync-plans` registers `TELEGRAM_BOT_TOKEN`, creates its Connectix provider if needed, and imports the real catalog. Bot startup also performs this setup; existing inactive brands remain inactive.
+
 ## Implemented calls
 
 - `POST /auth/login`: acquire a bearer token using the configured seller credentials.
@@ -21,7 +23,9 @@ The temporary Connectix client password is used only in the create request. It i
 
 Each local plan must reference a Connectix provider belonging to the same brand, plus the mapped seller plan ID, group ID, group name, plan name, and device count. The seller plan and group IDs and device count are available from the captured metadata/list operations. Unmapped plans remain pending with a recorded safe error; no fabricated connection URL is generated. Configure the provider credentials through environment settings.
 
-The supplied account authenticated successfully with read-only calls to seller-data and client metadata; metadata returned 45 plans and 4 groups. The live seller-plans read returned HTTP 500 with the documented query keys, so the purchase path does not depend on that endpoint. Use identifiers from client metadata and the sanitized captured plan details for local mappings until Connectix clarifies the failing read.
+Live verification on 2026-10-08 authenticated successfully through the SOCKS proxy. The seller catalog works with `forClientPage=false&is_archived=false`; `forClientPage=true` returned HTTP 500. The catalog contained 231 plans, while the client form allowed 47 plan IDs. Imports intersect the catalog with these allowed IDs and require a mapped group and device count. The seller's robot visibility flag then leaves 14 visible plans for this account. These counts depend on seller configuration and are not hardcoded.
+
+Celery Beat refreshes the catalog every 15 minutes. Successful imports update the database atomically and publish a scalar plan snapshot to Redis after commit. Bot plan lists read this cache and paginate ten plans per page. The default cache TTL is 30 minutes (`PLAN_CATALOG_CACHE_TTL_SECONDS`); a cache miss rebuilds it from the database without a seller API request. Failed upstream reads retain the previous catalog. Admin plan changes invalidate the cache, while plan details and checkout read the current database record to verify price and availability.
 
 ## Deliberately unsupported
 

@@ -88,13 +88,12 @@ def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = N
         created_column = connection.ops.quote_name(
             ReferralClick._meta.get_field("created_at").column
         )
-        constraint = connection.ops.quote_name("uniq_referral_visit_per_user")
         with connection.cursor() as cursor:
             cursor.execute(
                 f"INSERT INTO {table} "
                 f"({link_column}, {visitor_column}, {brand_column}, {created_column}) "
                 f"VALUES (%s, %s, %s, %s) "
-                f"ON CONFLICT ON CONSTRAINT {constraint} DO NOTHING RETURNING id",
+                f"ON CONFLICT ({link_column}, {visitor_column}) DO NOTHING RETURNING id",
                 [link.pk, visitor_id, brand_id, timezone.now()],
             )
             if cursor.fetchone() is None:

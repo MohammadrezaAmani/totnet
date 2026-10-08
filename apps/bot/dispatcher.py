@@ -426,6 +426,9 @@ class MultiBrandDispatcher:
                 await handlers["purchase"].show_plans_by_category(callback, category)
             elif data == "purchase_special":
                 await handlers["purchase"].show_special_offers(callback)
+            elif data.startswith("plans_page_"):
+                category, special, page = data.removeprefix("plans_page_").rsplit("_", 2)
+                await handlers["purchase"].show_plans_page(callback, category, bool(int(special)), int(page))
             elif data == "service_guide":
                 await handlers["purchase"].show_service_guide(callback)
             elif data.startswith("select_plan_"):

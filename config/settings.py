@@ -4,9 +4,11 @@ Django settings for Multi-Tenant VPN Platform
 
 import os
 from pathlib import Path
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import unquote
 
 from decouple import AutoConfig, Config, RepositoryEmpty
+
+from utils.proxy import normalize_proxy
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -173,7 +175,8 @@ MEDIA_ROOT = Path(config("MEDIA_ROOT", default=str(BASE_DIR / "media")))
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
-REDIS_URL = config("REDIS_URL", default="redis://localhost:6379/0")
+REDIS_URL = config("REDIS_URL", default="redis://localhost:6379/0") or "redis://localhost:6379/0"
+TELEGRAM_BOT_TOKEN = config("TELEGRAM_BOT_TOKEN", default="").strip()
 CONNECTIX_API_BASE_URL = (
     config("CONNECTIX_BASE_URL", default="https://api.connectix.vip")
     or "https://api.connectix.vip"
@@ -184,10 +187,11 @@ CONNECTIX_TIMEOUT_SECONDS = config("CONNECTIX_TIMEOUT_SECONDS", default=20, cast
 BOT_RELOAD_INTERVAL_SECONDS = config(
     "BOT_RELOAD_INTERVAL_SECONDS", default=5, cast=int
 )
+PLAN_CATALOG_CACHE_TTL_SECONDS = config("PLAN_CATALOG_CACHE_TTL_SECONDS", default=1800, cast=int)
 
 
-CELERY_BROKER_URL = config("CELERY_BROKER_URL", default=REDIS_URL)
-CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default=REDIS_URL)
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default=REDIS_URL) or REDIS_URL
+CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default=REDIS_URL) or REDIS_URL
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
@@ -313,24 +317,14 @@ USE_WEBHOOK = config("USE_WEBHOOK", default=False, cast=bool)
 WEBHOOK_DOMAIN = config("WEBHOOK_DOMAIN", default="")
 WEBHOOK_PATH = config("WEBHOOK_PATH", default="/webhook")
 
-SOCKS5_PROXY = config("SOCKS5_PROXY", default=None)
-if SOCKS5_PROXY and os.environ.get("RUNNING_IN_DOCKER") == "1":
-    proxy_value = SOCKS5_PROXY.strip()
-    proxy_url = (
-        proxy_value if "://" in proxy_value else f"socks5://{proxy_value}"
-    )
-    proxy_parts = urlsplit(proxy_url)
-    if proxy_parts.hostname in {"localhost", "127.0.0.1", "::1"}:
-        userinfo = (
-            f"{proxy_parts.netloc.rsplit('@', 1)[0]}@"
-            if "@" in proxy_parts.netloc
-            else ""
-        )
-        proxy_port = f":{proxy_parts.port}" if proxy_parts.port else ""
-        proxy_parts = proxy_parts._replace(
-            netloc=f"{userinfo}host.docker.internal{proxy_port}"
-        )
-    SOCKS5_PROXY = urlunsplit(proxy_parts)
+SOCKS5_PROXY = normalize_proxy(
+    config("SOCKS5_PROXY", default=None),
+    running_in_docker=os.environ.get("RUNNING_IN_DOCKER") == "1",
+)
+CONNECTIX_PROXY_URL = normalize_proxy(
+    config("CONNECTIX_PROXY_URL", default=None),
+    running_in_docker=os.environ.get("RUNNING_IN_DOCKER") == "1",
+)
 VPN_PROVIDER_TIMEOUT = config("VPN_PROVIDER_TIMEOUT", default=30, cast=int)
 VPN_HEALTH_CHECK_INTERVAL = config("VPN_HEALTH_CHECK_INTERVAL", default=300, cast=int)
 

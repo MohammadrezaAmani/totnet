@@ -173,7 +173,7 @@ def decline_challenge(*, user_id: int, brand_id: int) -> UserChallenge:
 def activate_challenge_from_wallet(*, user_id: int, brand_id: int) -> UserChallenge:
     try:
         challenge = (
-            UserChallenge.objects.select_for_update()
+            UserChallenge.objects.select_for_update(of=("self",))
             .select_related("program", "tier")
             .get(
                 user_id=user_id,
@@ -259,7 +259,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order) -> Refe
     """Reserve one purchase for an active challenge, until its selected target is full."""
     now = timezone.now()
     challenge = (
-        UserChallenge.objects.select_for_update()
+        UserChallenge.objects.select_for_update(of=("self",))
         .select_related("program", "tier")
         .filter(
             user_id=referral.referrer_id,
@@ -354,7 +354,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order) -> Refe
 @transaction.atomic
 def settle_challenge(*, challenge_id: int, force_success: bool = False) -> UserChallenge:
     challenge = (
-        UserChallenge.objects.select_for_update()
+        UserChallenge.objects.select_for_update(of=("self",))
         .select_related("program", "tier")
         .get(pk=challenge_id)
     )

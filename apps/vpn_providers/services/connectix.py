@@ -64,6 +64,7 @@ class ConnectixProvider:
             username=username if username is not None else settings.CONNECTIX_USERNAME,
             password=password if password is not None else settings.CONNECTIX_PASSWORD,
             timeout_seconds=timeout_seconds or settings.CONNECTIX_TIMEOUT_SECONDS,
+            proxy_url=settings.CONNECTIX_PROXY_URL,
             transport=transport,
         )
 

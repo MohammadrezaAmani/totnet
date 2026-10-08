@@ -47,4 +47,8 @@ make restore FILE=... CONFIRM=YES  # restore a backup; replaces database objects
 
 Docker layers keep dependency installation separate from source changes. BuildKit retains the uv package download cache across builds, and `uv.lock` is installed in locked mode. Redis cache data can be safely cleared with `make cache-clear`; this does not touch Celery's Redis service.
 
+## Bot and Connectix setup
+
+Configure `TELEGRAM_BOT_TOKEN`, `CONNECTIX_USERNAME`, `CONNECTIX_PASSWORD`, and `SOCKS5_PROXY` in `.env`. Run migrations, then `python manage.py setup_bot --sync-plans`. Bot startup registers the environment bot and its provider automatically. Run both the Celery worker and Beat scheduler so paid orders are provisioned and plans are refreshed every 15 minutes. Plan browsing reads Redis cache; checkout checks the current database record. Configure real payment cards and an enabled card-transfer payment method in Django admin before accepting card payments. See [Connectix details](docs/connectix-api.md) and [this workspace's runtime](docs/bot-runtime.md).
+
 To use Compose directly, `docker compose up --build` starts the development stack. `docker compose -f compose.yaml up --build -d` uses the image without the development bind mounts. The `.env` file is excluded from image builds and version control.
