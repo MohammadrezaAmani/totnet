@@ -22,6 +22,7 @@ from apps.subscriptions.tasks import provision_paid_order
 from apps.vpn_providers.models import VPNProvider
 
 from .base import BaseHandler
+from .plan_picker import PlanPickerMixin
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class PurchaseStep:
     UNDER_REVIEW = "under_review"
 
 
-class PurchaseHandler(BaseHandler):
+class PurchaseHandler(PlanPickerMixin, BaseHandler):
     """Handle subscription purchase flow"""
 
     CATEGORY_LABELS = {
@@ -144,6 +145,7 @@ class PurchaseHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(user, BotState.StateType.PURCHASE_FLOW, {
             "step": "plan_selection", "service_category": category, "special_offers": special_only,
+            "plan_picker": None,
         })
         text, keyboard = await self.get_plans(user, category=category, special_only=special_only, page=page)
         await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, keyboard)
@@ -153,7 +155,9 @@ class PurchaseHandler(BaseHandler):
         """Show the XMind purchase landing page."""
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
-            user, BotState.StateType.PURCHASE_FLOW, {"step": "service_selection"}
+            user, BotState.StateType.PURCHASE_FLOW, {
+                "step": "service_selection", "plan_picker": None, "special_offers": False,
+            }
         )
 
         text = f"""
@@ -161,7 +165,7 @@ class PurchaseHandler(BaseHandler):
 
 نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای سرویس‌ها را ببینید.
         """
-        services = [{"text": label, "callback_data": f"purchase_category_{category}"}
+        services = [{"text": label, "callback_data": f"purchase_category_{category}", "style": "primary"}
                     for category, label in self.CATEGORY_LABELS.items()]
         services.append({"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"})
         buttons = [services[index:index + 2] for index in range(0, len(services), 2)]
@@ -182,19 +186,7 @@ class PurchaseHandler(BaseHandler):
         if category not in self.CATEGORY_LABELS:
             await callback.answer("❌ دستهٔ سرویس نامعتبر است.", show_alert=True)
             return
-        user, _ = await self.get_or_create_user(callback.from_user)
-        await self.update_user_state(
-            user,
-            BotState.StateType.PURCHASE_FLOW,
-            {"step": "plan_selection", "service_category": category, "special_offers": False},
-        )
-        text, keyboard = await self.get_plans(
-            user, category=category, back_callback="purchase_subscription"
-        )
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
-        )
-        await callback.answer()
+        await self.show_service_picker(callback, category)
 
     async def show_special_offers(self, callback: types.CallbackQuery):
         """Show non-expired plans explicitly marked as special offers."""
@@ -202,7 +194,7 @@ class PurchaseHandler(BaseHandler):
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
-            {"step": "plan_selection", "special_offers": True, "service_category": None},
+            {"step": "plan_selection", "special_offers": True, "service_category": None, "plan_picker": None},
         )
         text, keyboard = await self.get_plans(
             user, special_only=True, back_callback="purchase_subscription"
@@ -284,6 +276,9 @@ class PurchaseHandler(BaseHandler):
         state_data = state.state_data or {}
         if state_data.get("special_offers"):
             back_callback = "purchase_special"
+        elif state_data.get("plan_picker"):
+            picker = state_data["plan_picker"]
+            back_callback = f"pf:{picker['token']}:stage:{picker['stage']}"
         else:
             category = state_data.get("service_category") or plan.service_category
             back_callback = f"purchase_category_{category}"
@@ -337,6 +332,7 @@ class PurchaseHandler(BaseHandler):
                     {
                         "text": "🛒 خرید این پلن",
                         "callback_data": f"purchase_plan_{plan_id}",
+                        "style": "success",
                     }
                 ],
                 [

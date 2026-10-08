@@ -428,6 +428,8 @@ class MultiBrandDispatcher:
 
             elif data == "purchase_subscription":
                 await handlers["purchase"].show_subscription_plans(callback)
+            elif data.startswith("pf:"):
+                await handlers["purchase"].handle_plan_filter(callback)
             elif data.startswith("purchase_category_"):
                 category = data.removeprefix("purchase_category_")
                 await handlers["purchase"].show_plans_by_category(callback, category)

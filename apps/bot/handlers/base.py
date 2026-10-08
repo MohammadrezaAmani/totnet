@@ -179,6 +179,7 @@ class BaseHandler:
                         callback_data=button.get("callback_data"),
                         url=button.get("url"),
                         web_app=button.get("web_app"),
+                        style=button.get("style"),
                     )
                     button_row.append(btn)
             keyboard.inline_keyboard.append(button_row)

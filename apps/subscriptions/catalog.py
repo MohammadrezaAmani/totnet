@@ -6,7 +6,7 @@ from decimal import Decimal
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils.dateparse import parse_datetime
 
 from .models import SubscriptionPlan
@@ -27,11 +27,12 @@ FIELDS = (
     "display_order",
     "discount_percentage",
     "offer_expires_at",
+    "upstream_group_id",
 )
 
 
 def catalog_key(brand_id):
-    return f"subscription-plan-catalog:v1:{brand_id}"
+    return f"subscription-plan-catalog:v2:{brand_id}"
 
 
 def invalidate_plan_catalog(brand_id):
@@ -53,8 +54,15 @@ def refresh_plan_catalog(brand_id):
             is_visible=True,
         )
         .filter(Q(vpn_provider__isnull=True) | Q(vpn_provider__status="active"))
+        .annotate(
+            purchase_count=Count(
+                "orders",
+                filter=Q(orders__brand_id=brand_id, orders__status="completed")
+                & ~Q(orders__order_type="reward_redemption"),
+            )
+        )
         .order_by("display_order", "price", "pk")
-        .values(*FIELDS)
+        .values(*FIELDS, "purchase_count")
     )
     for row in rows:
         for key in ("price", "traffic_limit_gb", "discount_percentage"):
@@ -86,11 +94,14 @@ async def get_cached_plans(brand_id):
     plans = []
     for row in rows:
         values = dict(row)
+        purchase_count = values.pop("purchase_count", 0)
         for key in ("price", "traffic_limit_gb", "discount_percentage"):
             if values[key] is not None:
                 values[key] = Decimal(values[key])
         if values["offer_expires_at"]:
             values["offer_expires_at"] = parse_datetime(values["offer_expires_at"])
         # Detached instances contain scalar fields only; never cache ORM objects.
-        plans.append(SubscriptionPlan(**values))
+        plan = SubscriptionPlan(**values)
+        plan.purchase_count = purchase_count
+        plans.append(plan)
     return plans
