@@ -223,6 +223,11 @@ class ReferralsHandler(BaseHandler):
             await callback.answer("❌ محتوای موردنظر یافت نشد.", show_alert=True)
             return
 
+        user, _ = await self.get_or_create_user(callback.from_user)
+        referral_link = await self.get_or_create_referral_link(user)
+        bot_username = await self.get_bot_username()
+        referral_url = f"https://t.me/{bot_username}?start={referral_link.code}"
+
         await MarketingMaterial.objects.filter(pk=material.pk).aupdate(
             usage_count=F("usage_count") + 1
         )
@@ -236,6 +241,7 @@ class ReferralsHandler(BaseHandler):
             if len(material.content) > len(content):
                 content += "…"
             text += f"\n\n<code>{escape(content)}</code>"
+        text += f"\n\n🔗 لینک معرفی شما:\n{escape(referral_url)}"
 
         keyboard = self.create_keyboard(
             [[{"text": "🔙 بازگشت به محتواها", "callback_data": "referral_materials"}]]
@@ -261,11 +267,20 @@ class ReferralsHandler(BaseHandler):
                 if url.startswith(("http://", "https://")):
                     source = url
             if source is not None:
+                caption_suffix = f"\n\n🔗 لینک معرفی:\n{referral_url}"
+                body = material.content or material.description or material.name
+                # Telegram captions have a 1024-character limit. Count UTF-16
+                # units conservatively so emoji cannot push the link past it.
+                budget = 1024 - len(caption_suffix.encode("utf-16-le")) // 2
+                encoded = body.encode("utf-16-le")
+                if len(encoded) // 2 > budget:
+                    body = encoded[: (budget - 1) * 2].decode("utf-16-le", errors="ignore") + "…"
+                caption = escape(body + caption_suffix)
                 try:
                     if material.material_type == MarketingMaterial.MaterialType.VIDEO:
-                        await self.bot.send_video(callback.message.chat.id, video=source)
+                        await self.bot.send_video(callback.message.chat.id, video=source, caption=caption, parse_mode="HTML")
                     else:
-                        await self.bot.send_photo(callback.message.chat.id, photo=source)
+                        await self.bot.send_photo(callback.message.chat.id, photo=source, caption=caption, parse_mode="HTML")
                 except Exception as exc:
                     logger.warning("Could not send referral material %s: %s", material.pk, exc)
 

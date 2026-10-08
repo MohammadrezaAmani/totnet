@@ -11,7 +11,6 @@ from asgiref.sync import sync_to_async
 from django.db.models import Sum
 
 from apps.referrals.models import (
-    Achievement,
     ReferralProgram,
     RewardAccount,
     RewardPointLedger,
@@ -44,12 +43,22 @@ class RewardsHandler(BaseHandler):
 
         from apps.referrals.models import ReferralReward
 
-        earned = await ReferralReward.objects.filter(
+        cashed_out = await ReferralReward.objects.filter(
             user=user,
             brand=self.brand,
             status=ReferralReward.RewardStatus.PROCESSED,
+            is_cashed_out=True,
         ).aaggregate(total=Sum("amount"))
-        earned_points = earned["total"] or 0
+        spent_ledger = await RewardPointLedger.objects.filter(
+            account__user=user,
+            account__brand=self.brand,
+            points_delta__lt=0,
+            entry_type__in=[
+                RewardPointLedger.EntryType.REDEEMED,
+                RewardPointLedger.EntryType.CONVERTED_TO_WALLET,
+            ],
+        ).aaggregate(total=Sum("points_delta"))
+        spent_points = (cashed_out["total"] or 0) - (spent_ledger["total"] or 0)
 
         open_box = await ReferralReward.objects.filter(
             user=user,
@@ -74,13 +83,13 @@ class RewardsHandler(BaseHandler):
 🩺 <b>درجه پزشکی:</b> {level_name}
 با فعالیت بیشتر در این سیستم اعتبار و جایگاه شما در این جامعه پزشکی ارتقا میابد.
 
-🧾 <b>تمام امتیازات کسب شده تا الان:</b> {earned_points:g}
+🧾 <b>تمام امتیازات خرج شده توسط شما تا الان:</b> {spent_points:g}
 
 📦 <b>جعبه امتیاز</b>
 • امتیازهای موجود در جعبه فعلی: {box_points:g}
-• قرص‌های تکمیل‌شده: {pills}
+• قرص‌های نقد: {pills}
 
-هر سه امتیاز عادی یک قرص کامل می‌سازد و ارزش نقدی همان سه تراکنش به موجودی نقد کیف پول منتقل می‌شود.
+هر سه امتیاز یک قرص نقدشونده می‌سازد و ارزش نقدی همان سه تراکنش به موجودی نقد کیف پول منتقل می‌شود.
         """
 
         keyboard = self.create_keyboard(
@@ -246,7 +255,7 @@ class RewardsHandler(BaseHandler):
 
 • هر خرید مستقیم کاربری که با لینک شما معرفی شده باشد، یک تراکنش و معادل یک امتیاز است.
 • ارزش نقدی هر امتیاز عادی برابر {normal_percent:g}٪ مبلغ همان خرید است.
-• هر ۳ امتیاز عادی یک قرص کامل می‌سازد؛ سپس مجموع ارزش نقدی همان سه امتیاز به موجودی نقد کیف پول شما منتقل می‌شود.
+• هر ۳ امتیاز عادی یک قرص نقدشونده می‌سازد؛ سپس مجموع ارزش نقدی همان سه امتیاز به موجودی نقد کیف پول شما منتقل می‌شود.
 • ارزش ریالی امتیازها ثابت نیست، چون به مبلغ خرید هر فرد بستگی دارد.
 • معرفی‌های بیشتر از تارگت چالش ویژه با درصد عادی سیستم محاسبه می‌شوند.
 • {challenge_line}

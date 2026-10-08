@@ -152,20 +152,6 @@ class PurchaseHandler(BaseHandler):
     async def show_subscription_plans(self, callback: types.CallbackQuery):
         """Show the XMind purchase landing page."""
         user, _ = await self.get_or_create_user(callback.from_user)
-        catalog = await get_cached_plans(self.brand.pk)
-        categories = {plan.service_category for plan in catalog}
-        has_special = any(plan.is_featured and (
-            plan.offer_expires_at is None or plan.offer_expires_at > timezone.now()
-        ) for plan in catalog)
-        if len(categories) <= 1 and not has_special:
-            category = next(iter(categories), None)
-            await self.update_user_state(user, BotState.StateType.PURCHASE_FLOW, {
-                "step": "plan_selection", "service_category": category, "special_offers": False,
-            })
-            text, keyboard = await self.get_plans(user, category=category, back_callback="main_menu")
-            await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, keyboard)
-            await callback.answer()
-            return
         await self.update_user_state(
             user, BotState.StateType.PURCHASE_FLOW, {"step": "service_selection"}
         )
@@ -176,9 +162,8 @@ class PurchaseHandler(BaseHandler):
 نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای سرویس‌ها را ببینید.
         """
         buttons = [[{"text": label, "callback_data": f"purchase_category_{category}"}]
-                   for category, label in self.CATEGORY_LABELS.items() if category in categories]
-        if has_special:
-            buttons.append([{"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"}])
+                   for category, label in self.CATEGORY_LABELS.items()]
+        buttons.append([{"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"}])
         buttons.extend([
             [{"text": "📖 راهنمای سرویس‌ها", "callback_data": "service_guide"}],
             [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],

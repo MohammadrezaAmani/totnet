@@ -71,7 +71,6 @@ class ProfileHandler(BaseHandler):
 
 👨‍💼 نام: {user.full_name or user.first_name or "ثبت نشده"}
 📱 تلفن: {user.phone_number or "ثبت نشده"}
-🆔 آیدی عددی: <code>{user.telegram_id}</code>
 👤 نام کاربری: {display_username}
 📅 تاریخ عضویت: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
 
@@ -80,8 +79,8 @@ class ProfileHandler(BaseHandler):
 📊 وضعیت:
 • اشتراک‌های فعال: {subscription_count}
 • درخواست ثبت اشتراک در انتظار بررسی: {pending_claim_count}
-• موجودی نقد کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
 • سطح کاربری: {rewards['level_title']}
+• موجودی نقد کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
         """
 
         keyboard = self.create_keyboard(
