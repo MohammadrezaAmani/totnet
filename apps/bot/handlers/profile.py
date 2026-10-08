@@ -16,6 +16,7 @@ from apps.subscriptions.models import Subscription, SubscriptionClaim
 from apps.referrals.selectors import reward_summary
 
 from .base import BaseHandler
+from utils.phone import normalize_iranian_phone, is_valid_iranian_phone
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class ProfileHandler(BaseHandler):
 📊 وضعیت:
 • اشتراک‌های فعال: {subscription_count}
 • درخواست ثبت اشتراک در انتظار بررسی: {pending_claim_count}
-• سطح کاربری: {rewards['level_title']}
+• سطح کاربری: {rewards["level_title"]}
 • موجودی نقد کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
         """
 
@@ -124,7 +125,6 @@ class ProfileHandler(BaseHandler):
         await self._render(callback, text, keyboard)
         await callback.answer()
 
-
     async def show_device_options(self, callback: types.CallbackQuery):
         """Let the user set the primary device used for the service."""
         user, _ = await self.get_or_create_user(callback.from_user)
@@ -162,6 +162,7 @@ class ProfileHandler(BaseHandler):
     async def request_field_update(self, callback: types.CallbackQuery, field: str):
         user, _ = await self.get_or_create_user(callback.from_user)
 
+        await self.clear_previous_keyboard(callback.message.chat.id, user)
         await self.update_user_state(
             user,
             BotState.StateType.PROFILE_EDIT,
@@ -183,6 +184,7 @@ class ProfileHandler(BaseHandler):
         keyboard = self.get_back_keyboard("edit_profile")
 
         await self._render(callback, text, keyboard)
+        await self.remember_profile_prompt(user, callback.message.message_id)
         await callback.answer()
 
     async def handle_profile_field_message(
@@ -200,7 +202,8 @@ class ProfileHandler(BaseHandler):
                 user.full_name = value
 
         elif field == "phone":
-            if not re.match(r"^(\+98|0)?9\d{9}$", value):
+            value = normalize_iranian_phone(value)
+            if not is_valid_iranian_phone(value):
                 error = "شماره تلفن معتبر نیست."
             else:
                 user.phone_number = value
@@ -216,13 +219,17 @@ class ProfileHandler(BaseHandler):
                 user, BotState.StateType.PROFILE_EDIT, state.state_data
             )
 
-            await self._render_message(
-                message, f"❌ {error}", self.get_back_keyboard("edit_profile")
+            await self.send_profile_prompt(
+                message.chat.id,
+                user,
+                f"❌ {error}",
+                self.get_back_keyboard("edit_profile"),
             )
             return
 
         await user.asave()
 
+        await self.clear_previous_keyboard(message.chat.id, user)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
         await self._render_message(

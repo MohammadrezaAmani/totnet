@@ -32,6 +32,7 @@ from apps.bot.handlers.survey import SurveyHandler
 from apps.bot.handlers.useful_content import UsefulContentHandler
 from apps.bot.handlers.wallet import WalletHandler
 from apps.bot.models import BotState
+from apps.bot.admission import BrandAdmissionMiddleware
 from apps.bot.services.broadcaster import BroadcastSubscriber
 from apps.bot.services.telegram_sender import TelegramSender
 from apps.brands.models import Brand
@@ -203,6 +204,12 @@ class MultiBrandDispatcher:
     async def setup_brand_routes(self, dp: Dispatcher, brand: Brand, handlers: dict):
         """Setup routes for a brand's bot"""
         router = Router()
+        admission = BrandAdmissionMiddleware(brand.pk)
+        for observer in (
+            router.message, router.callback_query, router.inline_query,
+            router.pre_checkout_query,
+        ):
+            observer.outer_middleware(admission)
 
         @router.message(CommandStart())
         async def start_command(message: Message, command: Command):

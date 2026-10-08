@@ -161,9 +161,10 @@ class PurchaseHandler(BaseHandler):
 
 نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای سرویس‌ها را ببینید.
         """
-        buttons = [[{"text": label, "callback_data": f"purchase_category_{category}"}]
-                   for category, label in self.CATEGORY_LABELS.items()]
-        buttons.append([{"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"}])
+        services = [{"text": label, "callback_data": f"purchase_category_{category}"}
+                    for category, label in self.CATEGORY_LABELS.items()]
+        services.append({"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"})
+        buttons = [services[index:index + 2] for index in range(0, len(services), 2)]
         buttons.extend([
             [{"text": "📖 راهنمای سرویس‌ها", "callback_data": "service_guide"}],
             [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
@@ -298,15 +299,11 @@ class PurchaseHandler(BaseHandler):
         )
 
         text = f"""
-📋 جزئیات پلن {escape(plan.name)}
+📋 <b>نام پلن:</b>
+<code>{escape(plan.name)}</code>
 
 🏷️ دسته: {self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display())}
-💰 قیمت: {self.format_price(plan.price, plan.currency)}
 """
-
-        if plan.discounted_price < plan.price:
-            text += f"🔥 تخفیف: {plan.discount_percentage:g}%\n"
-            text += f"💵 قیمت نهایی: {self.format_price(plan.discounted_price, plan.currency)}\n"
 
         text += "\n📊 مشخصات:\n"
 
@@ -328,8 +325,11 @@ class PurchaseHandler(BaseHandler):
             for feature in plan.features:
                 text += f"• {escape(str(feature))}\n"
 
-        if plan.description:
-            text += f"\n📝 توضیحات:\n{escape(plan.description)}\n"
+        text += f"\n💰 قیمت: {self.format_price(plan.price, plan.currency)}\n"
+        if plan.discounted_price < plan.price:
+            text += f"🔥 تخفیف: {plan.discount_percentage:g}%\n"
+            text += f"💵 قیمت نهایی: {self.format_price(plan.discounted_price, plan.currency)}\n"
+        text += "\nهدف راه اندازی این سیستم خرید راحت و آزادانه شماست\n"
 
         keyboard = self.create_keyboard(
             [

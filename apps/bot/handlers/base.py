@@ -5,12 +5,18 @@ Base handler class for the Multi-Tenant VPN Bot
 import logging
 
 from aiogram import Bot, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from django.core.cache import cache
 from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
+from apps.bot.admission import (
+    INVITE_REQUIRED_MESSAGE,
+    InvitationRequired,
+    registration_allowed,
+)
 from apps.brands.models import Brand
 
 logger = logging.getLogger(__name__)
@@ -24,7 +30,11 @@ class BaseHandler:
         self.brand = brand
 
     async def get_or_create_user(
-        self, telegram_user: types.User, use_cache: bool = True, cache_ttl: int = 300
+        self,
+        telegram_user: types.User,
+        use_cache: bool = True,
+        cache_ttl: int = 300,
+        referral_code: str | None = None,
     ) -> tuple[User, bool]:
         """Get or create user from Telegram user data."""
         CACHE_KEY: str = f"{self.brand.id}:{telegram_user.id}"
@@ -35,10 +45,14 @@ class BaseHandler:
             if cached:
                 # Cache only identity, never a serialized ORM instance. Cached model
                 # objects made profile/wallet/admin changes appear stale for up to the TTL.
-                cached_pk = cached if isinstance(cached, int) else getattr(cached, "pk", None)
+                cached_pk = (
+                    cached if isinstance(cached, int) else getattr(cached, "pk", None)
+                )
                 if cached_pk:
                     try:
-                        user = await User.objects.aget(pk=cached_pk, brand=self.brand)
+                        user = await User.objects.aget(
+                            pk=cached_pk, brand=self.brand, telegram_id=telegram_user.id
+                        )
                         return user, created
                     except User.DoesNotExist:
                         await cache.adelete(CACHE_KEY)
@@ -47,6 +61,8 @@ class BaseHandler:
                 telegram_id=telegram_user.id, brand=self.brand
             )
         except User.DoesNotExist:
+            if not await registration_allowed(self.brand.pk, referral_code):
+                raise InvitationRequired(INVITE_REQUIRED_MESSAGE)
             username = telegram_user.username or f"user_{telegram_user.id}"
             user = await User.objects.acreate(
                 telegram_id=telegram_user.id,
@@ -95,11 +111,10 @@ class BaseHandler:
             ).aget(pk=user.pk)
             if current.is_staff or current.is_superuser:
                 return True
-            if (
-                current.brand_id == self.brand.pk
-                and current.user_type
-                in {User.UserType.BRAND_MANAGER, User.UserType.BRAND_ADMIN}
-            ):
+            if current.brand_id == self.brand.pk and current.user_type in {
+                User.UserType.BRAND_MANAGER,
+                User.UserType.BRAND_ADMIN,
+            }:
                 return True
             return await current.admin_brands.filter(pk=self.brand.pk).aexists()
         except User.DoesNotExist:
@@ -107,6 +122,30 @@ class BaseHandler:
         except Exception as exc:
             logger.warning("Admin access lookup failed for user %s: %s", user.pk, exc)
             return False
+
+    async def clear_previous_keyboard(self, chat_id: int, user: User):
+        """Retire the previous profile prompt without deleting chat history."""
+        state = await self.get_user_state(user)
+        if state.last_message_id is None:
+            return
+        try:
+            await self.bot.edit_message_reply_markup(
+                chat_id=chat_id, message_id=state.last_message_id, reply_markup=None
+            )
+        except TelegramBadRequest as exc:
+            logger.warning("Could not retire profile keyboard: %s", exc.message)
+        state.last_message_id = None
+        await state.asave(update_fields=["last_message_id"])
+
+    async def remember_profile_prompt(self, user: User, message_id: int):
+        state = await self.get_user_state(user)
+        state.last_message_id = message_id
+        await state.asave(update_fields=["last_message_id"])
+
+    async def send_profile_prompt(self, chat_id: int, user: User, text: str, keyboard):
+        await self.clear_previous_keyboard(chat_id, user)
+        message = await self.send_message_with_keyboard(chat_id, text, keyboard)
+        await self.remember_profile_prompt(user, message.message_id)
 
     def get_brand_admin_recipients(self):
         """Return Telegram-reachable admins whose current grants include this brand."""
@@ -227,7 +266,7 @@ class BaseHandler:
         if currency in {"T", "IRT"}:
             try:
                 formatted = f"{float(amount):,.2f}".rstrip("0").rstrip(".")
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 formatted = str(amount)
             return f"{formatted} تومان"
         if currency == "USD":

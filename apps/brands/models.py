@@ -32,6 +32,11 @@ class Brand(models.Model):
     bot_token = models.CharField(max_length=255, unique=True)
     bot_username = models.CharField(max_length=100, null=True, blank=True)
     webhook_url = models.URLField(null=True, blank=True)
+    invite_only_registration = models.BooleanField(
+        "ورود کاربران جدید فقط با لینک دعوت",
+        default=False,
+        help_text="با فعال شدن این گزینه، کاربران جدید فقط با لینک دعوت فعال همین برند وارد می‌شوند. کاربران موجود محدودیتی ندارند.",
+    )
 
     telegram_channel = models.CharField(max_length=100, null=True, blank=True)
     telegram_group = models.CharField(max_length=100, null=True, blank=True)

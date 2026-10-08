@@ -28,7 +28,7 @@ class BrandAdmin(admin.ModelAdmin):
         "commission_rate",
         "created_at",
     )
-    list_filter = ("status", "is_verified", "created_at")
+    list_filter = ("status", "is_verified", "invite_only_registration", "created_at")
     search_fields = ("name", "slug", "domain", "contact_email", "support_email")
     readonly_fields = ("created_at", "updated_at")
     prepopulated_fields = {"slug": ("name",)}
@@ -47,6 +47,7 @@ class BrandAdmin(admin.ModelAdmin):
                     "bot_token",
                     "bot_username",
                     "webhook_url",
+                    "invite_only_registration",
                 )
             },
         ),

@@ -3,7 +3,6 @@ Start and Welcome Handler for Multi-Tenant VPN Bot
 """
 
 import logging
-import re
 from html import escape
 from typing import Optional
 
@@ -14,9 +13,11 @@ from django.db.models import Q
 
 from apps.accounts.models import User, UserProfile
 from apps.bot.models import BotState
+from apps.bot.admission import INVITE_REQUIRED_MESSAGE, InvitationRequired
 from apps.brands.models import BrandConfiguration
 from apps.brands.utils import renderer
 from apps.subscriptions.models import Subscription, SubscriptionClaim
+from utils.phone import normalize_iranian_phone, is_valid_iranian_phone
 
 from .base import BaseHandler
 
@@ -39,7 +40,13 @@ class StartHandler(BaseHandler):
             referral_code = command.args.strip()
 
         # Get or create user (with proper cache key fix in BaseHandler)
-        user, created = await self.get_or_create_user(telegram_user)
+        try:
+            user, created = await self.get_or_create_user(
+                telegram_user, referral_code=referral_code
+            )
+        except InvitationRequired:
+            await message.answer(INVITE_REQUIRED_MESSAGE)
+            return
 
         if referral_code:
             await self.process_referral_safely(user, referral_code)
@@ -105,7 +112,7 @@ class StartHandler(BaseHandler):
             ]
         )
 
-        await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
+        await self.send_profile_prompt(chat_id, user, welcome_text, keyboard)
 
     async def start_existing_subscription_registration(
         self, callback: types.CallbackQuery
@@ -121,7 +128,9 @@ class StartHandler(BaseHandler):
         profile_complete = bool(
             user.full_name and user.phone_number and profile and profile.device_type
         )
-        back_callback = "my_subscriptions" if profile_complete else "onboarding_no_subscription"
+        back_callback = (
+            "my_subscriptions" if profile_complete else "onboarding_no_subscription"
+        )
         text = (
             "📱 <b>ثبت اشتراک فعال</b>\n\n"
             "یوزرنیم اشتراک فعال خود را وارد کنید.\n"
@@ -134,6 +143,7 @@ class StartHandler(BaseHandler):
             text,
             self.get_back_keyboard(back_callback),
         )
+        await self.remember_profile_prompt(user, callback.message.message_id)
         await callback.answer()
 
     async def handle_existing_subscription_message(
@@ -215,7 +225,10 @@ class StartHandler(BaseHandler):
         continue_button = (
             {"text": "🏠 منوی اصلی", "callback_data": "main_menu"}
             if profile_complete
-            else {"text": "➡️ تکمیل پروفایل", "callback_data": "onboarding_finish_claims"}
+            else {
+                "text": "➡️ تکمیل پروفایل",
+                "callback_data": "onboarding_finish_claims",
+            }
         )
         keyboard = self.create_keyboard(
             [
@@ -228,7 +241,7 @@ class StartHandler(BaseHandler):
                 [continue_button],
             ]
         )
-        await self.send_message_with_keyboard(message.chat.id, result_text, keyboard)
+        await self.send_profile_prompt(message.chat.id, user, result_text, keyboard)
 
     async def get_config(self) -> BrandConfiguration:
         """Get brand configuration - use async properly"""
@@ -253,6 +266,7 @@ class StartHandler(BaseHandler):
         self, chat_id: int, user: User, callback: Optional[types.CallbackQuery] = None
     ):
         """Show main menu to user"""
+        await self.clear_previous_keyboard(chat_id, user)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
         try:
@@ -332,10 +346,45 @@ class StartHandler(BaseHandler):
     async def handle_profile_setup_callback(self, callback: types.CallbackQuery):
         """Handle profile setup callback"""
         user, _ = await self.get_or_create_user(callback.from_user)
+        state = await self.get_user_state(user)
+        step = (state.state_data or {}).get("step")
+        required_step = (
+            "device" if callback.data.startswith("setup_device_") else "phone"
+        )
+        if (
+            callback.data in {"request_phone", "skip_phone"}
+            or callback.data.startswith("setup_device_")
+        ) and (
+            state.current_state != BotState.StateType.PROFILE_SETUP
+            or step != required_step
+        ):
+            await callback.answer(
+                "این مرحله پایان یافته است. از منوی اصلی استفاده کنید."
+            )
+            return
+        if callback.data.startswith("onboarding_") and state.current_state not in {
+            BotState.StateType.PROFILE_SETUP,
+            BotState.StateType.SUBSCRIPTION_MANAGEMENT,
+        }:
+            await callback.answer(
+                "این مرحله پایان یافته است. از منوی اصلی استفاده کنید."
+            )
+            return
 
-        if callback.data in {"setup_profile", "onboarding_no_subscription", "onboarding_finish_claims"}:
+        if state.last_message_id != callback.message.message_id:
+            await self.clear_previous_keyboard(callback.message.chat.id, user)
+        await self.remember_profile_prompt(user, callback.message.message_id)
+
+        if callback.data in {
+            "setup_profile",
+            "onboarding_no_subscription",
+            "onboarding_finish_claims",
+        }:
             await self.start_profile_setup(callback.message.chat.id, user)
-        elif callback.data in {"onboarding_existing_subscription", "onboarding_add_subscription"}:
+        elif callback.data in {
+            "onboarding_existing_subscription",
+            "onboarding_add_subscription",
+        }:
             await self.start_existing_subscription_registration(callback)
             return
         elif callback.data == "request_phone":
@@ -374,6 +423,13 @@ class StartHandler(BaseHandler):
         )
 
     async def handle_contact_message(self, message: types.Message, user: User):
+        state = await self.get_user_state(user)
+        if (
+            state.current_state != BotState.StateType.PROFILE_SETUP
+            or (state.state_data or {}).get("step") != "phone"
+        ):
+            await message.reply("برای تغییر شماره از بخش ویرایش پروفایل استفاده کنید.")
+            return
         contact = message.contact
         if not contact or contact.user_id != message.from_user.id:
             await message.reply("لطفاً شماره تماس خودتان را از تلگرام ارسال کنید.")
@@ -404,7 +460,7 @@ class StartHandler(BaseHandler):
         """
 
         keyboard = self.get_back_keyboard("main_menu")
-        await self.send_message_with_keyboard(chat_id, text, keyboard)
+        await self.send_profile_prompt(chat_id, user, text, keyboard)
 
     async def handle_profile_setup_message(
         self, message: types.Message, user: User, state: BotState
@@ -436,8 +492,9 @@ class StartHandler(BaseHandler):
             [[{"text": "📱 ارسال شماره تلفن", "callback_data": "request_phone"}]]
         )
 
-        await self.send_message_with_keyboard(
+        await self.send_profile_prompt(
             message.chat.id,
+            user,
             "✅ نام شما ثبت شد.\n\n📱 لطفاً شماره تلفن خود را وارد کنید:",
             keyboard,
         )
@@ -464,7 +521,9 @@ class StartHandler(BaseHandler):
 
         await self._update_user_phone(user.id, phone)
         user.phone_number = phone
-        await message.reply("✅ شماره تلفن ثبت شد.")
+        await message.reply(
+            "✅ شماره تلفن ثبت شد.", reply_markup=types.ReplyKeyboardRemove()
+        )
         await self.show_device_setup(message.chat.id, user)
 
     async def show_device_setup(self, chat_id: int, user: User):
@@ -481,10 +540,14 @@ class StartHandler(BaseHandler):
             (UserProfile.DeviceType.LINUX, "لینوکس"),
         ]
         keyboard = self.create_keyboard(
-            [[{"text": label, "callback_data": f"setup_device_{value}"}] for value, label in choices]
+            [
+                [{"text": label, "callback_data": f"setup_device_{value}"}]
+                for value, label in choices
+            ]
         )
-        await self.send_message_with_keyboard(
+        await self.send_profile_prompt(
             chat_id,
+            user,
             "📱 <b>نوع دستگاه</b>\n\nدستگاه اصلی خود را انتخاب کنید:",
             keyboard,
         )
@@ -493,32 +556,32 @@ class StartHandler(BaseHandler):
         valid = {value for value, _ in UserProfile.DeviceType.choices}
         if device_type not in valid:
             await self.send_message_with_keyboard(
-                chat_id, "❌ نوع دستگاه معتبر نیست.", self.get_back_keyboard("setup_profile")
+                chat_id,
+                "❌ نوع دستگاه معتبر نیست.",
+                self.get_back_keyboard("setup_profile"),
             )
             return
         profile, _ = await UserProfile.objects.aget_or_create(user=user)
         profile.device_type = device_type
         await profile.asave(update_fields=["device_type", "updated_at"])
+        await self.clear_previous_keyboard(chat_id, user)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-        await self.send_message_with_keyboard(
-            chat_id, "✅ پروفایل شما با موفقیت تکمیل شد."
+        await self.bot.send_message(
+            chat_id,
+            "✅ پروفایل شما با موفقیت تکمیل شد.",
+            reply_markup=types.ReplyKeyboardRemove(),
         )
         await self.show_main_menu(chat_id, user)
 
     @staticmethod
     def _normalize_phone(phone: str) -> str:
         """Normalize phone number format"""
-        phone = phone.strip()
-        if phone.startswith("+98"):
-            phone = "0" + phone[3:]
-        elif phone.startswith("98") and not phone.startswith("0"):
-            phone = "0" + phone[2:]
-        return phone
+        return normalize_iranian_phone(phone)
 
     @staticmethod
     def _is_valid_iranian_phone(phone: str) -> bool:
         """Validate Iranian mobile phone number"""
-        return bool(re.match(r"^09\d{9}$", phone))
+        return is_valid_iranian_phone(phone)
 
     @sync_to_async
     def _update_user_phone(self, user_id: int, phone: str):
