@@ -33,6 +33,7 @@ class BotState(models.Model):
     state_data = models.JSONField(default=dict, blank=True)
 
     last_message_id = models.BigIntegerField(null=True, blank=True)
+    welcome_shown_at = models.DateTimeField(null=True, blank=True)
     last_inline_message_id = models.CharField(max_length=255, null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

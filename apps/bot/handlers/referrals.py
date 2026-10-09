@@ -56,7 +56,7 @@ class ReferralsHandler(BaseHandler):
         """Referrals whose referee has at least one fully-paid positive purchase."""
         paid_orders = (
             Order.objects.filter(
-                user_id=OuterRef("referee_id"),
+                Q(user_id=OuterRef("referee_id")) | Q(recipient_id=OuterRef("referee_id"), recipient_claimed_at__isnull=False),
                 brand=self.brand,
                 final_price__gt=0,
                 status__in=[
@@ -105,7 +105,7 @@ class ReferralsHandler(BaseHandler):
 
 📊 <b>آمار معرفی:</b>
 • کل معرفی‌های موفق: {successful_referrals}
-• معرفی‌های فعال: {active_referrals}
+• معرفی‌های جاری(دارای اشتراک فعال): {active_referrals}
 
 👨🏽‍⚕ این سیستم راه اندازی شده تا افراد به بهترین کیفیت اینترنت اما بدون هزینه دسترسی داشته باشند.
 فعالیت و معرفی بیشتر توسط شما ضمن کاهش محسوس و دائمی هزینه های شما منجر به احقاق این حق مسلم برای افراد بیشتری میشود،
@@ -114,7 +114,7 @@ class ReferralsHandler(BaseHandler):
 
         keyboard = self.create_keyboard(
             [
-                [{"text": "📤 اشتراک‌گذاری لینک", "callback_data": "share_referral"}],
+                [{"text": "📤 اشتراک‌گذاری لینک", "copy_text": {"text": referral_url}}],
                 [{"text": "🧰 محتواهای کمکی", "callback_data": "referral_materials"}],
                 [{"text": "📈 آمار معرفی", "callback_data": "referral_stats"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
@@ -151,7 +151,7 @@ class ReferralsHandler(BaseHandler):
 📈 <b>آمار معرفی</b>
 
 • کل معرفی‌های موفق: {successful_referrals}
-• معرفی‌های فعال: {active_referrals}
+• معرفی‌های جاری(دارای اشتراک فعال): {active_referrals}
         """
 
         keyboard = self.create_keyboard(
@@ -287,60 +287,8 @@ class ReferralsHandler(BaseHandler):
         await callback.answer()
 
     async def share_referral_link(self, callback: types.CallbackQuery):
-        """Share referral link with user"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-
-        referral_link = await self.get_or_create_referral_link(user)
-
-        bot_username = await self.get_bot_username()
-        referral_url = f"https://t.me/{bot_username}?start={referral_link.code}"
-
-        text = f"""
-📤 لینک معرفی شما برای اشتراک‌گذاری:
-
-<code>{referral_url}</code>
-
-با اشتراک‌گذاری این لینک، دوستان شما می‌توانند از بات استفاده کنند و شما هم امتیاز کسب خواهید کرد!
-        """
-
-        keyboard = self.create_keyboard(
-            [
-                [
-                    {
-                        "text": "🔗 کپی کردن لینک",
-                        "callback_data": "copy_referral_link",
-                    }
-                ],
-                [{"text": "🔙 بازگشت", "callback_data": "referral_system"}],
-            ]
-        )
-
-        try:
-            await self.edit_message_with_keyboard(
-                callback.message.chat.id, callback.message.message_id, text, keyboard
-            )
-        except Exception as e:
-            logger.warning(f"Could not edit message: {e}")
-            await self.send_message_with_keyboard(
-                callback.message.chat.id, text, keyboard
-            )
-
-        await callback.answer("✅ لینک معرفی شما آماده است!")
+        # Retire older keyboards; Telegram's native CopyTextButton owns clipboard access.
+        await self.show_referral_menu(callback)
 
     async def copy_referral_link(self, callback: types.CallbackQuery):
-        """Copy referral link to clipboard"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-
-        try:
-            referral_link = await ReferralLink.objects.aget(user=user, brand=self.brand)
-        except ReferralLink.DoesNotExist:
-            await callback.answer("❌ لینک معرفی یافت نشد.")
-            return
-
-        bot_username = await self.get_bot_username()
-        referral_url = f"https://t.me/{bot_username}?start={referral_link.code}"
-
-        await callback.answer(
-            f"لینک شما: {referral_url}\n\nتوجه: لطفاً لینک را کپی کنید و برای دوستانتان بفرستید.",
-            show_alert=False,
-        )
+        await self.show_referral_menu(callback)

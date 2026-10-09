@@ -48,6 +48,7 @@ class SupportTicketAdmin(admin.ModelAdmin):
         "customer",
         "category",
         "subject",
+        "device_type",
         "status",
         "priority",
         "source",
@@ -81,6 +82,7 @@ class SupportTicketAdmin(admin.ModelAdmin):
                     "category",
                     "subject",
                     "description",
+                    "device_type",
                 )
             },
         ),
@@ -295,9 +297,14 @@ class UsefulContentAdmin(admin.ModelAdmin):
         "is_active",
         "updated_at",
     )
-    list_filter = ("category", "is_active", "brand")
+    list_filter = ("category", "app_family", "platform", "is_active", "brand")
     search_fields = ("brand__name", "title", "description", "content", "download_url")
     list_editable = ("display_order", "is_active")
+
+    def save_model(self, request, obj, form, change):
+        if change and {"file", "installer_url"} & set(form.changed_data) and "telegram_file_id" not in form.changed_data:
+            obj.telegram_file_id = ""
+        super().save_model(request, obj, form, change)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

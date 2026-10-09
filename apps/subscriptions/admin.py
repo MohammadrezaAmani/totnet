@@ -386,7 +386,7 @@ class SubscriptionClaimAdmin(admin.ModelAdmin):
         for claim_id in queryset.values_list("pk", flat=True):
             with transaction.atomic():
                 claim = (
-                    SubscriptionClaim.objects.select_for_update()
+                    SubscriptionClaim.objects.select_for_update(of=("self",))
                     .select_related("matched_subscription")
                     .get(pk=claim_id)
                 )
@@ -399,6 +399,16 @@ class SubscriptionClaimAdmin(admin.ModelAdmin):
                 Subscription.objects.select_for_update().filter(pk=subscription.pk).update(
                     owner_id=claim.user_id
                 )
+                from apps.orders.models import Order
+                from apps.referrals.services import _enqueue_claimed_gift_reward
+                order = Order.objects.select_for_update().filter(pk=subscription.order_id, order_type=Order.OrderType.GIFT).first()
+                if order and order.user_id != claim.user_id and not order.recipient_claimed_at:
+                    order.recipient_id = claim.user_id
+                    order.recipient_claimed_at = timezone.now()
+                    order.save(update_fields=["recipient", "recipient_claimed_at", "updated_at"])
+                    payment = order.payments.filter(status="confirmed").order_by("-created_at", "-pk").first()
+                    if payment:
+                        transaction.on_commit(lambda pid=str(payment.payment_id): _enqueue_claimed_gift_reward(pid))
                 claim.status = SubscriptionClaim.Status.APPROVED
                 claim.reviewed_by = request.user
                 claim.reviewed_at = timezone.now()

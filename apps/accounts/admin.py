@@ -77,6 +77,9 @@ class UserProfileInline(admin.StackedInline):
     fk_name = "user"
     fields = (
         "device_type",
+        "devices",
+        "work_location",
+        "living_location",
         "country",
         "city",
         "timezone",

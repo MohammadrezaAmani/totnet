@@ -19,6 +19,7 @@ from apps.subscriptions.models import (
     SubscriptionPlan,
 )
 from apps.vpn_providers.models import VPNProvider
+from apps.subscriptions.usage import remaining_usage
 
 from .base import BaseHandler
 
@@ -28,15 +29,20 @@ logger = logging.getLogger(__name__)
 class SubscriptionHandler(BaseHandler):
     """Handle subscription management and delivery"""
 
-    async def show_my_subscriptions(self, callback: types.CallbackQuery):
+    async def show_my_subscriptions(self, callback: types.CallbackQuery, page: int = 1):
         """List subscriptions directly; selecting one opens its renewal choices."""
         user, _ = await self.get_or_create_user(callback.from_user)
+        queryset = Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand).exclude(status=Subscription.SubscriptionStatus.CANCELLED)
+        total = await queryset.acount()
+        per_page = 8
+        last_page = max(1, (total + per_page - 1) // per_page)
+        page = max(1, min(page, last_page))
         subscriptions = []
         async for sub in (
             Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand)
-            .select_related("plan", "owner", "user", "vpn_provider")
+            .select_related("plan", "owner", "user", "vpn_provider", "remote_account")
             .exclude(status=Subscription.SubscriptionStatus.CANCELLED)
-            .order_by("-created_at")[:40]
+            .order_by("-created_at")[(page - 1) * per_page:page * per_page]
         ):
             subscriptions.append(sub)
 
@@ -78,12 +84,9 @@ class SubscriptionHandler(BaseHandler):
                 service_type = category_labels.get(
                     sub.plan.service_category, sub.plan.name
                 )
-                traffic = (
-                    f"{sub.traffic_limit_gb:g}گ"
-                    if sub.traffic_limit_gb is not None
-                    else "نامحدود"
-                )
-                label = f"{username} • {service_type} • {traffic}"
+                remaining_traffic, remaining_time = remaining_usage(sub)
+                label = f"{username} • {service_type}"
+                text += f"\n\n👤 <code>{escape(username)}</code> • {escape(service_type)}\n📦 حجم باقیمانده: {escape(remaining_traffic)}\n⏳ زمان باقیمانده: {escape(remaining_time)}"
                 if len(label) > 58:
                     label = label[:57] + "…"
                 rows.append(
@@ -103,6 +106,13 @@ class SubscriptionHandler(BaseHandler):
                 rows.append(
                     [{"text": label, "callback_data": f"subscription_claim_{claim.pk}"}]
                 )
+            if last_page > 1:
+                text += f"\n\nصفحه {page} از {last_page} · {total} اشتراک"
+                rows.append([
+                    {"text": label, "callback_data": f"subscriptions_page_{target}"}
+                    for target, label in ((page - 1, "◀️ قبلی"), (page + 1, "بعدی ▶️"))
+                    if 1 <= target <= last_page
+                ])
             rows.extend(
                 [
                     [{"text": "📎 ثبت اشتراک فعال", "callback_data": "onboarding_existing_subscription"}],
@@ -246,7 +256,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related(
-                    "plan", "owner", "user", "vpn_provider"
+                    "plan", "owner", "user", "vpn_provider", "remote_account"
                 )
                 .filter(Q(user=user) | Q(owner=user), brand=self.brand)
                 .aget(pk=subscription_id)
@@ -291,12 +301,15 @@ class SubscriptionHandler(BaseHandler):
             else "طرح فعلی شما دیگر برای فروش فعال نیست؛ یکی از طرح‌های فعال زیر را انتخاب کنید."
         )
 
+        remaining_traffic, remaining_time = remaining_usage(subscription)
         text = f"""
 🔄 <b>تمدید / تغییر طرح</b>
 
 👤 یوزرنیم: <code>{escape(username)}</code>
 🏷 نوع فعلی: {escape(current_category)}
 📦 حجم فعلی: {current_traffic}
+📊 حجم باقیمانده: {escape(remaining_traffic)}
+⏳ زمان باقیمانده: {escape(remaining_time)}
 ⏰ انقضا: {expiry}
 
 {renewal_hint}

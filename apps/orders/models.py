@@ -60,6 +60,13 @@ class Order(models.Model):
         blank=True,
     )
     recipient_email = models.EmailField(null=True, blank=True)
+    recipient_telegram_username = models.CharField(max_length=100, blank=True)
+    recipient_claimed_at = models.DateTimeField(null=True, blank=True)
+    gift_reward_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    gift_reward_challenge = models.ForeignKey(
+        "referrals.UserChallenge", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="gift_orders",
+    )
 
     original_price = models.DecimalField(max_digits=15, decimal_places=2)
     discount_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)

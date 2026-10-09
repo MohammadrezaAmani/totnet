@@ -106,6 +106,10 @@ class UserProfile(models.Model):
     device_type = models.CharField(
         max_length=32, choices=DeviceType.choices, null=True, blank=True
     )
+    devices = models.JSONField(default=list, blank=True)
+    work_location = models.CharField(max_length=255, blank=True)
+    living_location = models.CharField(max_length=255, blank=True)
+    profile_reward_granted_at = models.DateTimeField(null=True, blank=True, editable=False)
     country = models.CharField(max_length=100, null=True, blank=True)
     city = models.CharField(max_length=100, null=True, blank=True)
     timezone = models.CharField(max_length=50, default="UTC")

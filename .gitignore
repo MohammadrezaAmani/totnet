@@ -15,3 +15,5 @@ var
 staticfiles/
 backups/
 .docker-build-cache/
+
+media/

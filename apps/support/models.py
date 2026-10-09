@@ -101,6 +101,14 @@ class SupportTicket(models.Model):
     assigned_at = models.DateTimeField(null=True, blank=True)
 
     subject = models.CharField(max_length=255)
+    device_type = models.CharField(
+        max_length=32, blank=True, choices=[
+            ("android_samsung", "اندروید سامسونگ"),
+            ("android_other", "شیائومی و سایر"),
+            ("iphone", "آیفون"), ("windows", "ویندوز"),
+            ("macos", "مکینتاش"), ("linux", "لینوکس"),
+        ]
+    )
     description = models.TextField()
     status = models.CharField(
         max_length=20, choices=TicketStatus.choices, default=TicketStatus.OPEN
@@ -170,14 +178,13 @@ class SupportTicket(models.Model):
     def save(self, *args, **kwargs):
         if not self.ticket_number:
             import random
-            from datetime import datetime
 
-            date_str = datetime.now().strftime("%Y%m%d")
+            date_str = timezone.now().strftime("%Y%m%d")
             random_part = str(random.randint(10000, 99999))
             self.ticket_number = f"TKT-{date_str}-{random_part}"
         
         if not self.sla_response_due and self.category:
-            self.created_at = self.created_at or datetime.now()
+            self.created_at = self.created_at or timezone.now()
             self.sla_response_due = self.created_at + timedelta(
                 hours=self.category.response_time_hours
             )
@@ -321,6 +328,7 @@ class UsefulContent(models.Model):
         INSTALL = "install", "Install and import subscription"
         APP_USAGE = "app_usage", "Application usage guide"
         FAQ = "faq", "Frequently asked questions"
+        INTERNET_TIPS = "internet_tips", "Internet quality and speed tips"
 
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="useful_contents"
@@ -330,6 +338,16 @@ class UsefulContent(models.Model):
     description = models.TextField(blank=True)
     content = models.TextField(blank=True)
     download_url = models.URLField(max_length=1000, blank=True)
+    app_family = models.CharField(max_length=24, blank=True, choices=[
+        ("connectix", "Connectix"), ("v2rayng", "v2rayNG"), ("happ", "Happ"),
+    ])
+    platform = models.CharField(max_length=32, blank=True, choices=[
+        ("iphone", "iPhone"), ("android", "Android"),
+        ("windows", "Windows"), ("macos", "macOS"), ("linux", "Linux"),
+    ])
+    variant = models.CharField(max_length=32, blank=True)
+    installer_url = models.URLField(max_length=1000, blank=True)
+    telegram_file_id = models.CharField(max_length=255, blank=True, help_text="Telegram file_id for installers already uploaded to this bot, including files over 50 MB.")
     file = models.FileField(upload_to="useful_content/", null=True, blank=True)
     display_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)

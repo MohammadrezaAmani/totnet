@@ -99,7 +99,7 @@ class HelpHandler(BaseHandler):
         keyboard = self.create_keyboard(
             [
                 [{"text": "🛟 پشتیبانی", "callback_data": "support"}],
-                [{"text": "📚 محتواهای کاربردی", "callback_data": "useful_content"}],
+                [{"text": "📚 آکادمی(محتواهای کاربردی)", "callback_data": "useful_content"}],
                 [{"text": "🔙 بازگشت", "callback_data": "help"}],
             ]
         )

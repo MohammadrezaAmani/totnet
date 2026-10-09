@@ -178,6 +178,7 @@ class BaseHandler:
                         text=button["text"],
                         callback_data=button.get("callback_data"),
                         url=button.get("url"),
+                        copy_text=button.get("copy_text"),
                         web_app=button.get("web_app"),
                         style=button.get("style"),
                     )
@@ -203,7 +204,7 @@ class BaseHandler:
             ],
             [
                 {"text": "🏆 چالش‌های فعال", "callback_data": "active_challenges"},
-                {"text": "📚 محتواهای کاربردی", "callback_data": "useful_content"},
+                {"text": "📚 آکادمی(محتواهای کاربردی)", "callback_data": "useful_content"},
             ],
         ]
 

@@ -58,6 +58,12 @@ class Command(BaseCommand):
             )
         BrandConfiguration.objects.get_or_create(brand=brand)
         BrandTheme.objects.get_or_create(brand=brand)
+        from apps.support.download_catalog import seed_academy
+        from apps.support.models import SupportCategory, UsefulContent
+        seed_academy(brand, UsefulContent)
+        if not SupportCategory.objects.filter(brand=brand).exists():
+            for index, name in enumerate(["مشکل اتصال", "مشکل پرداخت", "اشتراک و تمدید", "سایر مسائل"]):
+                SupportCategory.objects.create(brand=brand, name=name, display_order=index)
         self.stdout.write(f"Bot brand ready: {brand.slug} ({brand.status})")
         if settings.CONNECTIX_USERNAME and settings.CONNECTIX_PASSWORD:
             provider = VPNProvider.objects.filter(

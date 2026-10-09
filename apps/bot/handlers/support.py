@@ -5,6 +5,8 @@ Handles support tickets, FAQ, ratings, and customer service operations.
 
 import logging
 import math
+import uuid
+from html import escape
 
 from aiogram import types
 from aiogram.types import InlineKeyboardMarkup
@@ -56,7 +58,8 @@ class SupportHandler(BaseHandler):
         text = f"""
 🛟 <b>مرکز پشتیبانی {self.brand.name}</b>
 
-احتمال زیاد مشکل و سوال شما در بخش محتواهای آموزشی وجود دارد، در غیر این صورت تیکت ثبت کنید تا در اولین فرصت رسیدگی شود.
+محتواهای کاربردی(احتمال زیاد راه حل مشکل شما قبلاً در این بخش گفته شده)
+در غیر این صورت تیکت ثبت کنید تا در اولین فرصت رسیدگی شود.
 
 📊 <b>وضعیت تیکت‌های شما:</b>
 • تیکت‌های باز: <b>{open_tickets_count}</b>
@@ -68,7 +71,7 @@ class SupportHandler(BaseHandler):
                 {"text": "🎫 ایجاد تیکت جدید", "callback_data": "create_ticket"},
                 {"text": "📋 تیکت‌های من", "callback_data": "my_tickets"},
             ],
-            [{"text": "📚 محتواهای کاربردی", "callback_data": "useful_content"}],
+            [{"text": "📚 محتواهای کاربردی(احتمال زیاد راه حل مشکل شما قبلاً در این بخش گفته شده)", "callback_data": "useful_content"}],
             [
                 {"text": "📞 اطلاعات تماس", "callback_data": "contact_info"},
                 {"text": "🔙 بازگشت", "callback_data": "main_menu"},
@@ -92,7 +95,10 @@ class SupportHandler(BaseHandler):
             await callback.answer("❌ در حال حاضر دسته‌بندی فعالی وجود ندارد.", show_alert=True)
             return
 
-        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, {"step": "category"})
+        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET)
+        await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, {
+            "step": "category", "ticket_id": str(uuid.uuid4()), "device_type": ""
+        })
 
         text = """
 🎫 <b>ایجاد تیکت جدید</b>
@@ -104,10 +110,47 @@ class SupportHandler(BaseHandler):
         for cat in categories:
             buttons.append([{"text": f"🔹 {cat.name}", "callback_data": f"ticket_cat_{cat.id}"}])
 
+        buttons.extend(self._ticket_device_buttons(""))
         buttons.append([{"text": "🔙 بازگشت", "callback_data": "support"}])
 
         await self._safe_edit_or_send(callback, text, self.create_keyboard(buttons))
         await callback.answer()
+
+    DEVICE_LABELS = {
+        "android_samsung": "اندروید سامسونگ", "android_other": "شیائومی و سایر",
+        "iphone": "آیفون", "windows": "ویندوز", "macos": "مکینتاش", "linux": "لینوکس",
+    }
+
+    def _ticket_device_buttons(self, selected):
+        rows = [[{"text": "اگر تیکت شما مربوط به دستگاه خاصی هست، انتخابش کنید", "callback_data": "ticket_noop"}]]
+        choices = [
+            {"text": ("✅ " if key == selected else "") + label, "callback_data": f"ticket_device_{key}"}
+            for key, label in self.DEVICE_LABELS.items()
+        ]
+        rows.extend([choices[i:i + 3] for i in range(0, len(choices), 3)])
+        rows.append([{"text": "بدون انتخاب دستگاه (اختیاری)", "callback_data": "ticket_device_none"}])
+        return rows
+
+    async def select_ticket_device(self, callback, device):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        state = await self.get_user_state(user)
+        if state.current_state != BotState.StateType.SUPPORT_TICKET or state.state_data.get("step") not in {"category", "subject", "description"}:
+            await callback.answer("برای انتخاب دستگاه، تیکت جدید باز کنید.", show_alert=True)
+            return
+        if device != "none" and device not in self.DEVICE_LABELS:
+            await callback.answer("دستگاه نامعتبر است.")
+            return
+        chosen = "" if device == "none" else device
+        if state.state_data.get("device_type", "") == chosen:
+            await callback.answer("انتخاب شما ثبت شده است.")
+            return
+        state.state_data["device_type"] = chosen
+        await state.asave(update_fields=["state_data", "updated_at"])
+        old = callback.message.reply_markup.inline_keyboard if callback.message.reply_markup else []
+        rows = [[b.model_dump(exclude_none=True) for b in row] for row in old if not any((b.callback_data or "").startswith("ticket_device_") or b.callback_data == "ticket_noop" for b in row)]
+        rows[-1:-1] = self._ticket_device_buttons(state.state_data["device_type"])
+        await self.bot.edit_message_reply_markup(chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=self.create_keyboard(rows))
+        await callback.answer("✅ دستگاه انتخاب شد" if device != "none" else "انتخاب دستگاه حذف شد")
 
     # ──────────────────────────────────────────────────────────────
     # 2. Ticket Creation Flow
@@ -125,21 +168,24 @@ class SupportHandler(BaseHandler):
             await callback.answer("❌ دسته‌بندی نامعتبر است.", show_alert=True)
             return
 
+        state = await self.get_user_state(user)
+        if state.current_state != BotState.StateType.SUPPORT_TICKET or state.state_data.get("step") != "category":
+            await callback.answer("این منو قدیمی است؛ تیکت جدید باز کنید.", show_alert=True)
+            return
         await self.update_user_state(user, BotState.StateType.SUPPORT_TICKET, {
-            "step": "subject",
-            "category_id": category_id
+            "step": "subject", "category_id": category_id
         })
 
         text = f"""
 🎫 <b>ایجاد تیکت جدید</b>
 
-دسته‌بندی انتخابی: <b>{category.name}</b>
+دسته‌بندی انتخابی: <b>{escape(category.name)}</b>
 
 ✍️ لطفاً موضوع مشکل خود را به طور خلاصه بنویسید:
 <i>(بین ۱۰ تا ۱۰۰ کاراکتر)</i>
         """
 
-        keyboard = self.get_back_keyboard("create_ticket")
+        keyboard = self.create_keyboard(self._ticket_device_buttons(state.state_data.get("device_type", "")) + [[{"text": "🔙 بازگشت", "callback_data": "create_ticket"}]])
         await self._safe_edit_or_send(callback, text, keyboard)
         await callback.answer()
 
@@ -163,12 +209,12 @@ class SupportHandler(BaseHandler):
         text = f"""
 🎫 <b>ایجاد تیکت جدید</b>
 
-موضوع: <b>{subject}</b>
+موضوع: <b>{escape(subject)}</b>
 
 📝 لطفاً توضیحات دقیق مشکل خود را بنویسید.
 <i>(حداقل ۲۰ کاراکتر. می‌توانید لاگ‌ها یا جزئیات را اضافه کنید.)</i>
         """
-        keyboard = self.get_back_keyboard("create_ticket")
+        keyboard = self.create_keyboard(self._ticket_device_buttons(state_data.get("device_type", "")) + [[{"text": "🔙 بازگشت", "callback_data": "create_ticket"}]])
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
     async def handle_ticket_description(self, message: types.Message, user: User, state: BotState):
@@ -187,48 +233,48 @@ class SupportHandler(BaseHandler):
             category = await SupportCategory.objects.aget(id=category_id, brand=self.brand)
             
             # Create ticket atomically
-            ticket = await self._create_ticket(user, category, subject, description)
+            ticket = await self._create_ticket(user, category, subject, description,
+                device_type=state_data.get("device_type", ""), ticket_id=state_data.get("ticket_id"))
             
-            await self.update_user_state(user, BotState.StateType.MAIN_MENU, {})
-
-            text = f"""
-✅ <b>تیکت شما با موفقیت ثبت شد!</b>
-
-🎫 شماره تیکت: <code>{ticket.ticket_number}</code>
-📌 موضوع: {ticket.subject}
-⏰ زمان ایجاد: {ticket.created_at.strftime("%Y/%m/%d %H:%M")}
-
-تیم پشتیبانی ما در اسرع وقت به شما پاسخ خواهد داد.
-            """
-
-            keyboard = self.create_keyboard([
-                [{"text": "👁 مشاهده تیکت", "callback_data": f"ticket_details_{ticket.id}"}],
-                [{"text": "📋 تیکت‌های من", "callback_data": "my_tickets"}],
-                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}]
-            ])
-
-            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
-
-            # Notify Admins
-            await self._notify_admins_new_ticket(user, ticket)
-
-        except Exception as e:
-            logger.error(f"Error creating ticket: {e}")
+        except Exception as exc:
+            logger.error("Ticket creation failed (%s)", type(exc).__name__)
             await message.reply("❌ خطایی در ایجاد تیکت رخ داد. لطفاً دوباره تلاش کنید.")
+            return
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        text = (
+            "✅ <b>تیکت شما با موفقیت ثبت شد!</b>\n\n"
+            f"🎫 شماره تیکت: <code>{ticket.ticket_number}</code>\n"
+            f"📌 موضوع: {escape(ticket.subject)}\n\n"
+            "تیکت در «تیکت‌های من» قابل مشاهده و پیگیری است."
+        )
+        keyboard = self.create_keyboard([
+            [{"text": "👁 مشاهده تیکت", "callback_data": f"ticket_details_{ticket.pk}"}],
+            [{"text": "📋 تیکت‌های من", "callback_data": "my_tickets"}],
+            [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+        ])
+        try:
+            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
+        except Exception as exc:
+            logger.warning("Ticket %s saved but confirmation delivery failed (%s)", ticket.pk, type(exc).__name__)
+        try:
+            await self._notify_admins_new_ticket(user, ticket)
+        except Exception as exc:
+            logger.warning("Ticket %s saved but admin delivery failed (%s)", ticket.pk, type(exc).__name__)
 
     @sync_to_async
-    def _create_ticket(self, user: User, category: SupportCategory, subject: str, description: str) -> SupportTicket:
+    def _create_ticket(self, user, category, subject, description, *, device_type="", ticket_id=None):
         with db_transaction.atomic():
-            return SupportTicket.objects.create(
-                brand=self.brand,
-                customer=user,
-                category=category,
-                subject=subject,
-                description=description,
-                status=SupportTicket.TicketStatus.OPEN,
-                priority=category.default_priority,
-                source=SupportTicket.TicketSource.TELEGRAM
+            ticket, _ = SupportTicket.objects.get_or_create(
+                ticket_id=uuid.UUID(ticket_id) if ticket_id else uuid.uuid4(),
+                defaults={
+                    "brand": self.brand, "customer": user, "category": category,
+                    "subject": subject, "description": description,
+                    "device_type": device_type if device_type in self.DEVICE_LABELS else "",
+                    "status": SupportTicket.TicketStatus.OPEN,
+                    "priority": category.default_priority, "source": SupportTicket.TicketSource.TELEGRAM,
+                },
             )
+            return ticket
 
     # ──────────────────────────────────────────────────────────────
     # 3. Ticket Listing & Details
@@ -238,6 +284,7 @@ class SupportHandler(BaseHandler):
         """Show user's support tickets with pagination"""
         user, _ = await self.get_or_create_user(callback.from_user)
 
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
         total_count = await SupportTicket.objects.filter(
             customer=user, brand=self.brand
         ).acount()
@@ -295,7 +342,7 @@ class SupportHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            ticket = await SupportTicket.objects.aget(
+            ticket = await SupportTicket.objects.select_related("category").aget(
                 id=ticket_id, customer=user, brand=self.brand
             )
         except SupportTicket.DoesNotExist:
@@ -320,18 +367,21 @@ class SupportHandler(BaseHandler):
 🎫 <b>جزئیات تیکت</b>
 
 🆔 <b>شماره تیکت:</b> <code>{ticket.ticket_number}</code>
-📌 <b>موضوع:</b> {ticket.subject}
+📌 <b>موضوع:</b> {escape(ticket.subject)}
 {status_emoji} <b>وضعیت:</b> {ticket.get_status_display()}
 {priority_emoji} <b>اولویت:</b> {ticket.get_priority_display()}
-🏷 <b>دسته‌بندی:</b> {ticket.category.name}
+🏷 <b>دسته‌بندی:</b> {escape(ticket.category.name)}
 📅 <b>ایجاد شده:</b> {ticket.created_at.strftime("%Y/%m/%d %H:%M")}
 {sla_text}
 
 ━━━━━━━━━━━━━━━━━━━━
 
 📝 <b>توضیحات اولیه:</b>
-{ticket.description}
+{self._preview(ticket.description)}
         """
+
+        if ticket.device_type:
+            text += f"\n📱 دستگاه: {self.DEVICE_LABELS.get(ticket.device_type, ticket.device_type)}"
 
         if messages:
             text += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
@@ -339,7 +389,7 @@ class SupportHandler(BaseHandler):
             for msg in reversed(messages):  # Show in chronological order
                 sender_role = "👤 شما" if msg.message_type == SupportMessage.MessageType.CUSTOMER else "🛠 پشتیبانی"
                 date_str = msg.created_at.strftime("%m/%d %H:%M")
-                text += f"\n<b>{sender_role}</b> ({date_str}):\n{msg.content}\n"
+                text += f"\n<b>{sender_role}</b> ({date_str}):\n{self._preview(msg.content, 300)}\n"
 
         buttons = []
         if ticket.status in ["open", "in_progress", "pending_customer"]:
@@ -765,6 +815,17 @@ class SupportHandler(BaseHandler):
     # 8. Helper & Notification Methods
     # ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _preview(value, limit=1200):
+        parts, count = [], 0
+        for char in str(value or ""):
+            fragment = escape(char)
+            if count + len(fragment) > limit:
+                return "".join(parts) + "…"
+            parts.append(fragment)
+            count += len(fragment)
+        return "".join(parts)
+
     def _get_status_emoji(self, status: str) -> str:
         return {
             "open": "🔵",
@@ -810,12 +871,12 @@ class SupportHandler(BaseHandler):
 
 🎫 شماره: <code>{ticket.ticket_number}</code>
 👤 کاربر: {user.full_name or user.username} (<code>{user.telegram_id}</code>)
-📌 موضوع: {ticket.subject}
-🏷 دسته: {ticket.category.name}
+📌 موضوع: {escape(ticket.subject)}
+🏷 دسته: {escape(ticket.category.name)}
 {self._get_priority_emoji(ticket.priority)} اولویت: {ticket.get_priority_display()}
 
 📝 توضیحات:
-{ticket.description}
+{self._preview(ticket.description)}
         """
 
         async for admin in UserModel.objects.filter(is_staff=True, brand=self.brand):

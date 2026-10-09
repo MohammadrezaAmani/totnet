@@ -10,6 +10,7 @@ from aiogram import types
 from aiogram.filters import Command
 from asgiref.sync import sync_to_async
 from django.db.models import Q
+from django.utils import timezone
 
 from apps.accounts.models import User, UserProfile
 from apps.bot.models import BotState
@@ -92,7 +93,7 @@ class StartHandler(BaseHandler):
 
 👤 نام کامل: {name_status}
 📱 شماره تلفن: {phone_status}
-📱 نوع دستگاه: {device_status}
+📱 دستگاه‌ها: {device_status}
         """
 
         keyboard = self.create_keyboard(
@@ -113,6 +114,9 @@ class StartHandler(BaseHandler):
         )
 
         await self.send_profile_prompt(chat_id, user, welcome_text, keyboard)
+        await BotState.objects.filter(user=user, brand=self.brand).aupdate(
+            welcome_shown_at=timezone.now()
+        )
 
     async def start_existing_subscription_registration(
         self, callback: types.CallbackQuery
@@ -134,7 +138,7 @@ class StartHandler(BaseHandler):
         text = (
             "📱 <b>ثبت اشتراک فعال</b>\n\n"
             "یوزرنیم اشتراک فعال خود را وارد کنید.\n"
-            "اگر اشتراک از قبل به همین حساب متصل باشد فوراً شناسایی می‌شود؛ "
+            "اشتراکی که برای شما خریداری شده باشد با تطبیق حساب تلگرام شناسایی می‌شود؛ "
             "در غیر این صورت برای جلوگیری از انتقال اشتراک دیگران، درخواست شما برای بررسی ثبت خواهد شد."
         )
         await self.edit_message_with_keyboard(
@@ -165,7 +169,12 @@ class StartHandler(BaseHandler):
             )
             return
 
-        existing = await (
+        from apps.subscriptions.claims import claim_designated_gift
+        gift = await sync_to_async(claim_designated_gift)(
+            user_id=user.pk, brand_id=self.brand.pk, username=username,
+            telegram_username=message.from_user.username,
+        )
+        existing = gift or await (
             Subscription.objects.filter(brand=self.brand, owner=user)
             .filter(
                 Q(connectix_username__iexact=username)
@@ -176,8 +185,8 @@ class StartHandler(BaseHandler):
         )
         if existing:
             result_text = (
-                "✅ این اشتراک از قبل به حساب شما متصل است.\n"
-                f"🏷 طرح: {existing.plan.name}"
+                ("✅ اشتراک به حساب شما متصل شد.\n" if gift else "✅ این اشتراک از قبل به حساب شما متصل است.\n")
+                + f"🏷 طرح: {escape(existing.plan.name)}"
             )
         else:
             claim = await SubscriptionClaim.objects.filter(
@@ -309,11 +318,14 @@ class StartHandler(BaseHandler):
             "brand": self.brand.name,
         }
 
-        template = config.welcome_message if config else None
+        state = await self.get_user_state(user)
+        template = config.welcome_message if config and not state.welcome_shown_at else None
 
         if not template:
             template = """
-👋 سلام {name}!
+🏠 منوی اصلی
+
+👤 {name}
 
 📊 وضعیت شما:
 • اشتراک‌های فعال: {subscriptions}
@@ -342,6 +354,9 @@ class StartHandler(BaseHandler):
                 await callback.answer()
         else:
             await self.send_message_with_keyboard(chat_id, welcome_text, keyboard)
+        if not state.welcome_shown_at:
+            state.welcome_shown_at = timezone.now()
+            await state.asave(update_fields=["welcome_shown_at"])
 
     async def handle_profile_setup_callback(self, callback: types.CallbackQuery):
         """Handle profile setup callback"""
@@ -548,7 +563,7 @@ class StartHandler(BaseHandler):
         await self.send_profile_prompt(
             chat_id,
             user,
-            "📱 <b>نوع دستگاه</b>\n\nدستگاه اصلی خود را انتخاب کنید:",
+            "📱 <b>دستگاه‌ها</b>\n\nدستگاه اصلی خود را انتخاب کنید:",
             keyboard,
         )
 

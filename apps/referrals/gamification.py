@@ -59,7 +59,7 @@ def _update_reward_account(*, user_id: int, brand_id: int, earned_points: Decima
     outstanding = ReferralReward.objects.filter(
         user_id=user_id,
         brand_id=brand_id,
-        reward_type="normal_point",
+        reward_type__in=["normal_point", "profile_point"],
         status=ReferralReward.RewardStatus.PROCESSED,
         is_cashed_out=False,
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
@@ -72,12 +72,14 @@ def _update_reward_account(*, user_id: int, brand_id: int, earned_points: Decima
 @transaction.atomic
 def cash_out_completed_pills(*, user_id: int, brand_id: int) -> Decimal:
     """Convert each complete group of three normal referral points to wallet cash."""
+    # Serialize cash-out for all reward sources of the same customer.
+    _update_reward_account(user_id=user_id, brand_id=brand_id)
     rewards = list(
         ReferralReward.objects.select_for_update()
         .filter(
             user_id=user_id,
             brand_id=brand_id,
-            reward_type="normal_point",
+            reward_type__in=["normal_point", "profile_point"],
             status=ReferralReward.RewardStatus.PROCESSED,
             is_cashed_out=False,
         )
@@ -103,7 +105,7 @@ def cash_out_completed_pills(*, user_id: int, brand_id: int) -> Decimal:
                 transaction_type=WalletTransaction.TransactionType.REFERRAL_REWARD,
                 reference_id=key,
                 idempotency_key=key,
-                description="تبدیل سه امتیاز معرفی به موجودی نقد کیف پول",
+                description="نقد شدن ارزش سه قرص",
                 metadata={"reward_ids": [item.pk for item in group], "point_count": 3},
             )
             total_paid += amount

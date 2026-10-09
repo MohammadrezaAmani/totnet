@@ -316,7 +316,11 @@ class MultiBrandDispatcher:
         @router.message(F.contact)
         async def handle_contact_message(message: Message):
             user, _ = await handlers["start"].get_or_create_user(message.from_user)
-            await handlers["start"].handle_contact_message(message, user)
+            state = await handlers["start"].get_user_state(user)
+            if state.current_state == BotState.StateType.PROFILE_EDIT:
+                await handlers["profile"].handle_profile_contact(message, user, state)
+            else:
+                await handlers["start"].handle_contact_message(message, user)
 
 
 
@@ -367,6 +371,17 @@ class MultiBrandDispatcher:
                 reply_markup=await handlers["start"].get_main_menu_keyboard(user),
             )
 
+        @router.message(F.document)
+        async def installer_file_id(message: Message):
+            user, _ = await handlers["start"].get_or_create_user(message.from_user)
+            if await handlers["start"].has_admin_access(user):
+                await message.reply(
+                    "شناسه فایل برای تنظیم در .env یا بخش محتواهای کاربردی:\n"
+                    f"<code>{message.document.file_id}</code>", parse_mode="HTML"
+                )
+            else:
+                await message.reply("برای پیگیری فایل، از بخش پشتیبانی استفاده کنید.")
+
         dp.include_router(router)
 
     async def route_callback(self, callback: CallbackQuery, handlers: dict):
@@ -382,6 +397,8 @@ class MultiBrandDispatcher:
 
             elif data == "my_profile":
                 await handlers["profile"].show_my_profile(callback)
+            elif data == "complete_profile":
+                await handlers["profile"].begin_completion(callback)
             elif data == "edit_profile":
                 await handlers["profile"].edit_profile(callback)
             elif data == "edit_device":
@@ -390,7 +407,7 @@ class MultiBrandDispatcher:
                 await handlers["profile"].set_device_type(
                     callback, data.removeprefix("set_device_")
                 )
-            elif data in ["edit_full_name", "edit_phone", "edit_email"]:
+            elif data in ["edit_full_name", "edit_birth_date", "edit_phone", "edit_locations", "edit_email"]:
                 field = data.replace("edit_", "")
                 await handlers["profile"].request_field_update(callback, field)
             elif data.startswith("setup_device_"):
@@ -825,6 +842,15 @@ class MultiBrandDispatcher:
                         await callback.answer("امتیاز نامعتبر است.", show_alert=True)
                     else:
                         await handlers["survey"].rate(callback, key, score)
+            elif data == "academy_other_apps":
+                await handlers["useful_content"].show_other_apps(callback)
+            elif data.startswith("academy_app_"):
+                await handlers["useful_content"].show_app(callback, data.removeprefix("academy_app_"))
+            elif data.startswith("academy_platform_"):
+                family, platform = data.removeprefix("academy_platform_").rsplit("_", 1)
+                await handlers["useful_content"].show_app(callback, family, platform)
+            elif data.startswith("academy_file_"):
+                await handlers["useful_content"].send_installer(callback, int(data.removeprefix("academy_file_")))
             elif data == "useful_content":
                 await handlers["useful_content"].show_menu(callback)
             elif data.startswith("useful_category_"):
@@ -839,10 +865,14 @@ class MultiBrandDispatcher:
                 await handlers["support"].show_support_menu(callback)
             elif data == "create_ticket":
                 await handlers["support"].show_create_ticket(callback)
+            elif data.startswith("ticket_device_"):
+                await handlers["support"].select_ticket_device(callback, data.removeprefix("ticket_device_"))
             elif data.startswith("ticket_cat_"):
                 cat_id = int(data.replace("ticket_cat_", ""))
                 await handlers["support"].handle_ticket_category(callback, cat_id)
 
+            elif data.startswith("subscriptions_page_"):
+                await handlers["subscriptions"].show_my_subscriptions(callback, page=int(data.removeprefix("subscriptions_page_")))
             elif data == "my_tickets":
                 await handlers["support"].show_my_tickets(callback, page=1)
             elif data.startswith("tickets_page_"):
@@ -1500,7 +1530,7 @@ class MultiBrandDispatcher:
                     {"text": "🎫 ثبت تیکت", "callback_data": "create_ticket"},
                     {"text": "📋 تیکت‌های من", "callback_data": "my_tickets"},
                 ],
-                [{"text": "📚 محتواهای کاربردی", "callback_data": "useful_content"}],
+                [{"text": "📚 آکادمی(محتواهای کاربردی)", "callback_data": "useful_content"}],
                 [
                     {"text": "📞 اطلاعات تماس", "callback_data": "contact_info"},
                     {"text": "🔙 بازگشت", "callback_data": "main_menu"},

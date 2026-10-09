@@ -182,6 +182,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                             "plan": order.plan,
                             "vpn_provider": provider,
                             "owner": order.recipient or order.user,
+                            "is_gift": order.order_type == Order.OrderType.GIFT,
                             "status": Subscription.SubscriptionStatus.PENDING,
                             "starts_at": timezone.now(),
                             "traffic_limit_gb": order.plan.traffic_limit_gb,
@@ -217,6 +218,9 @@ def payment_post_save(sender, instance, created, **kwargs):
                             )
                         )
                     )
+                if order.order_type == Order.OrderType.GIFT:
+                    from apps.referrals.services import snapshot_gift_reward
+                    snapshot_gift_reward(order_id=order.pk)
                 # Referral rewards run outside the payment transaction. The task is
                 # idempotent and a periodic recovery task covers enqueue failures.
                 transaction.on_commit(

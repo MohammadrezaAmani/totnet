@@ -289,7 +289,7 @@ class ReferralReward(models.Model):
         CANCELLED = "cancelled", "Cancelled"
 
     referral = models.ForeignKey(
-        Referral, on_delete=models.CASCADE, related_name="rewards"
+        Referral, on_delete=models.CASCADE, related_name="rewards", null=True, blank=True
     )
     order = models.ForeignKey(
         "orders.Order",
@@ -863,6 +863,7 @@ class GamificationNotification(models.Model):
         CHALLENGE_REMINDER = "challenge_reminder", "Challenge reminder"
         EXPIRY_5D = "expiry_5d", "Subscription expiry 5d"
         REFERRAL_REWARD = "referral_reward", "Referral reward"
+        PROFILE_COMPLETION = "profile_completion", "Profile completion reminder"
 
     user = models.ForeignKey(
         "accounts.User", on_delete=models.CASCADE, related_name="gamification_notifications"

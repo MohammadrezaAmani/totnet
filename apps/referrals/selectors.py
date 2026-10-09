@@ -69,3 +69,15 @@ async def reward_summary(*, user_id: int, brand_id: int) -> dict:
         "level_number": level.level if level else 0,
         "level_title": f"{level.badge} {level.name}" if level else "—",
     }
+
+
+async def pill_progress(*, user_id: int, brand_id: int) -> dict:
+    from django.db.models import Sum
+    from apps.referrals.models import ReferralReward
+    result = await ReferralReward.objects.filter(
+        user_id=user_id, brand_id=brand_id,
+        reward_type__in=["normal_point", "profile_point"],
+        status=ReferralReward.RewardStatus.PROCESSED, is_cashed_out=False,
+    ).aaggregate(total=Sum("amount"))
+    count = int(result["total"] or 0)
+    return {"outstanding": count, "remaining": 3 - count % 3}

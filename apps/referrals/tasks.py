@@ -92,7 +92,7 @@ def process_referral_reward(self, payment_id: str):
             brand_id=reward.brand_id,
             notification_type=GamificationNotification.NotificationType.REFERRAL_REWARD,
             dedupe_key=f"referral-reward:{reward.pk}",
-            text="🎁 یک امتیاز جدید از سیستم معرفی دوستان دریافت کردید.",
+            text="💊 یک قرص جدید از سیستم معرفی دوستان دریافت کردید.",
             buttons_data=[[{"text": "🏅 مشاهده امتیازات", "callback_data": "rewards"}]],
             metadata={"reward_id": reward.pk, "order_id": reward.order_id},
         )
@@ -128,7 +128,8 @@ def recover_pending_referral_rewards(limit: int = 100):
         .annotate(has_reward=Exists(rewarded_orders))
         .annotate(has_referral=Exists(eligible_referrals))
         .annotate(has_program=Exists(active_programs))
-        .filter(has_reward=False, has_referral=True, has_program=True)
+        .filter(has_reward=False)
+        .filter(Q(has_referral=True, has_program=True, order__order_type__in=[Order.OrderType.NEW_SUBSCRIPTION, Order.OrderType.RENEWAL, Order.OrderType.UPGRADE]) | Q(order__order_type=Order.OrderType.GIFT, order__recipient_claimed_at__isnull=False))
         .order_by("created_at")
         .values_list("payment_id", flat=True)[:limit]
     )
@@ -224,6 +225,7 @@ def run_gamification_notifications(limit: int = 500):
     """Drive survey/referral/challenge/expiry notifications and challenge settlement."""
     now = timezone.now()
     counters = {
+        "profile_completion": 0,
         "survey": 0,
         "referral_intro": 0,
         "challenge_offer": 0,
@@ -275,6 +277,27 @@ def run_gamification_notifications(limit: int = 500):
             metadata={"first_payment_id": str(first.payment_id)},
         ):
             counters["referral_intro"] += 1
+
+    # Day 16: collect birth date, phone, then work/living location.
+    from apps.accounts.models import UserProfile
+    from .services import grant_profile_completion_reward
+    for user_id, brand_id, first in _first_purchase_pairs(
+        cutoff=now - timedelta(days=16), limit=limit,
+        sent_notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
+    ):
+        profile, _ = UserProfile.objects.get_or_create(user_id=user_id)
+        if not profile.notification_enabled:
+            continue
+        if _queue_once(
+            user=first.user, brand_id=brand_id,
+            notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
+            dedupe_key=f"profile-completion:{brand_id}:{user_id}",
+            text="یک امتیاز آسون فقط با تکمیل پروفایل!",
+            buttons_data=[[{"text": "🎁 تکمیل پروفایل", "callback_data": "complete_profile"}]],
+            metadata={"first_payment_id": str(first.payment_id)},
+        ):
+            counters["profile_completion"] += 1
+            grant_profile_completion_reward(user_id=user_id, brand_id=brand_id)
 
     # One-time challenge offer after the configured delay from first purchase.
     for program in ChallengeProgram.objects.filter(is_active=True).select_related("brand"):

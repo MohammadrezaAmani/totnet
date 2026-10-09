@@ -35,7 +35,7 @@ class OrderAdmin(admin.ModelAdmin):
     )
     list_filter = ("order_type", "status", "brand", "created_at")
     search_fields = ("order_number", "user__username", "plan__name")
-    readonly_fields = ("order_id", "order_number", "created_at", "updated_at")
+    readonly_fields = ("order_id", "order_number", "created_at", "updated_at", "recipient_claimed_at", "gift_reward_percent", "gift_reward_challenge")
     date_hierarchy = "created_at"
 
     fieldsets = (
@@ -44,7 +44,7 @@ class OrderAdmin(admin.ModelAdmin):
             {"fields": ("order_id", "order_number", "brand", "user", "plan")},
         ),
         ("Order Type", {"fields": ("order_type", "status", "notes", "admin_notes")}),
-        ("Recipient", {"fields": ("recipient", "recipient_email")}),
+        ("Recipient", {"fields": ("recipient", "recipient_email", "recipient_telegram_username", "recipient_claimed_at", "gift_reward_percent", "gift_reward_challenge")}),
         (
             "Pricing",
             {

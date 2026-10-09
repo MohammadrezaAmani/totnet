@@ -352,3 +352,19 @@ ENABLE_REFERRAL_SYSTEM = config("ENABLE_REFERRAL_SYSTEM", default=True, cast=boo
 ENABLE_LOYALTY_PROGRAM = config("ENABLE_LOYALTY_PROGRAM", default=True, cast=bool)
 ENABLE_BROADCAST_SYSTEM = config("ENABLE_BROADCAST_SYSTEM", default=True, cast=bool)
 ENABLE_SUPPORT_SYSTEM = config("ENABLE_SUPPORT_SYSTEM", default=True, cast=bool)
+
+# Existing Telegram uploads can be sent regardless of the cloud upload size cap.
+# File IDs belong to a bot; these environment values only apply to TELEGRAM_BOT_TOKEN.
+ACADEMY_TELEGRAM_FILE_IDS = {
+    ("connectix", "android", "priority1"): config("CONNECTIX_ANDROID_PRIORITY1_FILE_ID", default="").strip(),
+    ("connectix", "android", "priority2"): config("CONNECTIX_ANDROID_PRIORITY2_FILE_ID", default="").strip(),
+    ("connectix", "android", "priority3"): config("CONNECTIX_ANDROID_PRIORITY3_FILE_ID", default="").strip(),
+    ("connectix", "windows", ""): config("CONNECTIX_WINDOWS_FILE_ID", default="").strip(),
+    ("connectix", "linux", ""): config("CONNECTIX_LINUX_FILE_ID", default="").strip(),
+    ("happ", "android", ""): config("HAPP_ANDROID_FILE_ID", default="").strip(),
+    ("happ", "windows", ""): config("HAPP_WINDOWS_FILE_ID", default="").strip(),
+    ("happ", "linux", ""): config("HAPP_LINUX_FILE_ID", default="").strip(),
+    ("v2rayng", "android", "arm64"): config("V2RAYNG_ANDROID_ARM64_FILE_ID", default="").strip(),
+    ("v2rayng", "android", "arm32"): config("V2RAYNG_ANDROID_ARM32_FILE_ID", default="").strip(),
+}
+CONNECTIX_LINUX_DOWNLOAD_URL = config("CONNECTIX_LINUX_DOWNLOAD_URL", default="").strip()

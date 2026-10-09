@@ -103,6 +103,7 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
             vpn_provider=provider,
             vpn_user_email=vpn_email,
             owner=order.recipient or order.user,
+            is_gift=order.order_type == Order.OrderType.GIFT,
             starts_at=start_date,
             expires_at=end_date,
             traffic_limit_gb=order.plan.traffic_limit_gb,
@@ -365,7 +366,7 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
             "group_name": record.group_name,
             "expire_date": record.expire_date,
             "remains_days": record.remains_days,
-            "used_traffic": record.used_traffic,
+            "used_traffic_raw": record.used_traffic,
         }
         remote_account.last_synced_at = timezone.now()
 

@@ -4,6 +4,7 @@ Handles subscription purchases, plan selection, and payment processing
 """
 
 import logging
+import re
 from html import escape
 
 from aiogram import types
@@ -76,7 +77,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             return text, self.get_back_keyboard(back_callback)
 
         if special_only:
-            title = "🔥 پیشنهادهای ویژه"
+            title = "💊 تجویز ویژه دکتر"
         elif category:
             title = f"🛒 {self.CATEGORY_LABELS.get(category, 'پلن‌های اشتراک')}"
         else:
@@ -163,14 +164,14 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         text = f"""
 🛒 خرید اشتراک {escape(self.brand.name)}
 
-نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای سرویس‌ها را ببینید.
+نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای انتخاب سرویس را ببینید.
         """
-        services = [{"text": label, "callback_data": f"purchase_category_{category}", "style": "primary"}
+        services = [{"text": label, "callback_data": f"purchase_category_{category}", }
                     for category, label in self.CATEGORY_LABELS.items()]
-        services.append({"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"})
+        services.append({"text": "💊 تجویز ویژه دکتر", "callback_data": "purchase_special", "style": "primary"})
         buttons = [services[index:index + 2] for index in range(0, len(services), 2)]
         buttons.extend([
-            [{"text": "📖 راهنمای سرویس‌ها", "callback_data": "service_guide"}],
+            [{"text": "📖 راهنمای انتخاب سرویس", "callback_data": "service_guide"}],
             [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
         ])
         keyboard = self.create_keyboard(buttons)
@@ -215,7 +216,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         if not isinstance(guides, dict):
             guides = {}
 
-        lines = ["📖 <b>راهنمای سرویس‌ها</b>"]
+        lines = ["📖 <b>راهنمای انتخاب سرویس</b>"]
         for category, label in self.CATEGORY_LABELS.items():
             description = str(guides.get(category, "")).strip()
             if not description:
@@ -248,7 +249,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                         "callback_data": f"purchase_category_{SubscriptionPlan.ServiceCategory.IRAN_IP}",
                     }
                 ],
-                [{"text": "🔥 پیشنهاد ویژه", "callback_data": "purchase_special"}],
+                [{"text": "💊 تجویز ویژه دکتر", "callback_data": "purchase_special", "style": "primary"}],
                 [{"text": "🔙 بازگشت", "callback_data": "purchase_subscription"}],
             ]
         )
@@ -383,7 +384,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             await self.send_message_with_keyboard(
                 callback.message.chat.id,
                 "برای چه کسی می‌خواهید خرید کنید؟ نام کاربری تلگرام گیرنده را با @ بفرستید.\n"
-                "گیرنده باید قبلاً ربات را شروع کرده باشد.",
+                "گیرنده می‌تواند بعداً وارد ربات شود و با ثبت یوزرنیم اشتراک، آن را به حساب خود وصل کند.",
                 self.get_back_keyboard("purchase_subscription"),
             )
             await callback.answer()
@@ -593,17 +594,17 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 is_active=True,
                 is_visible=True,
             )
-            recipient = await User.objects.aget(
-                brand=self.brand,
-                username__iexact=username,
-                is_active=True,
-            )
-        except (SubscriptionPlan.DoesNotExist, User.DoesNotExist):
-            await message.reply(
-                "گیرنده پیدا نشد. او باید ابتدا همین ربات را شروع کند؛ سپس نام کاربری را دوباره بفرستید."
-            )
+        except SubscriptionPlan.DoesNotExist:
+            await message.reply("این پلن دیگر برای خرید موجود نیست.")
             return
-        if recipient.pk == user.pk:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username):
+            await message.reply("نام کاربری معتبر تلگرام گیرنده را با @ ارسال کنید.")
+            return
+        if username.lower() == (message.from_user.username or "").lower():
+            await message.reply("برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید.")
+            return
+        recipient = await User.objects.filter(brand=self.brand, username__iexact=username, is_active=True).afirst()
+        if recipient and recipient.pk == user.pk:
             await message.reply("برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید.")
             return
 
@@ -611,6 +612,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             brand=self.brand,
             user=user,
             recipient=recipient,
+            recipient_telegram_username=username,
             plan=plan,
             order_type=Order.OrderType.GIFT,
             original_price=plan.price,
@@ -636,7 +638,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             {"step": PurchaseStep.PAYMENT_METHOD, "order_id": str(order.order_id)},
         )
         text = (
-            f"🎁 گیرنده: {recipient.full_name or recipient.username}\n"
+            f"🎁 گیرنده: @{escape(username)}\n"
             f"پلن: {plan.name}\n"
             f"مبلغ قابل پرداخت: {self.format_price(order.final_price, order.currency)}\n\n"
             "برای ادامه، روش پرداخت را انتخاب کنید."

@@ -895,6 +895,9 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
         return Decimal("0")
     if ReferralReward.objects.filter(order=order).exists():
         return Decimal("0")
+    if order.order_type == Order.OrderType.GIFT:
+        snapshot_gift_reward(order_id=order.pk)
+        return award_claimed_gift(order_id=order.pk)
     try:
         program = ReferralProgram.objects.select_for_update().get(
             brand_id=order.brand_id, is_active=True
@@ -935,7 +938,7 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
     if challenge_reward is not None:
         return Decimal("1")
 
-    percent = Decimal(program.purchase_reward_percent)
+    percent, _ = active_purchase_reward_percent(user_id=referral.referrer_id, brand_id=order.brand_id)
     if percent <= 0 or percent > 100:
         raise RewardConfigurationError("Referral purchase reward percent must be between 0 and 100")
     cash_value = (order.final_price * percent / Decimal("100")).quantize(Decimal("0.01"))
@@ -1009,3 +1012,129 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
                 description=f"One-time referral level bonus: {level.name}",
             )
     return reward.amount
+
+
+@transaction.atomic
+def grant_profile_completion_reward(*, user_id: int, brand_id: int) -> bool:
+    """Grant the promised single pill once to a completed customer profile."""
+    from apps.accounts.models import UserProfile
+    profile, _ = UserProfile.objects.select_for_update().get_or_create(user_id=user_id)
+    user = User.objects.get(pk=user_id, brand_id=brand_id)
+    if profile.profile_reward_granted_at or not (user.birth_date and user.phone_number and profile.work_location and profile.living_location):
+        return False
+    from .models import GamificationNotification
+    if not GamificationNotification.objects.filter(
+        user_id=user_id, brand_id=brand_id,
+        notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
+        sent_at__isnull=False,
+    ).exists():
+        return False
+    now = timezone.now()
+    account = _locked_reward_account(user_id=user_id, brand_id=brand_id)
+    ReferralReward.objects.create(
+        user_id=user_id, brand_id=brand_id, reward_type="profile_point", amount=Decimal(1),
+        cash_value=Decimal(0), currency=Brand.objects.values_list("currency", flat=True).get(pk=brand_id),
+        status=ReferralReward.RewardStatus.PROCESSED, processed_at=now,
+        notes="One-time profile completion pill; no purchase cash value.",
+    )
+    account.lifetime_points += Decimal(1)
+    account.save(update_fields=["lifetime_points", "updated_at"])
+    profile.profile_reward_granted_at = now
+    profile.save(update_fields=["profile_reward_granted_at", "updated_at"])
+    from .gamification import cash_out_completed_pills
+    cash_out_completed_pills(user_id=user_id, brand_id=brand_id)
+    return True
+
+
+def active_purchase_reward_percent(*, user_id: int, brand_id: int, at=None):
+    """Use the current campaign rate for every qualifying purchase, including repeats."""
+    from .models import ChallengeProgram, UserChallenge
+    at = at or timezone.now()
+    challenge = UserChallenge.objects.filter(
+        user_id=user_id, brand_id=brand_id, status=UserChallenge.Status.ACTIVE,
+        starts_at__lte=at, ends_at__gte=at,
+    ).order_by("-starts_at", "-pk").first()
+    if challenge:
+        return Decimal(challenge.reward_percent), challenge
+    campaign = ChallengeProgram.objects.filter(brand_id=brand_id, is_active=True).order_by("-pk").first()
+    if campaign:
+        return Decimal(campaign.reward_percent), None
+    program = ReferralProgram.objects.filter(brand_id=brand_id, is_active=True).first()
+    return (Decimal(program.purchase_reward_percent) if program else Decimal(0)), None
+
+
+@transaction.atomic
+def snapshot_gift_reward(*, order_id: int):
+    """Freeze a fully-paid gift's rate even if its recipient joins after the campaign."""
+    order = Order.objects.select_for_update().get(pk=order_id)
+    if order.order_type != Order.OrderType.GIFT or order.gift_reward_percent is not None:
+        return
+    payments = Payment.objects.filter(order=order, status=Payment.PaymentStatus.CONFIRMED)
+    if order.final_price <= 0 or (payments.aggregate(total=Sum("amount"))["total"] or Decimal(0)) < order.final_price:
+        return
+    last = payments.order_by("-created_at", "-pk").first()
+    percent, challenge = active_purchase_reward_percent(user_id=order.user_id, brand_id=order.brand_id, at=last.created_at)
+    Order.objects.filter(pk=order.pk).update(gift_reward_percent=percent, gift_reward_challenge=challenge)
+
+
+@transaction.atomic
+def award_claimed_gift(*, order_id: int) -> Decimal:
+    """Credit the purchaser once, only after the intended recipient claims the gift."""
+    order = Order.objects.select_for_update(of=("self",)).select_related("recipient").get(pk=order_id)
+    if (order.order_type != Order.OrderType.GIFT or not order.recipient_claimed_at or not order.recipient_id
+        or order.recipient_id == order.user_id or order.final_price <= 0
+        or order.status not in {Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED}
+        or ReferralReward.objects.filter(order=order).exists()):
+        return Decimal(0)
+    total = Payment.objects.filter(order=order, status=Payment.PaymentStatus.CONFIRMED).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    if total < order.final_price:
+        return Decimal(0)
+    snapshot_gift_reward(order_id=order.pk)
+    order.refresh_from_db(fields=["gift_reward_percent", "gift_reward_challenge"])
+    percent = Decimal(order.gift_reward_percent or 0)
+    if not 0 < percent <= 100:
+        return Decimal(0)
+    program = ReferralProgram.objects.filter(brand_id=order.brand_id, is_active=True).first()
+    if program and order.final_price < program.minimum_purchase_amount:
+        return Decimal(0)
+    # Preserve any earlier immutable attribution. Gift rewards belong to the buyer
+    # even when the recipient was originally introduced by another customer.
+    recipient = User.objects.select_for_update().get(pk=order.recipient_id)
+    referral = Referral.objects.filter(referee=recipient, brand_id=order.brand_id).first()
+    if referral is None:
+        referral = Referral.objects.create(referrer_id=order.user_id, referee=recipient, brand_id=order.brand_id, status=Referral.ReferralStatus.CONVERTED)
+        User.objects.filter(pk=recipient.pk, referred_by__isnull=True).update(referred_by_id=order.user_id)
+        User.objects.filter(pk=order.user_id).update(referral_count=F("referral_count") + 1)
+    matching_referral = referral if referral.referrer_id == order.user_id else None
+    now = timezone.now()
+    account = _locked_reward_account(user_id=order.user_id, brand_id=order.brand_id)
+    value = (order.final_price * percent / 100).quantize(Decimal("0.01"))
+    reward = ReferralReward.objects.create(
+        referral=matching_referral, order=order, user_id=order.user_id, brand_id=order.brand_id,
+        reward_type="normal_point", amount=Decimal(1), cash_value=value, currency=order.currency,
+        status=ReferralReward.RewardStatus.PROCESSED, processed_at=now,
+        notes=f"Gift claimed by recipient; purchase campaign rate {percent}%.",
+    )
+    account.lifetime_points += Decimal(1)
+    account.lifetime_profit += max(order.final_price - order.upstream_cost_snapshot, Decimal(0))
+    account.save(update_fields=["lifetime_points", "lifetime_profit", "updated_at"])
+    if matching_referral:
+        matching_referral.status = Referral.ReferralStatus.REWARDED
+        matching_referral.referrer_reward_amount += 1
+        matching_referral.rewarded_at = now
+        if not matching_referral.conversion_order_id:
+            matching_referral.conversion_order = order
+            matching_referral.converted_at = now
+        matching_referral.save(update_fields=["status", "referrer_reward_amount", "rewarded_at", "conversion_order", "converted_at"])
+    from .gamification import cash_out_completed_pills
+    cash_out_completed_pills(user_id=order.user_id, brand_id=order.brand_id)
+    return reward.amount
+
+
+def _enqueue_claimed_gift_reward(payment_id):
+    from .tasks import process_referral_reward
+    try:
+        process_referral_reward.delay(str(payment_id))
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Gift reward enqueue failed (%s); periodic recovery will retry", type(exc).__name__)

@@ -1,6 +1,7 @@
-"""Stateful, cache-backed service → traffic → users → duration → plans flow."""
+"""Duration and four volume ranges, then users and matching real catalog plans."""
 
 import secrets
+from decimal import Decimal
 from html import escape
 
 from apps.bot.models import BotState
@@ -9,266 +10,250 @@ from apps.subscriptions.selection import (
     duration_key,
     duration_label,
     duration_options,
-    matching_plans,
-    recommended_plans,
     traffic_key,
     traffic_label,
-    traffic_options,
-    traffic_ranges,
-    volume_user_price_is_constant,
 )
 
 
 class PlanPickerMixin:
-    OPTION_PAGE_SIZE = 9
     RESULT_PAGE_SIZE = 8
-    PICKER_STAGES = ("traffic", "users", "duration", "results")
 
     async def show_service_picker(self, callback, category):
         user, _ = await self.get_or_create_user(callback.from_user)
         picker = {
+            "version": 2,
             "token": secrets.token_hex(3),
             "category": category,
-            "stage": "traffic",
+            "stage": "bundle",
             "traffic": [],
             "users": [],
             "durations": [],
+            "range": "",
             "page": 1,
         }
         await self.render_plan_picker(callback, user, picker)
 
     async def _picker_catalog(self, picker):
         return [
-            plan
-            for plan in await get_cached_plans(self.brand.pk)
-            if plan.service_category == picker["category"]
+            p
+            for p in await get_cached_plans(self.brand.pk)
+            if p.service_category == picker["category"]
         ]
 
     @staticmethod
-    def _picker_button(picker, text, action, value="", style=None):
-        return {
-            "text": text,
-            "callback_data": f"pf:{picker['token']}:{action}:{value}",
-            "style": style,
-        }
+    def _picker_button(picker, text, action, value=""):
+        return {"text": text, "callback_data": f"pf:{picker['token']}:{action}:{value}"}
 
     @staticmethod
-    def _picker_grid(buttons, columns=3):
+    def _picker_grid(buttons, columns=2):
+        return [buttons[i : i + columns] for i in range(0, len(buttons), columns)]
+
+    @staticmethod
+    def _volume_ranges(picker):
+        normal = picker["category"] == "normal"
         return [
-            buttons[index : index + columns]
-            for index in range(0, len(buttons), columns)
+            (
+                "low",
+                "۲۰ تا ۳۰ گیگ" if normal else "۱۰ تا ۳۰ گیگ",
+                Decimal(20 if normal else 10),
+                Decimal(30),
+            ),
+            ("medium", "۳۰ تا ۵۰ گیگ", Decimal(30), Decimal(50)),
+            ("high", "۶۰ تا ۱۰۰ گیگ", Decimal(60), Decimal(100)),
+            ("unlimited", "نامحدود", None, None),
         ]
 
-    def _picker_options(self, plans, picker):
-        stage = picker["stage"]
-        if stage == "traffic":
-            return traffic_options(plans), picker["traffic"], traffic_label
-        if stage == "users":
-            candidates = matching_plans(plans, picker, through="traffic")
-            return (
-                sorted({plan.max_users for plan in candidates}),
-                picker["users"],
-                lambda n: f"{n} کاربر",
+    def _range_keys(self, plans, picker, range_id):
+        entry = next((r for r in self._volume_ranges(picker) if r[0] == range_id), None)
+        if not entry:
+            return []
+        _, _, low, high = entry
+        keys = set()
+        for plan in plans:
+            key = traffic_key(plan)
+            if range_id == "unlimited" and key == "u":
+                keys.add(key)
+            elif key.startswith("v") and low is not None:
+                volume = Decimal(key[1:])
+                if (
+                    low < volume if range_id == "medium" else low <= volume
+                ) and volume <= high:
+                    keys.add(key)
+        return sorted(
+            keys, key=lambda k: Decimal(k[1:]) if k.startswith("v") else Decimal(0)
+        )
+
+    @staticmethod
+    def _candidates(plans, picker, include_users=False):
+        return [
+            p
+            for p in plans
+            if (not picker["durations"] or duration_key(p) in picker["durations"])
+            and (not picker["traffic"] or traffic_key(p) in picker["traffic"])
+            and (
+                not include_users
+                or not picker["users"]
+                or p.max_users in picker["users"]
             )
-        candidates = matching_plans(plans, picker, through="users")
-        return duration_options(candidates), picker["durations"], duration_label
+        ]
+
+    def _summary(self, picker):
+        label = next(
+            (r[1] for r in self._volume_ranges(picker) if r[0] == picker["range"]),
+            "انتخاب نشده",
+        )
+        return [
+            "⏰ مدت اشتراک: "
+            + "، ".join(duration_label(d) for d in picker["durations"]),
+            "📦 حجم: " + label,
+        ]
 
     async def render_plan_picker(self, callback, user, picker):
         plans = await self._picker_catalog(picker)
-        stage = picker["stage"]
-        title = escape(self.CATEGORY_LABELS[picker["category"]])
-        lines = [f"🛒 <b>{title}</b>"]
+        trial_plans = [p for p in plans if p.discounted_price <= 0]
+        eligible_keys = set().union(
+            *(
+                self._range_keys(plans, picker, r[0])
+                for r in self._volume_ranges(picker)
+            )
+        )
+        plans = [p for p in plans if traffic_key(p) in eligible_keys]
+        lines = [f"🛒 <b>{escape(self.CATEGORY_LABELS[picker['category']])}</b>"]
         rows = []
         if not plans:
-            lines.append("در حال حاضر پلن فعالی برای این سرویس موجود نیست.")
-            rows.append(
-                [{"text": "🔙 سرویس‌ها", "callback_data": "purchase_subscription"}]
-            )
-        elif stage == "results":
-            results = matching_plans(plans, picker)
-            results.sort(
-                key=lambda plan: (plan.discounted_price, plan.display_order, plan.pk)
-            )
-            last_page = max(
-                1, (len(results) + self.RESULT_PAGE_SIZE - 1) // self.RESULT_PAGE_SIZE
-            )
-            picker["page"] = max(1, min(picker["page"], last_page))
-            start = (picker["page"] - 1) * self.RESULT_PAGE_SIZE
-            lines.append(f"\n<b>پلن‌های مطابق انتخاب شما</b> · {len(results)} پلن")
-            lines.extend(self._picker_summary(picker))
-            if not results:
-                lines.append(
-                    "\nبرای این ترکیب پلنی موجود نیست؛ با بازگشت انتخاب‌ها را تغییر دهید."
-                )
-            for number, plan in enumerate(
-                results[start : start + self.RESULT_PAGE_SIZE], start + 1
-            ):
-                label = (
-                    f"{number}. {traffic_label(traffic_key(plan))} · {plan.max_users} کاربر · "
-                    f"{duration_label(duration_key(plan))} · {self.format_price(plan.discounted_price, plan.currency)}"
-                )
-                rows.append(
-                    [
-                        {
-                            "text": label,
-                            "callback_data": f"select_plan_{plan.pk}",
-                            "style": "success" if plan.is_featured else None,
-                        }
-                    ]
-                )
-                # Names disambiguate real plans with equal specifications or different provider families.
-                lines.append(f"\n{number}. <code>{escape(plan.name[:100])}</code>")
-            if last_page > 1:
-                lines.append(f"\nصفحهٔ {picker['page']} از {last_page}")
-            rows.extend(self._picker_pagination(picker, last_page))
-            rows.append([self._picker_button(picker, "🔙 تغییر زمان", "back")])
-            rows.append(
-                [
-                    self._picker_button(picker, "🎛 تغییر ترافیک", "stage", "traffic"),
-                    self._picker_button(
-                        picker, "👥 تغییر تعداد کاربر", "stage", "users"
-                    ),
-                ]
-            )
-            rows.append(
-                [{"text": "🔙 سرویس‌ها", "callback_data": "purchase_subscription"}]
-            )
-        else:
-            if stage == "traffic":
-                popular = recommended_plans(plans)
-                if popular:
-                    heading = (
-                        "پلن‌های پرطرفدار"
-                        if any(getattr(p, "purchase_count", 0) for p in popular)
-                        else "پلن‌های پیشنهادی"
-                    )
-                    lines.append(
-                        f"\n⭐ <b>{heading}</b>\nخرید سریع یا انتخاب دلخواه با فیلترهای زیر:"
-                    )
-                    rows.extend(
-                        self._picker_grid(
-                            [
-                                {
-                                    "text": f"{traffic_label(traffic_key(plan))} · {duration_label(duration_key(plan))} · {self.format_price(plan.discounted_price, plan.currency)}",
-                                    "callback_data": f"select_plan_{plan.pk}",
-                                    "style": "primary",
-                                }
-                                for plan in popular
-                            ],
-                            columns=2,
-                        )
-                    )
-                lines.append(
-                    "\n<b>۱. ترافیک‌های دلخواهت را انتخاب کن</b>\nمی‌توانی چند حجم یا یک بازه را انتخاب کنی."
-                )
-                if volume_user_price_is_constant(plans):
-                    lines.append(
-                        "تعداد کاربر در هزینهٔ پلن‌های حجمیِ هم‌حجم و هم‌زمان یک سرویس تغییری ایجاد نمی‌کند."
-                    )
-                else:
-                    lines.append(
-                        "تعداد کاربر را در مرحلهٔ بعد انتخاب می‌کنی؛ قیمت دقیق هر پلن پیش از خرید نمایش داده می‌شود."
-                    )
-            elif stage == "users":
-                lines.extend(self._picker_summary(picker, through="traffic"))
-                lines.append(
-                    "\n<b>۲. تعداد کاربر را انتخاب کن</b>\nمی‌توانی یک یا چند تعداد را انتخاب کنی."
-                )
-                candidates = matching_plans(plans, picker, through="traffic")
-                if volume_user_price_is_constant(candidates) and any(
-                    traffic_key(p).startswith("v") for p in candidates
-                ):
-                    lines.append(
-                        "در پلن‌های حجمیِ هم‌حجم و هم‌زمان، تعداد کاربر روی هزینه اثر ندارد."
-                    )
-            else:
-                lines.extend(self._picker_summary(picker, through="users"))
-                lines.append(
-                    "\n<b>۳. مدت زمان دلخواهت را انتخاب کن</b>\nمی‌توانی چند زمان را انتخاب کنی."
-                )
-            options, selected, labeler = self._picker_options(plans, picker)
-            last_page = max(
-                1, (len(options) + self.OPTION_PAGE_SIZE - 1) // self.OPTION_PAGE_SIZE
-            )
-            picker["page"] = max(1, min(picker["page"], last_page))
-            start = (picker["page"] - 1) * self.OPTION_PAGE_SIZE
-            if stage == "traffic":
-                ranges = traffic_ranges(options)
-                if len(options) > 6:
-                    rows.extend(
-                        self._picker_grid(
-                            [
-                                self._picker_button(
-                                    picker,
-                                    ("✅ " if set(keys) <= set(selected) else "")
-                                    + label,
-                                    "range",
-                                    index,
-                                    "success" if set(keys) <= set(selected) else None,
-                                )
-                                for index, label, keys in ranges
-                            ]
-                        )
-                    )
+            lines.append("\nدر حال حاضر پلن فعالی برای این سرویس موجود نیست.")
+        elif picker["stage"] == "bundle":
+            lines.append("\n<b>۱. مدت اشتراک را انتخاب کنید</b>")
             rows.extend(
                 self._picker_grid(
                     [
                         self._picker_button(
                             picker,
-                            ("✅ " if option in selected else "")
-                            + (
-                                "⭐ نامحدود • پیشنهاد ما"
-                                if stage == "traffic" and option == "u"
-                                else labeler(option)
-                            ),
-                            "toggle",
-                            str(option),
-                            "success"
-                            if option in selected
-                            else "primary"
-                            if stage == "traffic" and option == "u"
-                            else None,
+                            ("✅ " if d in picker["durations"] else "")
+                            + duration_label(d),
+                            "duration",
+                            d,
                         )
-                        for option in options[start : start + self.OPTION_PAGE_SIZE]
+                        for d in duration_options(plans)
                     ],
-                    columns=4 if stage == "users" else 3,
+                    columns=3,
                 )
             )
+            lines.append(
+                "\n<b>۲. بازه حجم را انتخاب کنید</b>\nبعد از انتخاب مدت و حجم، تعداد کاربر را در صفحه بعد انتخاب می‌کنید."
+            )
+            duration_plans = [
+                p
+                for p in plans
+                if not picker["durations"] or duration_key(p) in picker["durations"]
+            ]
+            rows.extend(
+                self._picker_grid(
+                    [
+                        self._picker_button(
+                            picker,
+                            ("✅ " if picker["range"] == key else "") + label,
+                            "volume",
+                            key,
+                        )
+                        for key, label, _, _ in self._volume_ranges(picker)
+                    ]
+                )
+            )
+            if picker["durations"]:
+                lines.append(
+                    "\n⏰ مدت انتخاب‌شده: " + duration_label(picker["durations"][0])
+                )
+                unavailable = [
+                    label
+                    for key, label, _, _ in self._volume_ranges(picker)
+                    if not self._range_keys(duration_plans, picker, key)
+                ]
+                if unavailable:
+                    lines.append(
+                        "در این مدت فعلاً موجود نیست: " + "، ".join(unavailable)
+                    )
+        elif picker["stage"] == "users":
+            lines.extend(
+                ["", *self._summary(picker), "\n<b>۳. تعداد کاربر را انتخاب کنید</b>"]
+            )
+            rows.extend(
+                self._picker_grid(
+                    [
+                        self._picker_button(
+                            picker, f"{count} کاربر", "users", str(count)
+                        )
+                        for count in sorted(
+                            {p.max_users for p in self._candidates(plans, picker)}
+                        )
+                    ],
+                    columns=3,
+                )
+            )
+            rows.append([self._picker_button(picker, "🔙 تغییر مدت و حجم", "back")])
+        else:
+            results = sorted(
+                self._candidates(plans, picker, include_users=True),
+                key=lambda p: (p.discounted_price, p.display_order, p.pk),
+            )
+            last_page = max(
+                1, (len(results) + self.RESULT_PAGE_SIZE - 1) // self.RESULT_PAGE_SIZE
+            )
+            picker["page"] = max(1, min(picker["page"], last_page))
+            lines.extend(
+                [
+                    "",
+                    *self._summary(picker),
+                    f"👥 تعداد کاربر: {picker['users'][0]}",
+                    "\n<b>پلن موردنظر را انتخاب کنید</b>",
+                ]
+            )
+            if not results:
+                lines.append("این ترکیب دیگر موجود نیست؛ انتخاب‌ها را تغییر دهید.")
+            offset = (picker["page"] - 1) * self.RESULT_PAGE_SIZE
+            for plan in results[offset : offset + self.RESULT_PAGE_SIZE]:
+                rows.append(
+                    [
+                        {
+                            "text": f"{traffic_label(traffic_key(plan))} · {duration_label(duration_key(plan))} · {self.format_price(plan.discounted_price, plan.currency)}",
+                            "callback_data": f"select_plan_{plan.pk}",
+                        }
+                    ]
+                )
             if last_page > 1:
-                lines.append(f"\nگزینه‌ها: صفحهٔ {picker['page']} از {last_page}")
-            rows.extend(self._picker_pagination(picker, last_page))
-            if selected:
-                description = "، ".join(labeler(option) for option in selected)
-                # Keep the message bounded for very large catalogs / range selections.
-                lines.append(f"\n✅ انتخاب شما: {description[:500]}")
-            rows.append(
+                lines.append(f"\nصفحه {picker['page']} از {last_page}")
+                rows.append(
+                    [
+                        self._picker_button(picker, label, "page", str(page))
+                        for page, label in (
+                            (picker["page"] - 1, "◀️ قبلی"),
+                            (picker["page"] + 1, "بعدی ▶️"),
+                        )
+                        if 1 <= page <= last_page
+                    ]
+                )
+            rows.append([self._picker_button(picker, "🔙 تغییر تعداد کاربر", "back")])
+            rows.append([self._picker_button(picker, "🔙 تغییر مدت و حجم", "bundle")])
+        if picker["stage"] == "bundle":
+            rows.extend(
                 [
-                    self._picker_button(picker, "انتخاب همه", "all"),
-                    self._picker_button(
-                        picker, "پاک کردن انتخاب‌ها", "clear", style="danger"
-                    ),
+                    [
+                        {
+                            "text": "🎁 " + p.name[:80],
+                            "callback_data": f"select_plan_{p.pk}",
+                        }
+                    ]
+                    for p in trial_plans[:3]
                 ]
             )
-            next_label = {
-                "traffic": "ادامه: تعداد کاربر ←",
-                "users": "ادامه: زمان ←",
-                "duration": "نمایش پلن‌های مناسب ←",
-            }[stage]
-            rows.append(
-                [self._picker_button(picker, next_label, "next", style="success")]
-            )
-            rows.append(
-                [
-                    {"text": "🔙 سرویس‌ها", "callback_data": "purchase_subscription"}
-                    if stage == "traffic"
-                    else self._picker_button(picker, "🔙 مرحلهٔ قبل", "back")
-                ]
-            )
+        rows.append([{"text": "🔙 سرویس‌ها", "callback_data": "purchase_subscription"}])
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
             {
-                "step": "plan_selection" if stage == "results" else "plan_filters",
+                "step": "plan_selection"
+                if picker["stage"] == "results"
+                else "plan_filters",
                 "service_category": picker["category"],
                 "special_offers": False,
                 "plan_picker": picker,
@@ -282,37 +267,6 @@ class PlanPickerMixin:
         )
         await callback.answer()
 
-    def _picker_pagination(self, picker, last_page):
-        buttons = [
-            self._picker_button(picker, label, "page", str(page))
-            for page, label in (
-                (picker["page"] - 1, "◀️ قبلی"),
-                (picker["page"] + 1, "بعدی ▶️"),
-            )
-            if 1 <= page <= last_page
-        ]
-        return [buttons] if buttons else []
-
-    @staticmethod
-    def _picker_summary(picker, through="duration"):
-        lines = [
-            "\n📊 ترافیک: "
-            + "، ".join(traffic_label(value) for value in picker["traffic"])[:500]
-        ]
-        if through != "traffic":
-            lines.append(
-                "👥 تعداد کاربر: "
-                + "، ".join(str(value) for value in picker["users"])[:300]
-            )
-        if through == "duration":
-            lines.append(
-                "⏰ زمان: "
-                + "، ".join(duration_label(value) for value in picker["durations"])[
-                    :500
-                ]
-            )
-        return lines
-
     async def handle_plan_filter(self, callback):
         user, _ = await self.get_or_create_user(callback.from_user)
         state = await self.get_user_state(user)
@@ -321,6 +275,7 @@ class PlanPickerMixin:
         if (
             len(parts) != 4
             or not picker
+            or picker.get("version") != 2
             or parts[1] != picker.get("token")
             or picker.get("category") not in self.CATEGORY_LABELS
             or state.current_state != BotState.StateType.PURCHASE_FLOW
@@ -334,88 +289,51 @@ class PlanPickerMixin:
             return
         _, _, action, value = parts
         plans = await self._picker_catalog(picker)
-        stage = picker["stage"]
-        selection_field = {
-            "traffic": "traffic",
-            "users": "users",
-            "duration": "durations",
-        }.get(stage)
-        if action in {"toggle", "range", "all", "clear", "next"}:
-            if not selection_field:
-                await callback.answer("برای تغییر انتخاب‌ها به مرحلهٔ قبل برگردید.")
-                return
-            options, selected, _ = self._picker_options(plans, picker)
-            selected = [option for option in selected if option in options]
-            if action == "next":
-                if not selected:
+        if action in {"duration", "volume"} and picker["stage"] == "bundle":
+            if action == "duration":
+                if value not in duration_options(plans):
                     await callback.answer(
-                        "حداقل یک گزینه انتخاب کنید.", show_alert=True
+                        "این مدت دیگر در دسترس نیست.", show_alert=True
                     )
                     return
-                picker[selection_field] = selected
-                picker["stage"] = self.PICKER_STAGES[
-                    self.PICKER_STAGES.index(stage) + 1
-                ]
-                picker["page"] = 1
+                picker.update(durations=[value], traffic=[], users=[], range="", page=1)
             else:
-                if action == "toggle":
-                    option = (
-                        int(value) if stage == "users" and value.isdigit() else value
+                if not picker["durations"]:
+                    await callback.answer(
+                        "ابتدا مدت اشتراک را انتخاب کنید.", show_alert=True
                     )
-                    if option not in options:
-                        await callback.answer(
-                            "این گزینه دیگر در دسترس نیست.", show_alert=True
-                        )
-                        return
-                    selected = (
-                        [item for item in selected if item != option]
-                        if option in selected
-                        else selected + [option]
+                    return
+                duration_plans = [
+                    p for p in plans if duration_key(p) in picker["durations"]
+                ]
+                keys = self._range_keys(duration_plans, picker, value)
+                if not keys:
+                    await callback.answer(
+                        "برای این مدت و بازه حجم فعلاً پلنی موجود نیست.", show_alert=True
                     )
-                elif action == "range":
-                    ranges = (
-                        {index: keys for index, _, keys in traffic_ranges(options)}
-                        if stage == "traffic"
-                        else {}
-                    )
-                    if value not in ranges:
-                        await callback.answer("بازهٔ نامعتبر است.")
-                        return
-                    keys = ranges[value]
-                    selected = (
-                        [item for item in selected if item not in keys]
-                        if set(keys) <= set(selected)
-                        else list(dict.fromkeys(selected + keys))
-                    )
-                else:
-                    selected = options if action == "all" else []
-                picker[selection_field] = selected
-                if stage == "traffic":
-                    picker["users"] = []
-                if stage in {"traffic", "users"}:
-                    picker["durations"] = []
-        elif action in {"back", "stage"}:
-            target = (
-                self.PICKER_STAGES[max(0, self.PICKER_STAGES.index(stage) - 1)]
-                if action == "back"
-                else value
+                    return
+                picker.update(
+                    traffic=keys, users=[], range=value, stage="users", page=1
+                )
+        elif action == "users" and picker["stage"] == "users":
+            if not value.isdigit() or int(value) not in {
+                p.max_users for p in self._candidates(plans, picker)
+            }:
+                await callback.answer(
+                    "این تعداد کاربر دیگر در دسترس نیست.", show_alert=True
+                )
+                return
+            picker.update(users=[int(value)], stage="results", page=1)
+        elif action in {"back", "bundle"}:
+            picker["stage"] = (
+                "users"
+                if action == "back" and picker["stage"] == "results"
+                else "bundle"
             )
-            if (
-                target not in self.PICKER_STAGES
-                or (target != "traffic" and not picker["traffic"])
-                or (target in {"duration", "results"} and not picker["users"])
-                or (target == "results" and not picker["durations"])
-            ):
-                await callback.answer("ابتدا انتخاب مرحلهٔ قبل را کامل کنید.")
-                return
-            picker["stage"] = target
             picker["page"] = 1
-        elif action == "page":
-            if not value.isdigit() or not 1 <= int(value) <= 100000:
-                await callback.answer("صفحهٔ نامعتبر است.")
-                return
-            picker["page"] = int(value)
+        elif action == "page" and picker["stage"] == "results" and value.isdigit():
+            picker["page"] = max(1, min(int(value), 100000))
         else:
-            await callback.answer("گزینهٔ نامعتبر است.")
+            await callback.answer("گزینه معتبر نیست؛ از منوی فعلی استفاده کنید.")
             return
         await self.render_plan_picker(callback, user, picker)

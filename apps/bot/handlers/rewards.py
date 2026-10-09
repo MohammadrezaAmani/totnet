@@ -11,7 +11,6 @@ from asgiref.sync import sync_to_async
 from django.db.models import Sum
 
 from apps.referrals.models import (
-    ReferralProgram,
     RewardAccount,
     RewardPointLedger,
 )
@@ -63,7 +62,7 @@ class RewardsHandler(BaseHandler):
         open_box = await ReferralReward.objects.filter(
             user=user,
             brand=self.brand,
-            reward_type="normal_point",
+            reward_type__in=["normal_point", "profile_point"],
             status=ReferralReward.RewardStatus.PROCESSED,
             is_cashed_out=False,
         ).aaggregate(total=Sum("amount"))
@@ -71,11 +70,10 @@ class RewardsHandler(BaseHandler):
         completed_normal_points = await ReferralReward.objects.filter(
             user=user,
             brand=self.brand,
-            reward_type="normal_point",
+            reward_type__in=["normal_point", "profile_point"],
             status=ReferralReward.RewardStatus.PROCESSED,
             is_cashed_out=True,
         ).aaggregate(total=Sum("amount"))
-        pills = int((completed_normal_points["total"] or 0) // 3)
 
         text = f"""
 🏅 <b>درجه پزشکی و امتیازات</b>
@@ -85,11 +83,11 @@ class RewardsHandler(BaseHandler):
 
 🧾 <b>تمام امتیازات خرج شده توسط شما تا الان:</b> {spent_points:g}
 
-📦 <b>جعبه امتیاز</b>
-• امتیازهای موجود در جعبه فعلی: {box_points:g}
-• قرص‌های نقد: {pills}
+📦 <b>جعبه قرص‌ها</b>
+• قرص‌های موجود در جعبه فعلی: {box_points:g}
+• قرص‌های نقدشده: {int(completed_normal_points["total"] or 0)}
 
-هر سه امتیاز یک قرص نقدشونده می‌سازد و ارزش نقدی همان سه تراکنش به موجودی نقد کیف پول منتقل می‌شود.
+جمع ارزش هر ۳ قرص به موجودی نقد کیف پول منتقل می‌شود.
         """
 
         keyboard = self.create_keyboard(
@@ -232,36 +230,16 @@ class RewardsHandler(BaseHandler):
         await self.show_achievements(callback, answer_callback=False)
 
     async def show_how_to_earn(self, callback: types.CallbackQuery):
-        """Explain the active referral and challenge reward rules."""
-        program = await ReferralProgram.objects.filter(
-            brand=self.brand, is_active=True
-        ).afirst()
-        try:
-            from apps.referrals.models import ChallengeProgram
-            challenge_program = await ChallengeProgram.objects.filter(
-                brand=self.brand, is_active=True
-            ).afirst()
-        except Exception:
-            challenge_program = None
+        text = """💊شما جزوی از کادر پزشکی هستید و سهم بزرگی در این جامعه دارید
+💊با هر بار خرید کاربری که توسط شما معرفی شده، بخشی از مبلغ خرید به شما تعلق می‌گیرد
+💊محاسبه و دریافت این امتیازات تا ابد پابرجاست تا به این واسطه خیلی زود هزینه اینترنت شما صفر شود
+💊هر خرید دوستان شما معادل یک قرص است
+💊هر قرص به تنهایی قابل نقد شدن نیست و باید تعدادش مضربی از ۳ باشد
+💊درواقع جمع ارزش هر ۳ قرص به موجودی نقد شما منتقل می‌شود
+💊ارزش هر قرص متفاوت است و بستگی به خرید ثبت شده توسط دوست شما دارد
 
-        normal_percent = program.purchase_reward_percent if program else 8
-        challenge_line = (
-            f"در چالش ویژه فعال، درصد معرفی تا تکمیل تارگت {challenge_program.reward_percent:g}٪ است و پاداش آن در صورت موفقیت مستقیماً نقد می‌شود."
-            if challenge_program
-            else "درصد چالش ویژه در حال حاضر برای این برند فعال نیست."
-        )
-        text = f"""
-🎯 <b>نحوه کسب امتیاز و رایگان‌شدن خدمات</b>
-
-• هر خرید مستقیم کاربری که با لینک شما معرفی شده باشد، یک تراکنش و معادل یک امتیاز است.
-• ارزش نقدی هر امتیاز عادی برابر {normal_percent:g}٪ مبلغ همان خرید است.
-• هر ۳ امتیاز عادی یک قرص نقدشونده می‌سازد؛ سپس مجموع ارزش نقدی همان سه امتیاز به موجودی نقد کیف پول شما منتقل می‌شود.
-• ارزش ریالی امتیازها ثابت نیست، چون به مبلغ خرید هر فرد بستگی دارد.
-• معرفی‌های بیشتر از تارگت چالش ویژه با درصد عادی سیستم محاسبه می‌شوند.
-• {challenge_line}
-
-فعالیت و معرفی بیشتر باعث ارتقای درجه پزشکی و کاهش دائمی هزینه‌های شما می‌شود.
-        """
+💉سهم DR.VPN در صفر کردن مخارج اینترنت شما طراحی این سیستم بوده
+فعالیت بیشتر شما برای خودتون و اطرافیانتون مفید خواهد بود"""
         keyboard = self.create_keyboard(
             [
                 [{"text": "👥 معرفی دوستان", "callback_data": "referral_system"}],
