@@ -88,26 +88,41 @@ class ProfileHandler(BaseHandler):
             if user.birth_date
             else "ثبت نشده"
         )
-        text = f"""
-👤 پروفایل من
 
-👨‍💼 نام: {escape(user.full_name or user.first_name or "ثبت نشده")}
-📱 تلفن: {user.phone_number or "ثبت نشده"}
-👤 نام کاربری: {escape(display_username)}
-📅 تاریخ پذیرش در مطب: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
+        text = f"""👤 <b>پروفایل من</b>
+        ━━━━━━━━━━━━━━━━━━
 
-🎂 تاریخ تولد: {birth_label}
-📍 محل کار: {escape(profile.work_location) or "ثبت نشده"}
-🏠 محل زندگی: {escape(profile.living_location) or "ثبت نشده"}
-📱 دستگاه‌ها: {device_label}
-
-📊 وضعیت:
-• اشتراک‌های فعال: {subscription_count}
-• درخواست ثبت اشتراک در انتظار بررسی: {pending_claim_count}
-• سطح کاربری: {escape(rewards["level_title"])}
-• کسب {pills["remaining"]} قرص تا نقد شدن کامل امتیاز
-• موجودی نقد کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
+        👨‍💼 نام: {escape(user.full_name or user.first_name or "ثبت نشده")}
+        📱 تلفن: {escape(user.phone_number or "ثبت نشده")}
+        👤 نام کاربری: {escape(display_username)}
+        📅 تاریخ پذیرش در مطب: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
         """
+
+        if birth_label:
+            text += f"\n🎂 تاریخ تولد: {escape(str(birth_label))}"
+
+        if profile.work_location:
+            text += f"\n📍 محل کار: {escape(profile.work_location)}"
+
+        if profile.living_location:
+            text += f"\n🏠 محل زندگی: {escape(profile.living_location)}"
+
+        if device_label:
+            text += f"\n📱 دستگاه‌ها: {device_label}"
+
+        text += f"""
+
+        ━━━━━━━━━━━━━━━━━━
+        📊 <b>وضعیت حساب</b>
+
+        ✅ اشتراک‌های فعال: {subscription_count}
+        ⏳ درخواست‌های در انتظار بررسی: {pending_claim_count}
+        🏅 سطح کاربری: {escape(rewards["level_title"])}
+        💊 قرص تا نقد شدن کامل امتیاز: {pills["remaining"]}
+        💰 موجودی نقد کیف پول: {self.format_price(wallet_balance, self.brand.currency)}
+        ━━━━━━━━━━━━━━━━━━
+        """
+
 
         keyboard = self.create_keyboard(
             [
