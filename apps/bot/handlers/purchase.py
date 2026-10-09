@@ -19,6 +19,7 @@ from apps.orders.models import Order, Payment, Wallet
 from apps.orders.services import WalletCheckoutError, pay_order_with_wallet
 from apps.subscriptions.models import Subscription, SubscriptionPlan
 from apps.subscriptions.catalog import get_cached_plans
+from apps.subscriptions.presentation import compact_plan_specs
 from apps.subscriptions.tasks import provision_paid_order
 from apps.vpn_providers.models import VPNProvider
 
@@ -88,33 +89,8 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             text += f"\nصفحهٔ {page} از {last_page}"
         keyboard_buttons = []
         for plan in plans:
-            details = []
-            if plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
-                if plan.duration_value:
-                    details.append(
-                        self.format_duration(plan.duration_value, plan.duration_unit)
-                    )
-                details.append("نامحدود")
-            elif plan.plan_type == SubscriptionPlan.PlanType.TRAFFIC_BASED:
-                if plan.traffic_limit_gb is not None:
-                    details.append(self.format_traffic(plan.traffic_limit_gb))
-            elif plan.plan_type == SubscriptionPlan.PlanType.TIME_BASED:
-                if plan.duration_value:
-                    details.append(
-                        self.format_duration(plan.duration_value, plan.duration_unit)
-                    )
-            elif plan.plan_type == SubscriptionPlan.PlanType.HYBRID:
-                if plan.duration_value:
-                    details.append(
-                        self.format_duration(plan.duration_value, plan.duration_unit)
-                    )
-                if plan.traffic_limit_gb is not None:
-                    details.append(self.format_traffic(plan.traffic_limit_gb))
-
-            plan_text = plan.name
-            if details:
-                plan_text += " • " + " • ".join(details)
-            plan_text += f" • {self.format_price(plan.discounted_price, plan.currency)}"
+            plan_text = compact_plan_specs(plan)
+            plan_text += f" 💰{self.format_price(plan.discounted_price, plan.currency)}"
             if plan.discount_percentage > 0 and (
                 plan.offer_expires_at is None or plan.offer_expires_at > timezone.now()
             ):
@@ -294,27 +270,11 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             },
         )
 
-        text = f"""
-📋 <b>نام پلن:</b>
-<code>{escape(plan.name)}</code>
-
-🏷️ دسته: {self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display())}
-"""
-
-        text += "\n📊 مشخصات:\n"
-
-        if plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
-            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value, plan.duration_unit)}\n"
-            text += "📈 ترافیک: نامحدود\n"
-        elif plan.plan_type == SubscriptionPlan.PlanType.TRAFFIC_BASED:
-            text += f"📊 حجم ترافیک: {self.format_traffic(plan.traffic_limit_gb)}\n"
-        elif plan.plan_type == SubscriptionPlan.PlanType.TIME_BASED:
-            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value, plan.duration_unit)}\n"
-        elif plan.plan_type == SubscriptionPlan.PlanType.HYBRID:
-            text += f"⏰ مدت زمان: {self.format_duration(plan.duration_value, plan.duration_unit)}\n"
-            text += f"📊 حجم ترافیک: {self.format_traffic(plan.traffic_limit_gb)}\n"
-
-        text += f"👥 تعداد کاربر: {plan.max_users}\n"
+        text = (
+            f"💊 <b>نام:</b>\n<code>{escape(plan.name)}</code>\n\n"
+            f"🩺 {self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display())}\n\n"
+            f"💉 <b>مشخصات:</b>\n{compact_plan_specs(plan)}\n"
+        )
 
         if plan.features:
             text += "\n✨ ویژگی‌ها:\n"

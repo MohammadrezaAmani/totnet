@@ -6,12 +6,12 @@ from html import escape
 
 from apps.bot.models import BotState
 from apps.subscriptions.catalog import get_cached_plans
+from apps.subscriptions.presentation import compact_plan_specs
 from apps.subscriptions.selection import (
     duration_key,
     duration_label,
     duration_options,
     traffic_key,
-    traffic_label,
 )
 
 
@@ -215,7 +215,7 @@ class PlanPickerMixin:
                 rows.append(
                     [
                         {
-                            "text": f"{traffic_label(traffic_key(plan))} · {duration_label(duration_key(plan))} · {self.format_price(plan.discounted_price, plan.currency)}",
+                            "text": f"{compact_plan_specs(plan)} 💰{self.format_price(plan.discounted_price, plan.currency)}",
                             "callback_data": f"select_plan_{plan.pk}",
                         }
                     ]
@@ -324,6 +324,9 @@ class PlanPickerMixin:
                 )
                 return
             picker.update(users=[int(value)], stage="results", page=1)
+        elif action == "stage" and value == picker["stage"]:
+            # Return from plan details to its preserved list.
+            pass
         elif action in {"back", "bundle"}:
             picker["stage"] = (
                 "users"

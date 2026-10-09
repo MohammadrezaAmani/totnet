@@ -20,6 +20,7 @@ from apps.subscriptions.models import (
 )
 from apps.vpn_providers.models import VPNProvider
 from apps.subscriptions.usage import remaining_usage
+from apps.subscriptions.presentation import compact_plan_specs
 
 from .base import BaseHandler
 
@@ -318,16 +319,8 @@ class SubscriptionHandler(BaseHandler):
         rows = []
         for candidate in plans:
             category = category_labels.get(candidate.service_category, candidate.name)
-            details = [category]
-            if candidate.traffic_limit_gb is not None:
-                details.append(f"{candidate.traffic_limit_gb:g}گ")
-            elif candidate.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
-                details.append("نامحدود")
-            details.append(self.format_price(candidate.discounted_price, candidate.currency))
-            prefix = "♻️ طرح فعلی" if candidate.pk == plan.pk else "🔹"
-            label = f"{prefix} • " + " • ".join(details)
-            if len(label) > 58:
-                label = label[:57] + "…"
+            prefix = "♻️" if candidate.pk == plan.pk else ""
+            label = f"{prefix}{category} {compact_plan_specs(candidate)} 💰{self.format_price(candidate.discounted_price, candidate.currency)}"
             callback_data = (
                 f"repurchase_subscription_{subscription.pk}"
                 if candidate.pk == plan.pk

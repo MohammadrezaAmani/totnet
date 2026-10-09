@@ -17,6 +17,7 @@ from apps.subscriptions.models import (
     SubscriptionPlan,
 )
 from apps.subscriptions.catalog import refresh_plan_catalog
+from apps.subscriptions.presentation import connectix_service_category, connectix_plan_name
 
 from .models import VPNProvider, VPNProviderHealthCheck, VPNProviderStats
 from .services.base import VPNProviderFactory, VPNUser
@@ -290,7 +291,28 @@ def sync_connectix_plans(self, provider_id: int):
         else:
             plan_type = SubscriptionPlan.PlanType.TIME_BASED
             traffic = None
-        title = upstream.title.strip()[:100] or f"Connectix {upstream.plan_id[:12]}"
+        existing = SubscriptionPlan.objects.filter(
+            vpn_provider=provider, upstream_plan_id=upstream.plan_id
+        ).first()
+        category = connectix_service_category(
+            upstream.group_name, existing.service_category if existing else "normal"
+        )
+        title = connectix_plan_name(
+            max_users=upstream.count_of_devices or 1, plan_type=plan_type,
+            traffic_limit_gb=traffic, duration_value=duration_value,
+            duration_unit=duration_unit, service_category=category,
+        )
+        other_plans = SubscriptionPlan.objects.filter(brand=provider.brand)
+        if existing:
+            other_plans = other_plans.exclude(pk=existing.pk)
+        base_title = title
+        collision_number = 0
+        while other_plans.filter(name=title).exists():
+            suffix = f"_p{provider.pk}_{upstream.plan_id[:12]}"
+            if collision_number:
+                suffix += f"_{collision_number}"
+            title = f"{base_title[:100 - len(suffix)]}{suffix}"
+            collision_number += 1
         upstream_cost = _connectix_decimal(upstream.price)
         sell_price = _connectix_decimal(upstream.sell_price)
         if sell_price == 0 and upstream_cost > 0:
@@ -303,6 +325,7 @@ def sync_connectix_plans(self, provider_id: int):
             "upstream_plan_name": upstream.title[:200],
             "upstream_count_of_devices": upstream.count_of_devices,
             "name": title,
+            "service_category": category,
             "description": f"{upstream.group_name} · {upstream.title}"[:2000],
             "plan_type": plan_type,
             "price": sell_price,
@@ -316,20 +339,11 @@ def sync_connectix_plans(self, provider_id: int):
             "is_visible": purchasable and upstream.displayed_in_robot is not False,
             "display_order": position,
         }
-        # Keep brand/name unique even if the seller reuses a translated title.
-        existing = SubscriptionPlan.objects.filter(
-            vpn_provider=provider, upstream_plan_id=upstream.plan_id
-        ).first()
         if existing:
             for key, value in defaults.items():
                 setattr(existing, key, value)
             existing.save()
         else:
-            name_in_use = SubscriptionPlan.objects.filter(
-                brand=provider.brand, name=title
-            ).exclude(vpn_provider=provider, upstream_plan_id=upstream.plan_id).exists()
-            if name_in_use:
-                defaults["name"] = f"{title[:82]} · {upstream.plan_id[:12]}"
             SubscriptionPlan.objects.create(
                 brand=provider.brand,
                 upstream_plan_id=upstream.plan_id,

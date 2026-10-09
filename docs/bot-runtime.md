@@ -36,6 +36,8 @@ For a full Docker application deployment, stop the native bot, worker, and Beat 
 
 ## Bot revision: 2026-10-09
 
+Connectix's `default` group (including an empty group label) is classified as Royal. Imported plan names follow the actual device count, traffic and duration, for example `2×20g_1m_royal`; the original provider title stays in `upstream_plan_name` for provisioning. Duplicate specifications receive an identifier suffix to preserve the brand/name constraint. Purchase and renewal options show compact Persian specifications, such as `💉۲۰گیگ💉۱کاربر💉۱ماه`, with a separate price icon. Catalog sync preserves this naming and classification.
+
 Purchases now use duration buttons above four volume ranges, then a separate user-count page and the actual matching plans. Royal uses 10–30, 30–50, 60–100 GB and unlimited; Normal starts at 20 GB. The normal service buttons are uncolored; only «تجویز ویژه دکتر» has a different color. Existing device selections are preserved when migrating to multiple devices, and returning users see the main menu without replaying their configured welcome message.
 
 Academy defaults come from [Connectix](https://connectix.space/fa/), [Happ](https://www.happ.su/main) and [v2rayNG releases](https://github.com/2dust/v2rayNG/releases). Each app/platform has a link screen. Only the explicit installer button sends a file; iPhone and macOS screens use links only. Defaults and uploaded files remain editable in Django Admin under Useful content. Existing entries are preserved. New bot setup seeds the same defaults and ticket categories when none exist.
