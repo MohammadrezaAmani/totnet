@@ -450,8 +450,15 @@ class RewardRedemptionAdmin(admin.ModelAdmin):
             return qs.filter(account__brand__in=request.user.admin_brands.all())
         return qs
 
+class ChallengeTierInline(admin.TabularInline):
+    model = ChallengeTier
+    fields = ("target_referrals", "entry_fee", "display_order", "is_active")
+    extra = 0
+
+
 @admin.register(ChallengeProgram)
 class ChallengeProgramAdmin(admin.ModelAdmin):
+    inlines = (ChallengeTierInline,)
     list_display = (
         "brand",
         "name",
@@ -463,6 +470,11 @@ class ChallengeProgramAdmin(admin.ModelAdmin):
     )
     list_filter = ("is_active", "brand")
     search_fields = ("brand__name", "name")
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if not request.user.is_superuser and db_field.name == "brand":
+            kwargs["queryset"] = request.user.admin_brands.all()
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -482,6 +494,11 @@ class ChallengeTierAdmin(admin.ModelAdmin):
     )
     list_filter = ("is_active", "program__brand")
     ordering = ("program", "display_order", "target_referrals")
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if not request.user.is_superuser and db_field.name == "program":
+            kwargs["queryset"] = ChallengeProgram.objects.filter(brand__in=request.user.admin_brands.all())
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -508,6 +525,7 @@ class UserChallengeAdmin(admin.ModelAdmin):
     list_filter = ("status", "brand", "program")
     search_fields = ("user__username", "user__telegram_id", "program__name")
     readonly_fields = (
+        "user", "brand", "program", "tier", "status",
         "offered_at",
         "accepted_at",
         "declined_at",
@@ -522,6 +540,12 @@ class UserChallengeAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
     )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

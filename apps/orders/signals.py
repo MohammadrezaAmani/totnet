@@ -355,12 +355,12 @@ def order_completed_post_save(sender, instance, created, **kwargs):
     if instance.status != Order.OrderStatus.COMPLETED:
         return
 
-    has_confirmed_payment = Payment.objects.filter(
+    confirmed_total = Payment.objects.filter(
         order=instance, status=Payment.PaymentStatus.CONFIRMED
-    ).exists()
-    if instance.final_price > 0 and not has_confirmed_payment:
+    ).aggregate(total=Sum("amount"))["total"] or 0
+    if instance.final_price > confirmed_total:
         logger.warning(
-            "Completed order %s has no confirmed payment; provisioning was not started",
+            "Completed order %s is not fully paid; provisioning was not started",
             instance.pk,
         )
         return

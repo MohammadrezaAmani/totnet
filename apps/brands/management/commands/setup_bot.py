@@ -6,7 +6,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.brands.models import Brand, BrandConfiguration, BrandTheme
+from apps.brands.models import Brand, BrandConfiguration, BrandPaymentMethod, BrandTheme
 from apps.vpn_providers.models import VPNProvider
 from apps.vpn_providers.tasks import sync_connectix_plans
 
@@ -58,6 +58,10 @@ class Command(BaseCommand):
             )
         BrandConfiguration.objects.get_or_create(brand=brand)
         BrandTheme.objects.get_or_create(brand=brand)
+        if not BrandPaymentMethod.objects.filter(brand=brand, payment_type="card_transfer").exists():
+            BrandPaymentMethod.objects.create(
+                brand=brand, payment_type="card_transfer", name="کارت‌به‌کارت", is_enabled=True
+            )
         from apps.support.download_catalog import seed_academy
         from apps.support.models import SupportCategory, UsefulContent
         seed_academy(brand, UsefulContent)

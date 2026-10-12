@@ -254,7 +254,7 @@ class MultiBrandDispatcher:
                 )
             elif (
                 state.current_state == BotState.StateType.PURCHASE_FLOW
-                and (state.state_data or {}).get("step") == "gift_recipient"
+                and (state.state_data or {}).get("step") in {"gift_recipient", "other_recipient"}
             ):
                 await handlers["purchase"].handle_gift_recipient_message(
                     message, user, state
@@ -445,6 +445,8 @@ class MultiBrandDispatcher:
 
             elif data == "purchase_subscription":
                 await handlers["purchase"].show_subscription_plans(callback)
+            elif data.startswith("cancel_purchase_"):
+                await handlers["purchase"].cancel_purchase(callback, data.removeprefix("cancel_purchase_"))
             elif data.startswith("pf:"):
                 await handlers["purchase"].handle_plan_filter(callback)
             elif data.startswith("purchase_category_"):
@@ -465,7 +467,7 @@ class MultiBrandDispatcher:
                 await handlers["purchase"].initiate_purchase(callback, plan_id)
             elif data.startswith("gift_plan_"):
                 plan_id = int(data.split("_")[2])
-                await handlers["purchase"].initiate_purchase(callback, plan_id, "gift")
+                await handlers["purchase"].show_plan_details(callback, plan_id)
             elif data.startswith("buy_for_other_"):
                 plan_id = int(data.split("_")[3])
                 await handlers["purchase"].initiate_purchase(callback, plan_id, "other")

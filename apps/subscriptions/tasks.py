@@ -7,9 +7,10 @@ from datetime import timedelta
 from asgiref.sync import async_to_sync
 from celery import shared_task
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
-from apps.orders.models import Order
+from apps.orders.models import Order, Payment
 from apps.subscriptions.models import ProviderRemoteSubscription, Subscription
 from apps.subscriptions.services import provision_order_subscription
 
@@ -28,6 +29,11 @@ def provision_paid_order(order_pk: int):
         return False
     if order.status not in (Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING):
         logger.info("Provisioning skipped for order %s in state %s", order.pk, order.status)
+        return False
+
+    confirmed_total = order.payments.filter(status=Payment.PaymentStatus.CONFIRMED).aggregate(total=Sum("amount"))["total"] or 0
+    if order.final_price > confirmed_total:
+        logger.warning("Provisioning skipped: order %s is not fully paid", order.pk)
         return False
 
     now = timezone.now()

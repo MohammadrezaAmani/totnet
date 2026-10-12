@@ -9,7 +9,10 @@ from django.core.cache import cache
 from django.db.models import Count, Q
 from django.utils.dateparse import parse_datetime
 
+from apps.brands.models import Brand
+
 from .models import SubscriptionPlan
+from .presentation import connectix_service_category
 
 logger = logging.getLogger(__name__)
 FIELDS = (
@@ -28,11 +31,12 @@ FIELDS = (
     "discount_percentage",
     "offer_expires_at",
     "upstream_group_id",
+    "upstream_group_name",
 )
 
 
 def catalog_key(brand_id):
-    return f"subscription-plan-catalog:v2:{brand_id}"
+    return f"subscription-plan-catalog:v3:{brand_id}"
 
 
 def invalidate_plan_catalog(brand_id):
@@ -62,9 +66,16 @@ def refresh_plan_catalog(brand_id):
             )
         )
         .order_by("display_order", "price", "pk")
-        .values(*FIELDS, "purchase_count")
+        .values(*FIELDS, "purchase_count", "vpn_provider__provider_type")
     )
     for row in rows:
+        provider_type = row.pop("vpn_provider__provider_type")
+        if provider_type == "connectix" and row["upstream_group_id"]:
+            # Older imports stored every provider group as "normal". Resolve the
+            # panel's default group when reading too, before category filtering.
+            row["service_category"] = connectix_service_category(
+                row["upstream_group_name"], row["service_category"]
+            )
         for key in ("price", "traffic_limit_gb", "discount_percentage"):
             if row[key] is not None:
                 row[key] = str(row[key])
@@ -81,14 +92,20 @@ def refresh_plan_catalog(brand_id):
     return rows
 
 
-async def get_cached_plans(brand_id):
-    try:
-        rows = await cache.aget(catalog_key(brand_id))
-    except Exception as exc:
-        logger.warning(
-            "Plan cache read failed for brand %s (%s)", brand_id, type(exc).__name__
-        )
-        rows = None
+async def get_cached_plans(brand_id, *, refresh=False):
+    # Read the flag live rather than from the long-lived bot Brand instance.
+    # Keep the cached catalog complete so toggling the flag works immediately.
+    show_free_plans = await Brand.objects.filter(
+        pk=brand_id, show_free_plans=True
+    ).aexists()
+    rows = None
+    if not refresh:
+        try:
+            rows = await cache.aget(catalog_key(brand_id))
+        except Exception as exc:
+            logger.warning(
+                "Plan cache read failed for brand %s (%s)", brand_id, type(exc).__name__
+            )
     if rows is None:
         rows = await sync_to_async(refresh_plan_catalog)(brand_id)
     plans = []
@@ -103,5 +120,13 @@ async def get_cached_plans(brand_id):
         # Detached instances contain scalar fields only; never cache ORM objects.
         plan = SubscriptionPlan(**values)
         plan.purchase_count = purchase_count
-        plans.append(plan)
+        if show_free_plans or plan.discounted_price > 0:
+            plans.append(plan)
     return plans
+
+
+async def is_plan_visible_in_bot(plan, brand_id):
+    """Apply free-plan visibility to selections from older bot keyboards too."""
+    return plan.discounted_price > 0 or await Brand.objects.filter(
+        pk=brand_id, show_free_plans=True
+    ).aexists()

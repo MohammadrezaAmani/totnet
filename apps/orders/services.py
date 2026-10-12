@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -38,6 +38,71 @@ class WalletCheckoutResult:
     remaining_due: Decimal = Decimal("0")
 
 
+def spendable_wallet_balance(wallet):
+    """Cash available for a purchase, excluding freezes and spent limits."""
+    if not wallet.is_active or wallet.is_frozen:
+        return Decimal("0")
+    available = max(wallet.balance, Decimal("0"))
+    now = timezone.now()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    limits = (
+        (wallet.daily_spending_limit, day_start),
+        (wallet.monthly_spending_limit, day_start.replace(day=1)),
+    )
+    for limit, start in limits:
+        if limit is not None:
+            spent = WalletTransaction.objects.filter(
+                wallet=wallet,
+                transaction_type__in=["withdrawal", "payment"],
+                created_at__gte=start,
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+            available = min(available, max(limit - spent, Decimal("0")))
+    return available.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+
+def available_purchase_credit(*, user_id, brand_id, currency):
+    wallet = Wallet.objects.filter(
+        user_id=user_id, brand_id=brand_id, currency=currency
+    ).first()
+    return spendable_wallet_balance(wallet) if wallet else Decimal("0")
+
+
+@transaction.atomic
+def cancel_unpaid_order(*, order_id, user_id, brand_id):
+    """Cancel an unfinished checkout and return its partial wallet payments."""
+    try:
+        order = Order.objects.select_for_update().get(
+            order_id=order_id, user_id=user_id, brand_id=brand_id
+        )
+    except Order.DoesNotExist as exc:
+        raise WalletCheckoutError("Order was not found") from exc
+    if order.status == Order.OrderStatus.CANCELLED:
+        return Decimal("0")
+    if order.status not in {
+        Order.OrderStatus.PENDING,
+        Order.OrderStatus.AWAITING_PAYMENT,
+    }:
+        raise WalletCheckoutError("Order cannot be cancelled")
+    confirmed = order.payments.filter(status=Payment.PaymentStatus.CONFIRMED)
+    total = confirmed.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    if (
+        total >= order.final_price
+        or confirmed.exclude(payment_method=Payment.PaymentMethod.WALLET).exists()
+    ):
+        raise WalletCheckoutError("Order cannot be cancelled")
+    for payment in confirmed.select_related("wallet"):
+        # The payment refund signal credits the original wallet with a unique
+        # per-payment ledger key; retries cannot return the same cash twice.
+        payment.status = Payment.PaymentStatus.REFUNDED
+        payment.save(update_fields=["status", "updated_at"])
+    order.payments.filter(status=Payment.PaymentStatus.PENDING).update(
+        status=Payment.PaymentStatus.CANCELLED
+    )
+    order.status = Order.OrderStatus.CANCELLED
+    order.save(update_fields=["status", "updated_at"])
+    return total
+
+
 @transaction.atomic
 def pay_order_with_wallet(
     *, order_id: str, user_id: int, brand_id: int, allow_partial: bool = False
@@ -55,7 +120,9 @@ def pay_order_with_wallet(
     confirmed_payments = Payment.objects.filter(
         order=order, status=Payment.PaymentStatus.CONFIRMED
     )
-    confirmed_total = confirmed_payments.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    confirmed_total = confirmed_payments.aggregate(total=Sum("amount"))[
+        "total"
+    ] or Decimal("0")
     if order.final_price <= Decimal("0"):
         raise WalletCheckoutError("Order amount must be positive")
     remaining_due = max(order.final_price - confirmed_total, Decimal("0"))
@@ -81,7 +148,7 @@ def pay_order_with_wallet(
     if wallet.currency != order.currency:
         raise WalletCheckoutError("Wallet currency does not match order currency")
 
-    amount_to_apply = min(wallet.balance, remaining_due)
+    amount_to_apply = min(spendable_wallet_balance(wallet), remaining_due)
     if not allow_partial and amount_to_apply < remaining_due:
         raise WalletCheckoutError("Insufficient wallet balance")
     if amount_to_apply <= 0:
@@ -148,7 +215,9 @@ def credit_wallet(
         WalletTransaction.TransactionType.ADMIN_ADJUSTMENT,
     }
     if not amount.is_finite() or amount <= 0 or transaction_type not in allowed_types:
-        raise WalletOperationError("Wallet credit must use a positive amount and credit type")
+        raise WalletOperationError(
+            "Wallet credit must use a positive amount and credit type"
+        )
 
     wallet = Wallet.objects.select_for_update().get(pk=wallet_id)
     if idempotency_key:
@@ -196,7 +265,9 @@ def debit_wallet(
         WalletTransaction.TransactionType.PAYMENT,
     }
     if not amount.is_finite() or amount <= 0 or transaction_type not in allowed_types:
-        raise WalletOperationError("Wallet debit must use a positive amount and debit type")
+        raise WalletOperationError(
+            "Wallet debit must use a positive amount and debit type"
+        )
 
     wallet = Wallet.objects.select_for_update().get(pk=wallet_id)
     if idempotency_key:
@@ -225,9 +296,15 @@ def debit_wallet(
         transaction_type__in=allowed_types,
         created_at__gte=month_start,
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-    if wallet.daily_spending_limit is not None and daily_spent + amount > wallet.daily_spending_limit:
+    if (
+        wallet.daily_spending_limit is not None
+        and daily_spent + amount > wallet.daily_spending_limit
+    ):
         raise WalletOperationError("Daily wallet spending limit exceeded")
-    if wallet.monthly_spending_limit is not None and monthly_spent + amount > wallet.monthly_spending_limit:
+    if (
+        wallet.monthly_spending_limit is not None
+        and monthly_spent + amount > wallet.monthly_spending_limit
+    ):
         raise WalletOperationError("Monthly wallet spending limit exceeded")
 
     return WalletTransaction.objects.create(
@@ -259,11 +336,15 @@ def redeem_wallet_coupon(*, user_id: int, brand_id: int, code: str):
     usage_count = CouponUsage.objects.filter(coupon=coupon).count()
     if coupon.max_uses is not None and usage_count >= coupon.max_uses:
         raise WalletCouponError("Coupon usage limit has been reached")
-    if CouponUsage.objects.filter(coupon=coupon, user_id=user_id).count() >= coupon.max_uses_per_user:
+    if (
+        CouponUsage.objects.filter(coupon=coupon, user_id=user_id).count()
+        >= coupon.max_uses_per_user
+    ):
         raise WalletCouponError("Coupon has already reached this user's limit")
-    if coupon.new_users_only and Order.objects.filter(
-        user_id=user_id, brand_id=brand_id
-    ).exists():
+    if (
+        coupon.new_users_only
+        and Order.objects.filter(user_id=user_id, brand_id=brand_id).exists()
+    ):
         raise WalletCouponError("Coupon is only available to new users")
     if (
         coupon.coupon_type != Coupon.CouponType.FIXED_AMOUNT
@@ -313,8 +394,10 @@ def validate_stars_pre_checkout(
 ) -> bool:
     """Accept only a still-valid Stars invoice matching its stored quote."""
     try:
-        payment = Payment.objects.select_for_update(of=("self",)).select_related("user").get(
-            payment_id=payment_id
+        payment = (
+            Payment.objects.select_for_update(of=("self",))
+            .select_related("user")
+            .get(payment_id=payment_id)
         )
     except Payment.DoesNotExist:
         return False

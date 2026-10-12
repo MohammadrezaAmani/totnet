@@ -4,6 +4,7 @@ Admin configuration for brands app
 
 from django.contrib import admin, messages
 
+from apps.orders.models import PaymentCard
 from .models import (
     Brand,
     BrandAnalytics,
@@ -16,19 +17,35 @@ from .models import (
 )
 
 
+class BrandPaymentMethodInline(admin.TabularInline):
+    model = BrandPaymentMethod
+    fields = ("name", "payment_type", "is_enabled", "display_order")
+    extra = 0
+
+
+class BrandPaymentCardInline(admin.TabularInline):
+    model = PaymentCard
+    fields = ("bank_name", "card_number", "cardholder_name", "is_active", "display_order")
+    extra = 0
+
+
 @admin.register(Brand)
 class BrandAdmin(admin.ModelAdmin):
+    inlines = (BrandPaymentMethodInline, BrandPaymentCardInline)
     list_display = (
         "name",
         "slug",
         "domain",
         "bot_username",
+        "show_free_plans",
         "status",
         "is_verified",
         "commission_rate",
         "created_at",
     )
-    list_filter = ("status", "is_verified", "invite_only_registration", "created_at")
+    list_filter = (
+        "status", "is_verified", "invite_only_registration", "show_free_plans", "created_at"
+    )
     search_fields = ("name", "slug", "domain", "contact_email", "support_email")
     readonly_fields = ("created_at", "updated_at")
     prepopulated_fields = {"slug": ("name",)}
@@ -48,6 +65,7 @@ class BrandAdmin(admin.ModelAdmin):
                     "bot_username",
                     "webhook_url",
                     "invite_only_registration",
+                    "show_free_plans",
                 )
             },
         ),

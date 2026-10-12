@@ -7,6 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 from django.db.models import F, Max, Q, Sum
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.brands.models import Brand
@@ -308,7 +309,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order) -> Refe
             .exclude(pk=order.pk)
             .annotate(
                 confirmed_total=Sum("payments__amount", filter=confirmed_filter),
-                paid_at=Max("payments__created_at", filter=confirmed_filter),
+                paid_at=Max(Coalesce("payments__verified_at", "payments__created_at"), filter=confirmed_filter),
             )
             .filter(
                 confirmed_total__gte=F("final_price"),

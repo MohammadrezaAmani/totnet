@@ -21,6 +21,7 @@ from apps.subscriptions.models import (
 from apps.vpn_providers.models import VPNProvider
 from apps.subscriptions.usage import remaining_usage
 from apps.subscriptions.presentation import compact_plan_specs
+from apps.subscriptions.catalog import get_cached_plans
 
 from .base import BaseHandler
 
@@ -289,11 +290,7 @@ class SubscriptionHandler(BaseHandler):
             else "نامحدود"
         )
 
-        plans = []
-        async for candidate in SubscriptionPlan.objects.filter(
-            brand=self.brand, is_active=True, is_visible=True
-        ).order_by("display_order", "price", "id"):
-            plans.append(candidate)
+        plans = await get_cached_plans(self.brand.pk)
         plans.sort(key=lambda candidate: candidate.pk != plan.pk)
         current_plan_available = any(candidate.pk == plan.pk for candidate in plans)
         renewal_hint = (
@@ -317,10 +314,16 @@ class SubscriptionHandler(BaseHandler):
         """
 
         rows = []
+        credits = {
+            currency: await self.purchase_credit(user, currency)
+            for currency in {p.currency for p in plans}
+        }
+        if any(credits.values()):
+            text += "\n💰 مبالغ پلن‌ها پس از کسر موجودی نقد قابل‌استفاده شماست.\n"
         for candidate in plans:
             category = category_labels.get(candidate.service_category, candidate.name)
             prefix = "♻️" if candidate.pk == plan.pk else ""
-            label = f"{prefix}{category} {compact_plan_specs(candidate)} 💰{self.format_price(candidate.discounted_price, candidate.currency)}"
+            label = f"{prefix}{category} {compact_plan_specs(candidate)} 💰{self.format_price(self.payable_plan_price(candidate, credits[candidate.currency]), candidate.currency)}"
             callback_data = (
                 f"repurchase_subscription_{subscription.pk}"
                 if candidate.pk == plan.pk

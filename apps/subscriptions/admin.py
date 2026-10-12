@@ -30,10 +30,10 @@ class SubscriptionPlanAdminForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        if not cleaned.get("is_active"):
+        if not cleaned.get("is_active", self.instance.is_active):
             return cleaned
-        brand = cleaned.get("brand")
-        provider = cleaned.get("vpn_provider")
+        brand = cleaned.get("brand", self.instance.brand if self.instance.brand_id else None)
+        provider = cleaned.get("vpn_provider", self.instance.vpn_provider if self.instance.vpn_provider_id else None)
         if provider is None and brand is not None:
             provider = VPNProvider.objects.filter(
                 brand=brand,
@@ -45,7 +45,7 @@ class SubscriptionPlanAdminForm(forms.ModelForm):
                 "An active plan must route to a provider with an implemented provisioning adapter."
             )
         if provider.provider_type == VPNProvider.ProviderType.CONNECTIX and not all(
-            cleaned.get(field)
+            cleaned.get(field, getattr(self.instance, field, None))
             for field in (
                 "upstream_plan_id",
                 "upstream_plan_name",
@@ -81,6 +81,8 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "max_users",
         "is_active",
         "is_visible",
+        "sync_bot_settings",
+        "sync_price",
         "is_featured",
         "display_order",
     )
@@ -89,18 +91,45 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "plan_type",
         "is_active",
         "is_visible",
+        "sync_bot_settings",
+        "sync_price",
         "is_featured",
         "brand",
         "created_at",
     )
     search_fields = ("name", "description", "brand__name", "upstream_plan_id")
-    list_editable = ("is_active", "is_visible", "is_featured", "display_order")
+    list_editable = ("is_visible", "is_featured", "display_order", "sync_bot_settings", "sync_price")
+    ordering = ("brand", "display_order", "price", "pk")
+    list_select_related = ("brand", "vpn_provider")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.upstream_plan_id and obj.vpn_provider_id and obj.vpn_provider.provider_type == "connectix":
+            return (
+                "brand", "vpn_provider", "is_active", "plan_type", "duration_value",
+                "duration_unit", "traffic_limit_gb", "max_users", "upstream_cost", "currency",
+                "upstream_plan_id", "upstream_plan_name", "upstream_group_id",
+                "upstream_group_name", "upstream_count_of_devices",
+            )
+        return super().get_readonly_fields(request, obj)
+
+    def save_model(self, request, obj, form, change):
+        if change and "price" in form.changed_data and "sync_price" not in form.changed_data:
+            obj.sync_price = False
+        super().save_model(request, obj, form, change)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         if not request.user.is_superuser:
             return qs.filter(brand__in=request.user.admin_brands.all())
         return qs
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if not request.user.is_superuser:
+            if db_field.name == "brand":
+                kwargs["queryset"] = request.user.admin_brands.all()
+            elif db_field.name == "vpn_provider":
+                kwargs["queryset"] = VPNProvider.objects.filter(brand__in=request.user.admin_brands.all())
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
 @admin.register(Subscription)

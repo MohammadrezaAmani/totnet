@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN, localcontext
 
 from django.db import IntegrityError, connection, transaction
 from django.db.models import F, Sum
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -1072,8 +1073,8 @@ def snapshot_gift_reward(*, order_id: int):
     payments = Payment.objects.filter(order=order, status=Payment.PaymentStatus.CONFIRMED)
     if order.final_price <= 0 or (payments.aggregate(total=Sum("amount"))["total"] or Decimal(0)) < order.final_price:
         return
-    last = payments.order_by("-created_at", "-pk").first()
-    percent, challenge = active_purchase_reward_percent(user_id=order.user_id, brand_id=order.brand_id, at=last.created_at)
+    last = payments.annotate(confirmed_at=Coalesce("verified_at", "created_at")).order_by("-confirmed_at", "-pk").first()
+    percent, challenge = active_purchase_reward_percent(user_id=order.user_id, brand_id=order.brand_id, at=last.confirmed_at)
     Order.objects.filter(pk=order.pk).update(gift_reward_percent=percent, gift_reward_challenge=challenge)
 
 

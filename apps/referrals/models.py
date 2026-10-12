@@ -768,6 +768,18 @@ class ChallengeTier(models.Model):
     def __str__(self):
         return f"{self.program.name}: {self.target_referrals}"
 
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.target_referrals is not None and self.target_referrals < 1:
+            errors["target_referrals"] = "تعداد معرفی موفق باید حداقل یک نفر باشد."
+        if self.entry_fee is not None and self.entry_fee <= 0:
+            errors["entry_fee"] = "مبلغ ورودی باید بیشتر از صفر باشد."
+        if errors:
+            raise ValidationError(errors)
+
 
 class UserChallenge(models.Model):
     """A user's single lifetime opportunity to take a configured challenge."""

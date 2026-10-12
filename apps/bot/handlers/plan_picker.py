@@ -34,11 +34,20 @@ class PlanPickerMixin:
         await self.render_plan_picker(callback, user, picker)
 
     async def _picker_catalog(self, picker):
-        return [
+        plans = [
             p
             for p in await get_cached_plans(self.brand.pk)
             if p.service_category == picker["category"]
         ]
+        if not plans:
+            # Do not show an empty service because a previously warmed snapshot
+            # predates an import or a group/category correction.
+            plans = [
+                p
+                for p in await get_cached_plans(self.brand.pk, refresh=True)
+                if p.service_category == picker["category"]
+            ]
+        return plans
 
     @staticmethod
     def _picker_button(picker, text, action, value=""):
@@ -75,9 +84,7 @@ class PlanPickerMixin:
                 keys.add(key)
             elif key.startswith("v") and low is not None:
                 volume = Decimal(key[1:])
-                if (
-                    low < volume if range_id == "medium" else low <= volume
-                ) and volume <= high:
+                if low <= volume <= high:
                     keys.add(key)
         return sorted(
             keys, key=lambda k: Decimal(k[1:]) if k.startswith("v") else Decimal(0)
@@ -103,7 +110,7 @@ class PlanPickerMixin:
             "انتخاب نشده",
         )
         return [
-            "⏰ مدت اشتراک: "
+            "📅 مدت اشتراک: "
             + "، ".join(duration_label(d) for d in picker["durations"]),
             "📦 حجم: " + label,
         ]
@@ -118,6 +125,15 @@ class PlanPickerMixin:
             )
         )
         plans = [p for p in plans if traffic_key(p) in eligible_keys]
+        valid_durations = set(duration_options(plans))
+        had_duration = bool(picker["durations"])
+        picker["durations"] = [d for d in picker["durations"] if d in valid_durations]
+        if (had_duration and not picker["durations"]) or (
+            picker["stage"] != "bundle" and not self._candidates(plans, picker)
+        ):
+            picker.update(stage="bundle", traffic=[], users=[], range="", page=1)
+        elif picker["stage"] == "results" and not self._candidates(plans, picker, include_users=True):
+            picker.update(stage="users", users=[], page=1)
         lines = [f"🛒 <b>{escape(self.CATEGORY_LABELS[picker['category']])}</b>"]
         rows = []
         if not plans:
@@ -157,22 +173,16 @@ class PlanPickerMixin:
                             key,
                         )
                         for key, label, _, _ in self._volume_ranges(picker)
+                        if picker["durations"] and self._range_keys(duration_plans, picker, key)
                     ]
                 )
             )
             if picker["durations"]:
                 lines.append(
-                    "\n⏰ مدت انتخاب‌شده: " + duration_label(picker["durations"][0])
+                    "\n📅 مدت انتخاب‌شده: " + duration_label(picker["durations"][0])
                 )
-                unavailable = [
-                    label
-                    for key, label, _, _ in self._volume_ranges(picker)
-                    if not self._range_keys(duration_plans, picker, key)
-                ]
-                if unavailable:
-                    lines.append(
-                        "در این مدت فعلاً موجود نیست: " + "، ".join(unavailable)
-                    )
+            else:
+                lines.append("ابتدا مدت را انتخاب کنید تا بازه‌های موجود نمایش داده شوند.")
         elif picker["stage"] == "users":
             lines.extend(
                 ["", *self._summary(picker), "\n<b>۳. تعداد کاربر را انتخاب کنید</b>"]
@@ -194,7 +204,7 @@ class PlanPickerMixin:
         else:
             results = sorted(
                 self._candidates(plans, picker, include_users=True),
-                key=lambda p: (p.discounted_price, p.display_order, p.pk),
+                key=lambda p: (p.display_order, p.discounted_price, p.pk),
             )
             last_page = max(
                 1, (len(results) + self.RESULT_PAGE_SIZE - 1) // self.RESULT_PAGE_SIZE
@@ -211,11 +221,17 @@ class PlanPickerMixin:
             if not results:
                 lines.append("این ترکیب دیگر موجود نیست؛ انتخاب‌ها را تغییر دهید.")
             offset = (picker["page"] - 1) * self.RESULT_PAGE_SIZE
+            credits = {
+                currency: await self.purchase_credit(user, currency)
+                for currency in {p.currency for p in results}
+            }
+            if any(credits.values()):
+                lines.append("💰 مبالغ زیر پس از کسر موجودی نقد قابل‌استفاده شماست.")
             for plan in results[offset : offset + self.RESULT_PAGE_SIZE]:
                 rows.append(
                     [
                         {
-                            "text": f"{compact_plan_specs(plan)} 💰{self.format_price(plan.discounted_price, plan.currency)}",
+                            "text": f"{compact_plan_specs(plan)} 💰{self.format_price(self.payable_plan_price(plan, credits[plan.currency]), plan.currency)}",
                             "callback_data": f"select_plan_{plan.pk}",
                         }
                     ]
@@ -283,34 +299,28 @@ class PlanPickerMixin:
             not in {"plan_filters", "plan_selection", "plan_details"}
             or state.state_data.get("special_offers")
         ):
-            await callback.answer(
-                "این منو قدیمی است؛ دوباره سرویس را انتخاب کنید.", show_alert=True
-            )
+            await self.show_subscription_plans(callback)
             return
         _, _, action, value = parts
         plans = await self._picker_catalog(picker)
         if action in {"duration", "volume"} and picker["stage"] == "bundle":
             if action == "duration":
                 if value not in duration_options(plans):
-                    await callback.answer(
-                        "این مدت دیگر در دسترس نیست.", show_alert=True
-                    )
+                    picker.update(durations=[], traffic=[], users=[], range="", stage="bundle", page=1)
+                    await self.render_plan_picker(callback, user, picker)
                     return
                 picker.update(durations=[value], traffic=[], users=[], range="", page=1)
             else:
                 if not picker["durations"]:
-                    await callback.answer(
-                        "ابتدا مدت اشتراک را انتخاب کنید.", show_alert=True
-                    )
+                    await self.render_plan_picker(callback, user, picker)
                     return
                 duration_plans = [
                     p for p in plans if duration_key(p) in picker["durations"]
                 ]
                 keys = self._range_keys(duration_plans, picker, value)
                 if not keys:
-                    await callback.answer(
-                        "برای این مدت و بازه حجم فعلاً پلنی موجود نیست.", show_alert=True
-                    )
+                    picker.update(traffic=[], users=[], range="", stage="bundle", page=1)
+                    await self.render_plan_picker(callback, user, picker)
                     return
                 picker.update(
                     traffic=keys, users=[], range=value, stage="users", page=1
@@ -319,9 +329,8 @@ class PlanPickerMixin:
             if not value.isdigit() or int(value) not in {
                 p.max_users for p in self._candidates(plans, picker)
             }:
-                await callback.answer(
-                    "این تعداد کاربر دیگر در دسترس نیست.", show_alert=True
-                )
+                picker.update(users=[], stage="users", page=1)
+                await self.render_plan_picker(callback, user, picker)
                 return
             picker.update(users=[int(value)], stage="results", page=1)
         elif action == "stage" and value == picker["stage"]:
@@ -337,6 +346,6 @@ class PlanPickerMixin:
         elif action == "page" and picker["stage"] == "results" and value.isdigit():
             picker["page"] = max(1, min(int(value), 100000))
         else:
-            await callback.answer("گزینه معتبر نیست؛ از منوی فعلی استفاده کنید.")
+            await self.render_plan_picker(callback, user, picker)
             return
         await self.render_plan_picker(callback, user, picker)

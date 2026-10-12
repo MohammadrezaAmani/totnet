@@ -2,7 +2,10 @@
 Admin configuration for orders app
 """
 
+from django import forms
 from django.contrib import admin
+from django.db.models import Sum
+from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
@@ -18,8 +21,27 @@ from .models import (
 )
 
 
+class OrderAdminForm(forms.ModelForm):
+    class Meta:
+        model = Order
+        fields = "__all__"
+
+    def clean(self):
+        cleaned = super().clean()
+        paid_states = {Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED}
+        price = cleaned.get("final_price", self.instance.final_price)
+        if cleaned.get("status") in paid_states and price and price > 0:
+            total = 0
+            if self.instance.pk:
+                total = self.instance.payments.filter(status=Payment.PaymentStatus.CONFIRMED).aggregate(total=Sum("amount"))["total"] or 0
+            if total < price:
+                self.add_error("status", "برای ثبت این وضعیت، کل مبلغ سفارش باید با پرداخت تأییدشده تسویه شده باشد.")
+        return cleaned
+
+
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
+    form = OrderAdminForm
     list_display = (
         "order_number",
         "brand",
@@ -73,6 +95,15 @@ class OrderAdmin(admin.ModelAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
+    def save_model(self, request, obj, form, change):
+        previous = self.get_object(request, str(obj.pk)) if change else None
+        if obj.status == Payment.PaymentStatus.CONFIRMED and (
+            previous is None or previous.status != Payment.PaymentStatus.CONFIRMED
+        ):
+            obj.verified_at = timezone.now()
+            obj.verified_by = request.user
+        super().save_model(request, obj, form, change)
+
     list_display = (
         "payment_id",
         "order",
@@ -215,6 +246,7 @@ class CryptoCurrencyAdmin(admin.ModelAdmin):
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
+    readonly_fields = ("balance", "challenge_frozen_balance")
     list_display = (
         "user",
         "brand",

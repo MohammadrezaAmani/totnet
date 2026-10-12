@@ -6,16 +6,22 @@ from datetime import timedelta
 from decimal import Decimal
 from html import escape
 
+from asgiref.sync import async_to_sync
+from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from celery import shared_task
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import DecimalField, Exists, F, Max, OuterRef, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from apps.orders.models import Order, Payment
 from apps.orders.services import WalletOperationError
 from apps.subscriptions.models import Subscription
-from utils.message import broadcast_message
 
 from .gamification import ChallengeError, settle_challenge
 from .models import (
@@ -32,40 +38,138 @@ from .services import RewardConfigurationError, award_level_one_referral_for_pay
 logger = logging.getLogger(__name__)
 
 
-def _queue_once(*, user, brand_id: int, notification_type: str, dedupe_key: str, text: str, buttons_data=None, metadata=None) -> bool:
+def _publish_notification(notification_id):
+    try:
+        deliver_gamification_notification.delay(notification_id)
+    except Exception as exc:
+        logger.warning(
+            "Notification %s enqueue failed (%s)", notification_id, type(exc).__name__
+        )
+
+
+def _queue_delivery(notification):
+    metadata = dict(notification.metadata or {})
+    if notification.sent_at or metadata.get("delivery_abandoned"):
+        return False
+    queued_at = parse_datetime(str(metadata.get("delivery_queued_at", "")))
+    if (
+        queued_at
+        and timezone.is_aware(queued_at)
+        and queued_at > timezone.now() - timedelta(minutes=5)
+    ):
+        return False
+    metadata["delivery_queued_at"] = timezone.now().isoformat()
+    notification.metadata = metadata
+    notification.save(update_fields=["metadata"])
+    transaction.on_commit(lambda: _publish_notification(notification.pk))
+    return True
+
+
+@shared_task(
+    bind=True,
+    max_retries=5,
+    default_retry_delay=60,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def deliver_gamification_notification(self, notification_id):
+    """Mark a durable notification sent only after Telegram accepts it."""
+    try:
+        with transaction.atomic():
+            notification = (
+                GamificationNotification.objects.select_for_update(of=("self",))
+                .select_related("user", "brand")
+                .get(pk=notification_id)
+            )
+            metadata = dict(notification.metadata or {})
+            if notification.sent_at or metadata.get("delivery_abandoned"):
+                return False
+            payload = metadata.get("delivery_payload")
+            if not payload or notification.brand.status != "active":
+                return False
+
+            async def send():
+                bot = Bot(
+                    notification.brand.bot_token,
+                    session=AiohttpSession(proxy=settings.SOCKS5_PROXY),
+                )
+                try:
+                    buttons = payload.get("buttons_data")
+                    keyboard = (
+                        InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [InlineKeyboardButton(**button) for button in row]
+                                for row in buttons
+                            ]
+                        )
+                        if buttons
+                        else None
+                    )
+                    return await bot.send_message(
+                        chat_id=notification.user.telegram_id,
+                        text=payload["text"],
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                    )
+                finally:
+                    await bot.session.close()
+
+            try:
+                result = async_to_sync(send)()
+            except TelegramForbiddenError:
+                metadata["delivery_abandoned"] = True
+                notification.metadata = metadata
+                notification.save(update_fields=["metadata"])
+                return False
+            metadata["telegram_message_id"] = result.message_id
+            notification.metadata = metadata
+            notification.sent_at = timezone.now()
+            notification.save(update_fields=["sent_at", "metadata"])
+            return True
+    except GamificationNotification.DoesNotExist:
+        return False
+    except Exception as exc:
+        delay = max(1, exc.retry_after) if isinstance(exc, TelegramRetryAfter) else 60
+        raise self.retry(
+            exc=RuntimeError(type(exc).__name__), countdown=delay
+        ) from None
+
+
+def _queue_once(
+    *,
+    user,
+    brand_id: int,
+    notification_type: str,
+    dedupe_key: str,
+    text: str,
+    buttons_data=None,
+    metadata=None,
+) -> bool:
     """Publish one Telegram notification with a durable, retryable dedupe marker."""
     if not user.telegram_id:
         return False
     try:
-        # Keep the row lock until the Redis publish decision is recorded. This
-        # prevents concurrent beat/task workers from publishing the same logical
-        # notification at the same time while still leaving failed publishes
-        # retryable with sent_at=NULL.
         with transaction.atomic():
-            notification, created = GamificationNotification.objects.select_for_update().get_or_create(
-                dedupe_key=dedupe_key,
-                defaults={
-                    "user": user,
-                    "brand_id": brand_id,
-                    "notification_type": notification_type,
-                    "metadata": metadata or {},
-                },
+            notification, created = (
+                GamificationNotification.objects.select_for_update().get_or_create(
+                    dedupe_key=dedupe_key,
+                    defaults={
+                        "user": user,
+                        "brand_id": brand_id,
+                        "notification_type": notification_type,
+                        "metadata": metadata or {},
+                    },
+                )
             )
             if not created and notification.sent_at is not None:
                 return False
 
-            published = broadcast_message(
-                brand_id=brand_id,
-                user_ids=[user.telegram_id],
-                text=text,
-                buttons_data=buttons_data,
-            )
-            if not published:
-                return False
-            notification.sent_at = timezone.now()
-            notification.metadata = metadata or notification.metadata
-            notification.save(update_fields=["sent_at", "metadata"])
-            return True
+            notification.metadata = {
+                **(notification.metadata or {}),
+                **(metadata or {}),
+                "delivery_payload": {"text": text, "buttons_data": buttons_data},
+            }
+            return _queue_delivery(notification)
     except IntegrityError:
         # A concurrent create for the same unique dedupe key won. The next beat
         # run can retry if that winner failed before setting sent_at.
@@ -86,7 +190,10 @@ def process_referral_reward(self, payment_id: str):
         .filter(order__payments__payment_id=payment_id)
         .first()
     )
-    if reward and reward.status in {ReferralReward.RewardStatus.PROCESSED, ReferralReward.RewardStatus.PENDING}:
+    if reward and reward.status in {
+        ReferralReward.RewardStatus.PROCESSED,
+        ReferralReward.RewardStatus.PENDING,
+    }:
         _queue_once(
             user=reward.user,
             brand_id=reward.brand_id,
@@ -129,7 +236,21 @@ def recover_pending_referral_rewards(limit: int = 100):
         .annotate(has_referral=Exists(eligible_referrals))
         .annotate(has_program=Exists(active_programs))
         .filter(has_reward=False)
-        .filter(Q(has_referral=True, has_program=True, order__order_type__in=[Order.OrderType.NEW_SUBSCRIPTION, Order.OrderType.RENEWAL, Order.OrderType.UPGRADE]) | Q(order__order_type=Order.OrderType.GIFT, order__recipient_claimed_at__isnull=False))
+        .filter(
+            Q(
+                has_referral=True,
+                has_program=True,
+                order__order_type__in=[
+                    Order.OrderType.NEW_SUBSCRIPTION,
+                    Order.OrderType.RENEWAL,
+                    Order.OrderType.UPGRADE,
+                ],
+            )
+            | Q(
+                order__order_type=Order.OrderType.GIFT,
+                order__recipient_claimed_at__isnull=False,
+            )
+        )
         .order_by("created_at")
         .values_list("payment_id", flat=True)[:limit]
     )
@@ -141,7 +262,11 @@ def recover_pending_referral_rewards(limit: int = 100):
 
 
 def _first_purchase_pairs(
-    *, cutoff, limit: int, brand_id: int | None = None, sent_notification_type: str | None = None
+    *,
+    cutoff,
+    limit: int,
+    brand_id: int | None = None,
+    sent_notification_type: str | None = None,
 ):
     """Return user/brand pairs whose first *fully-paid subscription* purchase is old enough.
 
@@ -181,14 +306,16 @@ def _first_purchase_pairs(
         ).filter(already_notified=False)
 
     completed_orders = (
-        base_orders
-        .annotate(
+        base_orders.annotate(
             confirmed_total=Coalesce(
                 Sum("payments__amount", filter=confirmed_filter),
                 Value(Decimal("0.00")),
                 output_field=DecimalField(max_digits=25, decimal_places=10),
             ),
-            paid_at=Max("payments__created_at", filter=confirmed_filter),
+            paid_at=Max(
+                Coalesce("payments__verified_at", "payments__created_at"),
+                filter=confirmed_filter,
+            ),
         )
         .filter(confirmed_total__gte=F("final_price"), paid_at__lte=cutoff)
         .select_related("user")
@@ -224,6 +351,28 @@ def _first_purchase_pairs(
 def run_gamification_notifications(limit: int = 500):
     """Drive survey/referral/challenge/expiry notifications and challenge settlement."""
     now = timezone.now()
+    # Recover an interrupted delivery even after its original reminder window.
+    pending_ids = (
+        GamificationNotification.objects.filter(
+            sent_at__isnull=True,
+            metadata__has_key="delivery_payload",
+        )
+        .filter(
+            Q(metadata__delivery_abandoned__isnull=True)
+            | Q(metadata__delivery_abandoned=False)
+        )
+        .order_by("pk")
+        .values_list("pk", flat=True)[:limit]
+    )
+    for notification_id in list(pending_ids):
+        with transaction.atomic():
+            pending = (
+                GamificationNotification.objects.select_for_update()
+                .filter(pk=notification_id)
+                .first()
+            )
+            if pending:
+                _queue_delivery(pending)
     counters = {
         "profile_completion": 0,
         "survey": 0,
@@ -251,7 +400,9 @@ def run_gamification_notifications(limit: int = 500):
                 "📝 <b>نظرسنجی کوتاه سرویس</b>\n\n"
                 "برای بهتر شدن سرویس، لطفاً به سه بخش کیفیت اتصال، کار با برنامه و پشتیبانی از ۱ تا ۵ امتیاز بدهید."
             ),
-            buttons_data=[[{"text": "⭐ شروع نظرسنجی", "callback_data": "service_survey_start"}]],
+            buttons_data=[
+                [{"text": "⭐ شروع نظرسنجی", "callback_data": "service_survey_start"}]
+            ],
             metadata={"first_payment_id": str(first.payment_id)},
         ):
             counters["survey"] += 1
@@ -273,7 +424,9 @@ def run_gamification_notifications(limit: int = 500):
                 "فعالیت و معرفی بیشتر توسط شما ضمن کاهش محسوس و دائمی هزینه‌های شما، منجر به احقاق این حق برای افراد بیشتری می‌شود.\n"
                 "شما عضو اصلی این تیم پزشکی هستید نه یک بیمار ساده!"
             ),
-            buttons_data=[[{"text": "👥 معرفی دوستان", "callback_data": "referral_system"}]],
+            buttons_data=[
+                [{"text": "👥 معرفی دوستان", "callback_data": "referral_system"}]
+            ],
             metadata={"first_payment_id": str(first.payment_id)},
         ):
             counters["referral_intro"] += 1
@@ -281,26 +434,33 @@ def run_gamification_notifications(limit: int = 500):
     # Day 16: collect birth date, phone, then work/living location.
     from apps.accounts.models import UserProfile
     from .services import grant_profile_completion_reward
+
     for user_id, brand_id, first in _first_purchase_pairs(
-        cutoff=now - timedelta(days=16), limit=limit,
+        cutoff=now - timedelta(days=16),
+        limit=limit,
         sent_notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
     ):
         profile, _ = UserProfile.objects.get_or_create(user_id=user_id)
         if not profile.notification_enabled:
             continue
         if _queue_once(
-            user=first.user, brand_id=brand_id,
+            user=first.user,
+            brand_id=brand_id,
             notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
             dedupe_key=f"profile-completion:{brand_id}:{user_id}",
             text="یک امتیاز آسون فقط با تکمیل پروفایل!",
-            buttons_data=[[{"text": "🎁 تکمیل پروفایل", "callback_data": "complete_profile"}]],
+            buttons_data=[
+                [{"text": "🎁 تکمیل پروفایل", "callback_data": "complete_profile"}]
+            ],
             metadata={"first_payment_id": str(first.payment_id)},
         ):
             counters["profile_completion"] += 1
             grant_profile_completion_reward(user_id=user_id, brand_id=brand_id)
 
     # One-time challenge offer after the configured delay from first purchase.
-    for program in ChallengeProgram.objects.filter(is_active=True).select_related("brand"):
+    for program in ChallengeProgram.objects.filter(is_active=True).select_related(
+        "brand"
+    ):
         cutoff = now - timedelta(days=program.offer_delay_days)
         for user_id, brand_id, first in _first_purchase_pairs(
             cutoff=cutoff,
@@ -330,8 +490,14 @@ def run_gamification_notifications(limit: int = 500):
                 ),
                 buttons_data=[
                     [
-                        {"text": "✅ بله", "callback_data": f"challenge_accept_{challenge.pk}"},
-                        {"text": "❌ خیر", "callback_data": f"challenge_decline_{challenge.pk}"},
+                        {
+                            "text": "✅ بله",
+                            "callback_data": f"challenge_accept_{challenge.pk}",
+                        },
+                        {
+                            "text": "❌ خیر",
+                            "callback_data": f"challenge_decline_{challenge.pk}",
+                        },
                     ]
                 ],
                 metadata={"challenge_id": challenge.pk},
@@ -366,7 +532,9 @@ def run_gamification_notifications(limit: int = 500):
                 f"⏳ فقط {days_left} روز تا تکمیل چالش ویژه {escape(challenge.program.name)} "
                 "و دریافت امتیاز بزرگ آن فرصت دارید."
             ),
-            buttons_data=[[{"text": "🏆 مشاهده چالش", "callback_data": "active_challenges"}]],
+            buttons_data=[
+                [{"text": "🏆 مشاهده چالش", "callback_data": "active_challenges"}]
+            ],
             metadata={"challenge_id": challenge.pk, "days_left": days_left},
         ):
             counters["challenge_reminder"] += 1
@@ -401,7 +569,10 @@ def run_gamification_notifications(limit: int = 500):
                     {"text": "👥 معرفی دوستان", "callback_data": "referral_system"},
                 ]
             ],
-            metadata={"subscription_id": subscription.pk, "expires_at": subscription.expires_at.isoformat()},
+            metadata={
+                "subscription_id": subscription.pk,
+                "expires_at": subscription.expires_at.isoformat(),
+            },
         ):
             counters["expiry"] += 1
             if counters["expiry"] >= limit:

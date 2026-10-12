@@ -3,7 +3,9 @@ Base handler class for the Multi-Tenant VPN Bot
 """
 
 import logging
+from decimal import Decimal, InvalidOperation
 
+from asgiref.sync import sync_to_async
 from aiogram import Bot, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,6 +20,7 @@ from apps.bot.admission import (
     registration_allowed,
 )
 from apps.brands.models import Brand
+from apps.orders.services import available_purchase_credit
 
 logger = logging.getLogger(__name__)
 
@@ -263,12 +266,21 @@ class BaseHandler:
                     chat_id, text, keyboard, parse_mode
                 )
 
+    async def purchase_credit(self, user, currency):
+        return await sync_to_async(available_purchase_credit)(
+            user_id=user.pk, brand_id=self.brand.pk, currency=currency
+        )
+
+    @staticmethod
+    def payable_plan_price(plan, credit):
+        return max(plan.discounted_price - credit, Decimal("0"))
+
     def format_price(self, amount: float, currency: str = "USD") -> str:
         """Format price with currency"""
         if currency in {"T", "IRT"}:
             try:
-                formatted = f"{float(amount):,.2f}".rstrip("0").rstrip(".")
-            except TypeError, ValueError:
+                formatted = f"{Decimal(str(amount)):,.2f}".rstrip("0").rstrip(".")
+            except (TypeError, ValueError, InvalidOperation):
                 formatted = str(amount)
             return f"{formatted} تومان"
         if currency == "USD":

@@ -37,6 +37,11 @@ class Brand(models.Model):
         default=False,
         help_text="با فعال شدن این گزینه، کاربران جدید فقط با لینک دعوت فعال همین برند وارد می‌شوند. کاربران موجود محدودیتی ندارند.",
     )
+    show_free_plans = models.BooleanField(
+        "نمایش پلن‌های رایگان در ربات",
+        default=False,
+        help_text="با فعال شدن این گزینه، پلن‌های رایگان در فهرست خرید و تمدید ربات نمایش داده می‌شوند.",
+    )
 
     telegram_channel = models.CharField(max_length=100, null=True, blank=True)
     telegram_group = models.CharField(max_length=100, null=True, blank=True)

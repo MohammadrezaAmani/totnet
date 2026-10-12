@@ -4,6 +4,7 @@ Supports unlimited plans, traffic plans, time plans, and hybrid plans
 """
 
 import uuid
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import models
 from django.utils import timezone
@@ -79,6 +80,16 @@ class SubscriptionPlan(models.Model):
 
     is_active = models.BooleanField(default=True)
     is_visible = models.BooleanField(default=True)
+    sync_bot_settings = models.BooleanField(
+        "دریافت نام، نمایش و ترتیب از پنل سرویس‌دهنده",
+        default=False,
+        help_text="اگر غیرفعال باشد، نام، نمایش و ترتیب پلن در ربات از همین پنل ادمین مدیریت می‌شود و با همگام‌سازی تغییر نمی‌کند.",
+    )
+    sync_price = models.BooleanField(
+        "دریافت قیمت از پنل سرویس‌دهنده",
+        default=True,
+        help_text="با غیرفعال کردن این گزینه، قیمت فروش تعیین‌شده در ادمین با همگام‌سازی تغییر نمی‌کند.",
+    )
 
     discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     offer_expires_at = models.DateTimeField(null=True, blank=True)
@@ -96,18 +107,23 @@ class SubscriptionPlan(models.Model):
 
     def clean(self):
         super().clean()
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.price is not None and self.price < 0:
+            errors["price"] = "قیمت نمی‌تواند منفی باشد."
+        if self.discount_percentage is not None and not 0 <= self.discount_percentage <= 100:
+            errors["discount_percentage"] = "درصد تخفیف باید بین صفر و صد باشد."
+        if self.max_users is not None and self.max_users < 1:
+            errors["max_users"] = "تعداد کاربر باید حداقل یک نفر باشد."
         if (
             self.vpn_provider_id
             and self.brand_id
             and self.vpn_provider.brand_id != self.brand_id
         ):
-            from django.core.exceptions import ValidationError
-
-            raise ValidationError(
-                {
-                    "vpn_provider": "The provider and subscription plan must belong to the same brand."
-                }
-            )
+            errors["vpn_provider"] = "The provider and subscription plan must belong to the same brand."
+        if errors:
+            raise ValidationError(errors)
 
     @property
     def discounted_price(self):
@@ -117,7 +133,7 @@ class SubscriptionPlan(models.Model):
         )
         if discount_is_active:
             discount_amount = (self.price * self.discount_percentage) / 100
-            return self.price - discount_amount
+            return (self.price - discount_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         return self.price
 
 

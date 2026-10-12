@@ -336,10 +336,19 @@ def sync_connectix_plans(self, provider_id: int):
             "traffic_limit_gb": traffic,
             "max_users": upstream.count_of_devices or 1,
             "is_active": purchasable,
-            "is_visible": purchasable and upstream.displayed_in_robot is not False,
+            "is_visible": (
+                purchasable and upstream.displayed_in_robot is not False
+                if existing and existing.sync_bot_settings else True
+            ),
             "display_order": position,
         }
         if existing:
+            if not existing.sync_price:
+                defaults.pop("price")
+            if not existing.sync_bot_settings:
+                defaults.pop("is_visible")
+                defaults.pop("display_order")
+                defaults.pop("name")
             for key, value in defaults.items():
                 setattr(existing, key, value)
             existing.save()
@@ -354,7 +363,7 @@ def sync_connectix_plans(self, provider_id: int):
     # Plans removed from the non-archived endpoint are hidden from new purchases.
     SubscriptionPlan.objects.filter(vpn_provider=provider).exclude(
         upstream_plan_id__in=synced_ids
-    ).update(is_active=False, is_visible=False)
+    ).update(is_active=False)
     provider.last_sync = timezone.now()
     provider.save(update_fields=("last_sync", "updated_at"))
     transaction.on_commit(lambda: refresh_plan_catalog(provider.brand_id))

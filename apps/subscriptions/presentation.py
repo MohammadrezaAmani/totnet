@@ -14,20 +14,27 @@ def number(value):
 def compact_plan_specs(plan):
     details = []
     if plan.plan_type == "unlimited":
-        details.append("نامحدود")
+        details.append("💉نامحدود")
     elif plan.traffic_limit_gb is not None:
-        details.append(f"{number(plan.traffic_limit_gb)}گیگ")
-    details.append(f"{number(plan.max_users)}کاربر")
+        details.append(f"💉{number(plan.traffic_limit_gb)}گیگ")
+    details.append(f"👤{number(plan.max_users)}کاربر")
     if plan.duration_value and plan.duration_unit in DURATION_LABELS:
         details.append(
-            f"{number(plan.duration_value)}{DURATION_LABELS[plan.duration_unit]}"
+            f"📅{number(plan.duration_value)}{DURATION_LABELS[plan.duration_unit]}"
         )
-    return "".join("💉" + item.translate(PERSIAN_DIGITS) for item in details)
+    return " ".join(item.translate(PERSIAN_DIGITS) for item in details)
 
 
 def connectix_service_category(group_name, fallback="normal"):
-    if str(group_name or "").strip().casefold() in {"", "default"}:
+    normalized = " ".join(
+        str(group_name or "").replace("\u200c", " ").casefold().split()
+    )
+    if normalized in {"", "default", "royal", "رویال", "پیش فرض"}:
         return "royal"
+    if normalized in {"iran access", "static ip", "iran ip", "آی پی ایران"}:
+        return "iran_ip"
+    if normalized in {"economic", "sublink", "normal", "نرمال"}:
+        return "normal"
     return fallback
 
 
