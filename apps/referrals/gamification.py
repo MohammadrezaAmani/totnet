@@ -46,7 +46,7 @@ def _wallet_for(*, user_id: int, brand_id: int) -> Wallet:
     )
     if wallet.currency != brand_currency:
         raise ChallengeError("Wallet currency does not match the brand currency")
-    return wallet
+    return Wallet.objects.select_for_update().get(pk=wallet.pk)
 
 
 def _update_reward_account(*, user_id: int, brand_id: int, earned_points: Decimal = Decimal("0")) -> RewardAccount:
@@ -210,10 +210,13 @@ def activate_challenge_from_wallet(*, user_id: int, brand_id: int) -> UserChalle
         challenge_frozen_balance=F("challenge_frozen_balance") + amount
     )
     now = timezone.now()
+    challenge.require_referral_join_during_challenge = challenge.program.require_referral_join_during_challenge
     challenge.status = UserChallenge.Status.ACTIVE
     challenge.starts_at = now
     challenge.ends_at = now + timedelta(days=challenge.program.duration_days)
-    challenge.save(update_fields=["status", "starts_at", "ends_at", "updated_at"])
+    challenge.save(update_fields=["status", "starts_at", "ends_at", "require_referral_join_during_challenge", "updated_at"])
+    from apps.bot.analytics import record_event
+    record_event(user_id=user_id, brand_id=brand_id, event="challenge_activated", value=challenge.target_referrals, metadata={"challenge_id": challenge.pk, "entry_amount": str(amount)}, dedupe_key=f"challenge-active:{challenge.pk}")
     return challenge
 
 
@@ -258,9 +261,9 @@ def _mark_challenge_rewarded(*, referral: Referral, points: Decimal, rewarded_at
 
 
 @transaction.atomic
-def maybe_record_challenge_referral(*, referral: Referral, order: Order) -> ReferralReward | None:
+def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None, challenge_id=None) -> ReferralReward | None:
     """Reserve one purchase for an active challenge, until its selected target is full."""
-    now = timezone.now()
+    now = at or order.payments.filter(status="confirmed").aggregate(paid_at=Max(Coalesce("verified_at", "created_at")))["paid_at"] or timezone.now()
     challenge = (
         UserChallenge.objects.select_for_update(of=("self",))
         .select_related("program", "tier")
@@ -274,7 +277,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order) -> Refe
         )
         .first()
     )
-    if not challenge or challenge.successful_referrals >= challenge.target_referrals:
+    if not challenge or (challenge_id and challenge.pk != challenge_id) or challenge.successful_referrals >= challenge.target_referrals:
         return None
     if ChallengeReferralEvent.objects.filter(order=order).exists():
         event = ChallengeReferralEvent.objects.select_related("reward").get(order=order)
@@ -286,7 +289,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order) -> Refe
     if ChallengeReferralEvent.objects.filter(challenge=challenge, referral=referral).exists():
         return None
     if (
-        challenge.program.require_referral_join_during_challenge
+        challenge.require_referral_join_during_challenge
         and challenge.starts_at
         and referral.created_at < challenge.starts_at
     ):
@@ -366,7 +369,7 @@ def settle_challenge(*, challenge_id: int, force_success: bool = False) -> UserC
     if challenge.status != UserChallenge.Status.ACTIVE or not challenge.tier_id:
         raise ChallengeError("چالش در وضعیت قابل تسویه نیست.")
     now = timezone.now()
-    success = force_success or challenge.successful_referrals >= challenge.target_referrals
+    success = challenge.successful_referrals >= challenge.target_referrals
     if not success and (not challenge.ends_at or now < challenge.ends_at):
         raise ChallengeError("مهلت چالش هنوز تمام نشده است.")
 
@@ -424,5 +427,7 @@ def settle_challenge(*, challenge_id: int, force_success: bool = False) -> UserC
         challenge.reward_amount = Decimal("0")
     challenge.settled_at = now
     challenge.save(update_fields=["status", "reward_amount", "settled_at", "updated_at"])
+    from apps.bot.analytics import record_event
+    record_event(user_id=challenge.user_id, brand_id=challenge.brand_id, event="challenge_settled", value=challenge.status, metadata={"challenge_id": challenge.pk, "target": challenge.target_referrals, "progress": challenge.successful_referrals, "entry_returned": str(challenge.entry_amount), "reward": str(challenge.reward_amount)}, dedupe_key=f"challenge-settled:{challenge.pk}")
     _update_reward_account(user_id=challenge.user_id, brand_id=challenge.brand_id)
     return challenge

@@ -30,7 +30,6 @@ from .models import (
     Referral,
     ReferralProgram,
     ReferralReward,
-    ServiceSurvey,
     UserChallenge,
 )
 from .services import RewardConfigurationError, award_level_one_referral_for_payment
@@ -49,6 +48,8 @@ def _publish_notification(notification_id):
 
 def _queue_delivery(notification):
     metadata = dict(notification.metadata or {})
+    if notification.rule_id and not notification.rule.is_active:
+        return False
     if notification.sent_at or metadata.get("delivery_abandoned"):
         return False
     queued_at = parse_datetime(str(metadata.get("delivery_queued_at", "")))
@@ -85,6 +86,20 @@ def deliver_gamification_notification(self, notification_id):
             if notification.sent_at or metadata.get("delivery_abandoned"):
                 return False
             payload = metadata.get("delivery_payload")
+            from apps.accounts.models import UserProfile
+            opted_out = UserProfile.objects.filter(user_id=notification.user_id, notification_enabled=False).exists()
+            if opted_out or not notification.user.is_active:
+                return False
+            if notification.rule_id:
+                if not notification.rule.is_active:
+                    return False
+                from .scheduling import audience_users
+                if not audience_users(notification.brand_id, notification.rule.audience).filter(pk=notification.user_id).exists():
+                    return False
+            if notification.notification_type == "challenge_offer":
+                challenge_id = metadata.get("challenge_id")
+                if challenge_id and not UserChallenge.objects.filter(pk=challenge_id, status="offered", program__is_active=True).exists():
+                    return False
             if not payload or notification.brand.status != "active":
                 return False
 
@@ -129,6 +144,15 @@ def deliver_gamification_notification(self, notification_id):
     except GamificationNotification.DoesNotExist:
         return False
     except Exception as exc:
+        with transaction.atomic():
+            failed = GamificationNotification.objects.select_for_update().filter(pk=notification_id).first()
+            if failed and not failed.sent_at:
+                metadata = dict(failed.metadata or {})
+                metadata["delivery_failures"] = int(metadata.get("delivery_failures", 0)) + 1
+                metadata["last_error_type"] = type(exc).__name__
+                metadata["last_failed_at"] = timezone.now().isoformat()
+                failed.metadata = metadata
+                failed.save(update_fields=["metadata"])
         delay = max(1, exc.retry_after) if isinstance(exc, TelegramRetryAfter) else 60
         raise self.retry(
             exc=RuntimeError(type(exc).__name__), countdown=delay
@@ -144,6 +168,7 @@ def _queue_once(
     text: str,
     buttons_data=None,
     metadata=None,
+    rule_id=None,
 ) -> bool:
     """Publish one Telegram notification with a durable, retryable dedupe marker."""
     if not user.telegram_id:
@@ -158,6 +183,7 @@ def _queue_once(
                         "brand_id": brand_id,
                         "notification_type": notification_type,
                         "metadata": metadata or {},
+                        "rule_id": rule_id,
                     },
                 )
             )
@@ -357,6 +383,7 @@ def run_gamification_notifications(limit: int = 500):
             sent_at__isnull=True,
             metadata__has_key="delivery_payload",
         )
+        .filter(Q(rule__isnull=True) | Q(rule__is_active=True))
         .filter(
             Q(metadata__delivery_abandoned__isnull=True)
             | Q(metadata__delivery_abandoned=False)
@@ -383,126 +410,36 @@ def run_gamification_notifications(limit: int = 500):
         "settled": 0,
     }
 
-    # 24 hours after the first confirmed purchase: three-part survey.
-    for user_id, brand_id, first in _first_purchase_pairs(
-        cutoff=now - timedelta(hours=24),
-        limit=limit,
-        sent_notification_type=GamificationNotification.NotificationType.SURVEY,
-    ):
-        user = first.user
-        ServiceSurvey.objects.get_or_create(user_id=user_id, brand_id=brand_id)
-        if _queue_once(
-            user=user,
-            brand_id=brand_id,
-            notification_type=GamificationNotification.NotificationType.SURVEY,
-            dedupe_key=f"first-purchase-survey:{brand_id}:{user_id}",
-            text=(
-                "📝 <b>نظرسنجی کوتاه سرویس</b>\n\n"
-                "برای بهتر شدن سرویس، لطفاً به سه بخش کیفیت اتصال، کار با برنامه و پشتیبانی از ۱ تا ۵ امتیاز بدهید."
-            ),
-            buttons_data=[
-                [{"text": "⭐ شروع نظرسنجی", "callback_data": "service_survey_start"}]
-            ],
-            metadata={"first_payment_id": str(first.payment_id)},
-        ):
-            counters["survey"] += 1
+    from .scheduling import lifecycle_candidates, run_notification_rules
+    counters["rules"] = run_notification_rules(limit=limit)
 
-    # 72 hours after the first purchase: explain the referral/community system.
-    for user_id, brand_id, first in _first_purchase_pairs(
-        cutoff=now - timedelta(hours=72),
-        limit=limit,
-        sent_notification_type=GamificationNotification.NotificationType.REFERRAL_INTRO,
-    ):
-        user = first.user
-        if _queue_once(
-            user=user,
-            brand_id=brand_id,
-            notification_type=GamificationNotification.NotificationType.REFERRAL_INTRO,
-            dedupe_key=f"referral-intro:{brand_id}:{user_id}",
-            text=(
-                "👨🏽‍⚕️ این سیستم راه‌اندازی شده تا افراد به بهترین کیفیت اینترنت اما بدون هزینه دسترسی داشته باشند.\n\n"
-                "فعالیت و معرفی بیشتر توسط شما ضمن کاهش محسوس و دائمی هزینه‌های شما، منجر به احقاق این حق برای افراد بیشتری می‌شود.\n"
-                "شما عضو اصلی این تیم پزشکی هستید نه یک بیمار ساده!"
-            ),
-            buttons_data=[
-                [{"text": "👥 معرفی دوستان", "callback_data": "referral_system"}]
-            ],
-            metadata={"first_payment_id": str(first.payment_id)},
+    for program in ChallengeProgram.objects.filter(is_active=True, brand__status="active").select_related("brand"):
+        queued = 0
+        for user, occurrence, anchor_at in lifecycle_candidates(
+            brand_id=program.brand_id, trigger=program.offer_trigger,
+            delay_minutes=program.offer_delay_minutes, limit=limit,
         ):
-            counters["referral_intro"] += 1
-
-    # Day 16: collect birth date, phone, then work/living location.
-    from apps.accounts.models import UserProfile
-    from .services import grant_profile_completion_reward
-
-    for user_id, brand_id, first in _first_purchase_pairs(
-        cutoff=now - timedelta(days=16),
-        limit=limit,
-        sent_notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
-    ):
-        profile, _ = UserProfile.objects.get_or_create(user_id=user_id)
-        if not profile.notification_enabled:
-            continue
-        if _queue_once(
-            user=first.user,
-            brand_id=brand_id,
-            notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
-            dedupe_key=f"profile-completion:{brand_id}:{user_id}",
-            text="یک امتیاز آسون فقط با تکمیل پروفایل!",
-            buttons_data=[
-                [{"text": "🎁 تکمیل پروفایل", "callback_data": "complete_profile"}]
-            ],
-            metadata={"first_payment_id": str(first.payment_id)},
-        ):
-            counters["profile_completion"] += 1
-            grant_profile_completion_reward(user_id=user_id, brand_id=brand_id)
-
-    # One-time challenge offer after the configured delay from first purchase.
-    for program in ChallengeProgram.objects.filter(is_active=True).select_related(
-        "brand"
-    ):
-        cutoff = now - timedelta(days=program.offer_delay_days)
-        for user_id, brand_id, first in _first_purchase_pairs(
-            cutoff=cutoff,
-            limit=limit,
-            brand_id=program.brand_id,
-            sent_notification_type=GamificationNotification.NotificationType.CHALLENGE_OFFER,
-        ):
-            challenge, _created = UserChallenge.objects.get_or_create(
-                user_id=user_id,
-                brand_id=brand_id,
-                program=program,
+            challenge, _ = UserChallenge.objects.get_or_create(
+                user=user, brand_id=program.brand_id, program=program,
                 defaults={"status": UserChallenge.Status.OFFERED, "offered_at": now},
             )
             if challenge.status != UserChallenge.Status.OFFERED:
                 continue
-            # Retry an unsent offer on later beat runs; _queue_once deduplicates
-            # successfully-published offers by challenge id.
             if _queue_once(
-                user=first.user,
-                brand_id=brand_id,
+                user=user, brand_id=program.brand_id,
                 notification_type=GamificationNotification.NotificationType.CHALLENGE_OFFER,
                 dedupe_key=f"challenge-offer:{challenge.pk}",
-                text=(
-                    f"🏆 <b>چالش ویژه {escape(program.name)} برای شما فعال شد</b>\n\n"
-                    "امکان شرکت در این چالش فقط و فقط همین یکبار برای شما امکان‌پذیر است.\n"
-                    "مایل به دریافت شرایط شرکت در این چالش هستید؟"
-                ),
-                buttons_data=[
-                    [
-                        {
-                            "text": "✅ بله",
-                            "callback_data": f"challenge_accept_{challenge.pk}",
-                        },
-                        {
-                            "text": "❌ خیر",
-                            "callback_data": f"challenge_decline_{challenge.pk}",
-                        },
-                    ]
-                ],
-                metadata={"challenge_id": challenge.pk},
+                text=(f"🏆 <b>چالش ویژه {escape(program.name)} برای شما فعال شد</b>\n\n"
+                      "امکان شرکت در این چالش فقط و فقط همین یکبار برای شما امکان‌پذیر است.\n"
+                      "مایل به دریافت شرایط شرکت در این چالش هستید؟"),
+                buttons_data=[[{"text": "✅ بله", "callback_data": f"challenge_accept_{challenge.pk}"},
+                               {"text": "❌ خیر", "callback_data": f"challenge_decline_{challenge.pk}"}]],
+                metadata={"challenge_id": challenge.pk, "trigger": program.offer_trigger, "anchor_at": anchor_at.isoformat()},
             ):
+                queued += 1
                 counters["challenge_offer"] += 1
+            if queued >= limit:
+                break
 
     # Settle expired challenges before sending any more reminders.
     for challenge in UserChallenge.objects.filter(

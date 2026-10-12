@@ -70,9 +70,13 @@ class PlanPickerMixin:
             ("medium", "۳۰ تا ۵۰ گیگ", Decimal(30), Decimal(50)),
             ("high", "۶۰ تا ۱۰۰ گیگ", Decimal(60), Decimal(100)),
             ("unlimited", "نامحدود", None, None),
+            ("other", "سایر حجم‌ها / سرویس‌های زمانی", None, None),
         ]
 
     def _range_keys(self, plans, picker, range_id):
+        if range_id == "other":
+            covered = set().union(*(self._range_keys(plans, picker, r[0]) for r in self._volume_ranges(picker) if r[0] != "other"))
+            return sorted({traffic_key(p) for p in plans} - covered)
         entry = next((r for r in self._volume_ranges(picker) if r[0] == range_id), None)
         if not entry:
             return []
@@ -262,6 +266,7 @@ class PlanPickerMixin:
                     for p in trial_plans[:3]
                 ]
             )
+        rows.append([{"text": "📋 تمام پلن‌های این سرویس", "callback_data": f"plans_page_{picker['category']}_0_1"}])
         rows.append([{"text": "🔙 سرویس‌ها", "callback_data": "purchase_subscription"}])
         await self.update_user_state(
             user,

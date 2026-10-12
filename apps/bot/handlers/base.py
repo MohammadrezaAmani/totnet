@@ -80,6 +80,9 @@ class BaseHandler:
             await BotState.objects.acreate(
                 user=user, brand=self.brand, current_state=BotState.StateType.MAIN_MENU
             )
+        if created:
+            from apps.bot.models import BehaviorEvent
+            await BehaviorEvent.objects.aget_or_create(dedupe_key=f"joined:{self.brand.pk}:{user.pk}", defaults={"user": user, "brand": self.brand, "event": "joined", "outcome": "completed"})
         if use_cache:
             await cache.aset(CACHE_KEY, user.pk, timeout=cache_ttl)
         return user, created
@@ -112,7 +115,9 @@ class BaseHandler:
             current = await User.objects.only(
                 "is_staff", "is_superuser", "user_type", "brand_id"
             ).aget(pk=user.pk)
-            if current.is_staff or current.is_superuser:
+            if current.is_superuser:
+                return True
+            if current.is_staff and current.brand_id == self.brand.pk:
                 return True
             if current.brand_id == self.brand.pk and current.user_type in {
                 User.UserType.BRAND_MANAGER,
@@ -161,7 +166,7 @@ class BaseHandler:
         )
         return (
             User.objects.filter(
-                Q(is_staff=True) | Q(is_superuser=True) | brand_admin_scope,
+                Q(is_staff=True, brand_id=self.brand.pk) | Q(is_superuser=True) | brand_admin_scope,
                 telegram_id__isnull=False,
             )
             .exclude(telegram_id=0)
@@ -210,6 +215,16 @@ class BaseHandler:
                 {"text": "📚 آکادمی(محتواهای کاربردی)", "callback_data": "useful_content"},
             ],
         ]
+
+        from apps.brands.models import BrandConfiguration
+        config, _ = await BrandConfiguration.objects.aget_or_create(brand=self.brand)
+        hidden = set()
+        if not config.referral_system_enabled:
+            hidden.update({"referral_system", "rewards", "active_challenges"})
+        if not config.support_system_enabled:
+            hidden.add("support")
+        buttons = [[b for b in row if b.get("callback_data") not in hidden] for row in buttons]
+        buttons = [row for row in buttons if row]
 
         if user:
             if await self.has_admin_access(user):

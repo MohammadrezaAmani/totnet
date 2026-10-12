@@ -4,7 +4,7 @@ Admin configuration for bot app
 
 from django.contrib import admin
 
-from .models import BotAnalytics, BotCommand, BotKeyboard, BotMessage, BotState
+from .models import BehaviorEvent, BotAnalytics, BotCommand, BotKeyboard, BotMessage, BotState
 
 
 @admin.register(BotState)
@@ -99,3 +99,67 @@ class BotAnalyticsAdmin(admin.ModelAdmin):
         if not request.user.is_superuser:
             return qs.filter(brand__in=request.user.admin_brands.all())
         return qs
+
+
+@admin.register(BehaviorEvent)
+class BehaviorEventAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "brand", "user", "event", "value", "outcome")
+    list_filter = ("brand", "event", "outcome", "created_at")
+    search_fields = ("user__username", "value")
+    date_hierarchy = "created_at"
+    readonly_fields = tuple(field.name for field in BehaviorEvent._meta.fields)
+    change_list_template = "admin/bot/behavior_report.html"
+    actions = ("export_events",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request).select_related("user", "brand")
+        return (
+            qs
+            if request.user.is_superuser
+            else qs.filter(brand__in=request.user.admin_brands.all())
+        )
+
+    def changelist_view(self, request, extra_context=None):
+        from apps.brands.models import Brand
+        from .analytics import gamification_report
+
+        brands = (
+            Brand.objects.all()
+            if request.user.is_superuser
+            else request.user.admin_brands.all()
+        )
+        context = dict(extra_context or {})
+        context["gamification_reports"] = [
+            (brand, gamification_report(brand.pk)) for brand in brands
+        ]
+        return super().changelist_view(request, context)
+
+    @admin.action(description="دانلود CSV رخدادهای انتخاب‌شده")
+    def export_events(self, request, queryset):
+        import csv
+        import json
+        from django.http import HttpResponse
+
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = 'attachment; filename="behavior-events.csv"'
+        response.write("\ufeff")
+        writer = csv.writer(response)
+        writer.writerow(["time", "user_id", "event", "value", "outcome", "metadata"])
+        for event in queryset.iterator():
+            writer.writerow(
+                [
+                    event.created_at.isoformat(),
+                    event.user_id,
+                    event.event,
+                    event.value,
+                    event.outcome,
+                    json.dumps(event.metadata, ensure_ascii=False),
+                ]
+            )
+        return response

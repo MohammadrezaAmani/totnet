@@ -85,3 +85,83 @@ Gamification notifications persist their text/buttons in the existing ledger and
 Challenge Program Admin includes its tier editor. Current configured Propzino settings are a 5-day offer delay, 7-day duration and 13% rate, with targets 1/3/5/8 and entry amounts 50,000/150,000/250,000/350,000 T. Reminders occur at 5/3/1 days remaining. Completed challenge outcomes and wallet frozen/cash balances are read-only in admin; program and future-tier settings stay editable. Order admin and provisioning require the full confirmed payment total for paid orders.
 
 Brand Admin includes payment-method and bank-card editors. Bot setup supplies a default card-transfer method when none is configured; a real active bank card still must be configured by the brand administrator. No placeholder card details are created. This revision was checked with source/static/Django/migration checks; no test suite or manual Telegram session was run.
+
+## Lifecycle notifications, attribution and bot admin (2026-10-12)
+
+The bot admin now exposes named referral links, plan controls, challenge settings/tiers,
+notification rules, customer management and a gamification report with CSV exports.
+The old `AdminHandler` import uses the same implementation as the provider-aware admin;
+there is no second dashboard with different behavior. Admin callbacks and text inputs
+check current brand-scoped grants. Anonymous campaign links collect unique visits,
+new registrations and subsequent fully-paid purchases; links with a beneficiary also
+attribute referral rewards. Each customer keeps one default link and may have any
+number of separately named campaign links. Attribution remains first-valid-referrer.
+Existing links are retained by the migration, including their codes and statistics.
+
+`NotificationRule` controls text, an optional bot button, audience, enabled status,
+and delay in **minutes**, measured from bot membership, the first fully-paid subscription
+order, or each fully-paid subscription order. New rules start disabled; their preview
+shows the current audience size. A positive-price order is eligible only when confirmed
+payments cover its full final price. Wallet deposits and partial payments do not start
+purchase clocks. Bot membership uses `BotState.created_at`. A user/order occurrence has
+one delivery key, so scheduler runs and edits do not repeat messages already sent.
+Survey/profile reminders are one-time; surveys already completed are skipped.
+Notification opt-outs and inactive customers are respected at selection and delivery.
+Disabling a rule stops queued deliveries as well as future selection. Existing campaign
+and challenge rows are not reset when administrators change settings.
+
+The active brand was set, as requested, to:
+
+- Challenge offer: **60 minutes after bot membership**.
+- Survey: **30 minutes after bot membership**.
+- Referral intro: 72 hours after the first fully-paid purchase.
+- Profile completion: 16 days after the first fully-paid purchase.
+- Challenge execution: 7 days, 13% reward; existing tier amounts retained.
+
+For a five-hour delay after the first successful purchase, choose that trigger and
+enter **300** minutes. Beat checks eligibility every 60 seconds; queue/retry delays can
+extend delivery slightly. The durable delivery ledger is marked sent only after Telegram
+accepts the message; failed attempts record their error type and timestamp and retry.
+Telegram accepting a message does not prove that the user read it. Network acceptance
+followed by a process/database failure can still produce a duplicate on recovery.
+
+Behavior events record bot selections, state context and processing outcomes without
+capturing free-text personal input. Notification buttons are linked to their originating
+notification when possible. Challenge reports show offers/statuses, paid participation,
+selected targets, progress, successful/failed outcomes, frozen entry funds and rewards;
+survey ratings and service/duration/volume/user-count choices are also available.
+The web admin's Behavior events page includes aggregate reports and CSV export.
+Bot exports include the latest 10,000 behavioral events and all challenge outcomes.
+Historical behavior before this change is not invented or backfilled.
+
+Challenge activation and settlement lock both challenge and wallet records. Entry money
+is debited from spendable funds and held separately; settlement releases it through
+idempotent wallet ledger entries in success and failure. The join-window policy is
+snapshotted when the challenge activates. The settlement success decision depends on
+the recorded target, not an arbitrary forced-success flag. Rewards for purchases made
+for others remain deferred until the designated Telegram recipient claims the actual
+subscription. Missing referral links are now created correctly, the purchase-time
+campaign percentage is preserved, and eligible claims can count toward the purchaser's
+original active challenge. Repeated processing cannot create a second order reward.
+No separate emergency or gift purchase option was added; the user clarified that this
+means the existing purchase-for-others flow.
+
+The picker retains the requested primary volume ranges and adds a **remaining-volume /
+time-service** route, so plans below the lower bound, between bounds, above 100 GB or
+without a volume are not silently discarded. A complete paginated list is also available
+per service. Provider availability, current mappings, administrator visibility and the
+brand's free-plan flag remain authoritative. Unsupported/archived provider plans are
+not made sellable to fill nonexistent combinations.
+
+Admin repairs include valid async queryset loading, complete callback routing, underscore
+field/status parsing, bank card and cryptocurrency creation/editing, gateway type storage,
+brand text/main-menu editing and ticket replies using actual model fields. Cancellation
+uses the wallet-refund service. Status changes cannot fabricate a paid order. Broadcasts
+use the chosen brand and subscription audience; they no longer select users across brands.
+Financial/reward ledgers in the web admin are read-only. Tenant FK choices are scoped.
+
+Validation: Django checks, migration consistency, compilation, static checks, source
+callback/model-field audits, read-only provider catalog inspection and live database
+catalog coverage queries. No real customer purchase/provisioning was performed. The
+configured database had no customers or eligible notification recipients, so real
+Telegram delivery, user challenge outcomes and fund movements were not demonstrated.

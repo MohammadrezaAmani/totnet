@@ -386,10 +386,32 @@ class MultiBrandDispatcher:
 
     async def route_callback(self, callback: CallbackQuery, handlers: dict):
         """Route callback queries to appropriate handlers"""
+        behavior = None
+        data = callback.data or ""
+        user, _ = await handlers["start"].get_or_create_user(callback.from_user)
+        administrative = data == "admin" or data.startswith(("admin_", "ao", "apu", "apuf", "apum", "avu_", "aeu_", "aup_", "gw_type_", "crypto_network_", "ac:"))
+        if administrative and not await handlers["start"].has_admin_access(user):
+            await callback.answer("❌ دسترسی ندارید", show_alert=True)
+            return
+        from apps.bot.analytics import callback_event, record_event
+        from asgiref.sync import sync_to_async
+        if not administrative:
+            from apps.referrals.models import GamificationNotification
+            notification = await GamificationNotification.objects.filter(user=user, brand_id=handlers["start"].brand.pk, metadata__telegram_message_id=callback.message.message_id).only("pk", "rule_id").afirst() if callback.message else None
+            event, value = callback_event(data)
+            state = await handlers["start"].get_user_state(user)
+            behavior = await sync_to_async(record_event)(
+                user_id=user.pk, brand_id=handlers["start"].brand.pk,
+                event=event, value=value, dedupe_key=f"callback:{handlers['start'].brand.pk}:{callback.id}",
+                outcome="received", metadata={"state": state.current_state, "step": state.state_data.get("step"), "category": state.state_data.get("service_category"), "notification_id": notification.pk if notification else None, "notification_rule_id": notification.rule_id if notification else None},
+            )
         try:
+            if await handlers["admin_hiddify"].handle_control_callback(callback, user):
+                return
             data = callback.data
 
             if data == "main_menu":
+                await handlers["start"].update_user_state(user, BotState.StateType.MAIN_MENU)
                 user, _ = await handlers["start"].get_or_create_user(callback.from_user)
                 await handlers["start"].show_main_menu(
                     callback.message.chat.id, user, callback
@@ -1126,6 +1148,21 @@ class MultiBrandDispatcher:
 
             elif data == "admin_panel_users":
                 await handlers["admin_hiddify"].show_panel_users_menu(callback)
+            elif data in {"admin_edit_welcome_message", "admin_edit_contact_info"}:
+                field = "welcome_message" if data == "admin_edit_welcome_message" else "contact_email"
+                await handlers["admin_hiddify"].control_prompt(callback, user, "brandtext", "متن جدید را وارد کنید:", field=field, back="admin_bot_settings")
+            elif data == "admin_edit_main_menu":
+                await handlers["admin_hiddify"].control_main_menu(callback)
+            elif data.startswith("admin_menu_toggle_"):
+                await handlers["admin_hiddify"].toggle_main_menu(callback, data.removeprefix("admin_menu_toggle_"))
+            elif data == "admin_sync_users":
+                await handlers["admin_hiddify"].update_user_usage(callback)
+            elif data == "admin_panel_stats":
+                await handlers["admin_hiddify"].show_server_status(callback)
+            elif data.startswith("admin_revenue_chart_"):
+                await handlers["admin_hiddify"].show_revenue_chart(callback, int(data.removeprefix("admin_revenue_chart_")))
+            elif data.startswith("crypto_network_"):
+                await handlers["admin_hiddify"].handle_crypto_network_selection(callback, data.removeprefix("crypto_network_"))
             elif data == "admin":
                 await handlers["admin_hiddify"].show_admin_menu(callback)
             elif data == "admin_dashboard":
@@ -1234,7 +1271,7 @@ class MultiBrandDispatcher:
             elif data.startswith("aod_"):
                 await handlers["admin_hiddify"].view_order_details(callback, data.split("_")[-1])
             elif data.startswith("aoc_"):
-                await handlers["admin_hiddify"].change_order_status(callback, data.split("_")[-2],data.split("_")[-1])
+                await handlers["admin_hiddify"].change_order_status(callback, *data.removeprefix("aoc_").split("_", 1))
             elif data.startswith("aost_"):
                 await handlers["admin_hiddify"].start_order_status_picker(callback, data.split("_")[-1])
             elif data.startswith("aoan_"):
@@ -1331,7 +1368,7 @@ class MultiBrandDispatcher:
             elif data.startswith("admin_card_field_"):
                 parts = data.replace("admin_card_field_", "").split("_")
                 card_id = int(parts[0])
-                field = parts[1]
+                field = "_".join(parts[1:])
                 await handlers["admin_hiddify"].start_edit_card_field(
                     callback, card_id, field
                 )
@@ -1360,7 +1397,7 @@ class MultiBrandDispatcher:
             elif data.startswith("admin_crypto_field_"):
                 parts = data.replace("admin_crypto_field_", "").split("_")
                 crypto_id = int(parts[0])
-                field = parts[1]
+                field = "_".join(parts[1:])
                 await handlers["admin_hiddify"].start_edit_crypto_field(
                     callback, crypto_id, field
                 )
@@ -1384,9 +1421,9 @@ class MultiBrandDispatcher:
             elif data == "admin_filter_payments":
                 await handlers["admin_hiddify"].filter_payments_by_status(callback)
             elif data.startswith("admin_payments_status_"):
-                parts = data.replace("admin_payments_status_", "").split("_")
-                status = parts[0]
-                page = int(parts[1]) if len(parts) > 1 else 1
+                raw = data.removeprefix("admin_payments_status_")
+                status, page_text = raw.rsplit("_", 1) if raw.rsplit("_", 1)[-1].isdigit() else (raw, "1")
+                page = max(1, int(page_text))
                 await handlers["admin_hiddify"].show_payments_by_status(
                     callback, status, page
                 )
@@ -1413,15 +1450,27 @@ class MultiBrandDispatcher:
                 await handlers["purchase"].show_subscription_plans(callback)
 
             else:
+                if behavior:
+                    behavior.outcome = "unhandled"
                 logger.info(f"Unhandled callback: {data}")
                 await callback.answer(f"⚙️ {data}")
 
         except ValueError as e:
+            if behavior:
+                behavior.outcome = "failed"
             logger.error(f"ValueError handling callback {callback.data}: {e}")
             await callback.answer("❌ خطا در پردازش درخواست.")
         except Exception as e:
+            if behavior:
+                behavior.outcome = "failed"
             logger.error(f"Error handling callback {callback.data}: {e}")
             await callback.answer("❌ خطا در پردازش درخواست.")
+
+        finally:
+            if behavior:
+                if behavior.outcome == "received":
+                    behavior.outcome = "handled"
+                await behavior.asave(update_fields=["outcome"])
 
     async def show_wallet(self, callback: CallbackQuery, handler: BaseHandler):
         """Show wallet information"""

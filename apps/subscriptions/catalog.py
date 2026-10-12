@@ -36,7 +36,7 @@ FIELDS = (
 
 
 def catalog_key(brand_id):
-    return f"subscription-plan-catalog:v3:{brand_id}"
+    return f"subscription-plan-catalog:v4:{brand_id}"
 
 
 def invalidate_plan_catalog(brand_id):

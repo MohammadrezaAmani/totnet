@@ -50,28 +50,28 @@ class StartHandler(BaseHandler):
             return
 
         if referral_code:
-            await self.process_referral_safely(user, referral_code)
+            await self.process_referral_safely(user, referral_code, created)
 
         if created:
             await self.show_profile_setup(chat_id, user)
         else:
             await self.show_main_menu(chat_id, user)
 
-    async def process_referral_safely(self, user: User, referral_code: str):
+    async def process_referral_safely(self, user: User, referral_code: str, created=False):
         """Process referral registration safely using sync_to_async for all DB ops"""
         try:
-            await self._process_referral_sync(user.id, referral_code, self.brand.id)
+            await self._process_referral_sync(user.id, referral_code, self.brand.id, created)
         except Exception as exc:
             logger.error("Referral attribution failed (%s)", type(exc).__name__)
 
     @sync_to_async
-    def _process_referral_sync(self, user_id: int, referral_code: str, brand_id: int):
+    def _process_referral_sync(self, user_id: int, referral_code: str, brand_id: int, created=False):
         """Execute the ORM transaction outside the asynchronous bot loop."""
         from apps.referrals.services import attribute_referral
 
         from apps.referrals.services import track_referral_click
 
-        track_referral_click(code=referral_code, brand_id=brand_id, visitor_id=user_id)
+        track_referral_click(code=referral_code, brand_id=brand_id, visitor_id=user_id, is_registration=created)
         return attribute_referral(
             user_id=user_id, brand_id=brand_id, code=referral_code
         )
@@ -255,20 +255,7 @@ class StartHandler(BaseHandler):
     async def get_config(self) -> BrandConfiguration:
         """Get brand configuration - use async properly"""
         # If self.brand.configuration is already loaded, just return it
-        if hasattr(self.brand, "_configuration_cache"):
-            return self.brand._configuration_cache
-
-        # Otherwise fetch it
-        from django.core.cache import cache
-
-        cache_key = f"brand_config:{self.brand.id}"
-        config = await cache.aget(cache_key)
-
-        if config is None:
-            config = await BrandConfiguration.objects.aget(brand=self.brand)
-            await cache.aset(cache_key, config, timeout=300)
-
-        self.brand._configuration_cache = config
+        config, _ = await BrandConfiguration.objects.aget_or_create(brand=self.brand)
         return config
 
     async def show_main_menu(

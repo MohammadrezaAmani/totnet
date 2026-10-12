@@ -30,6 +30,7 @@ import asyncio
 
 from apps.orders.models import PaymentCard
 from .base import BaseHandler
+from .admin_control import AdminControlMixin, change_order_safely
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class AdminRole(str, Enum):
     SUPPORT = "support"
 
 
-class HiddifyAdminHandler(BaseHandler):
+class HiddifyAdminHandler(AdminControlMixin, BaseHandler):
     """Enhanced admin handler with Hiddify panel integration"""
 
     def __init__(self, bot, brand):
@@ -859,8 +860,7 @@ class HiddifyAdminHandler(BaseHandler):
             if not order:
                 text = "❌ سفارش یافت نشد"
             else:
-                order.status = new_status
-                await order.asave()
+                order = await sync_to_async(change_order_safely)(self.brand.pk, order_number, new_status)
 
                 try:
                     new_label = order.get_status_display()
@@ -1290,6 +1290,10 @@ UUID:  <code>{u.uuid}</code>
         self, message: types.Message, user: User, state: BotState
     ):
         """Central dispatcher for ALL admin text input."""
+        if not await self.has_admin_access(user):
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+            await message.reply("❌ دسترسی ندارید")
+            return
         # Allow /cancel anywhere inside admin actions
         if message.text and message.text.strip() in ("/cancel", "انصراف", "❌ انصراف"):
             await message.reply("❌ عملیات لغو شد.", reply_markup=await self._get_main_menu_kb(user))
@@ -1299,7 +1303,9 @@ UUID:  <code>{u.uuid}</code>
         action = state.state_data.get("action")
         step = state.state_data.get("step")
 
-        if action == "add_panel_admin":
+        if action == "control":
+            await self.handle_control_message(message, user, state)
+        elif action == "add_panel_admin":
             await self.handle_add_panel_admin_step(message, user, state)
 
         elif action == "add_panel_user":
@@ -1352,7 +1358,7 @@ UUID:  <code>{u.uuid}</code>
 
         # ── Gateway ──────────────────────────────
         elif action == "add_gateway":
-            await self._handle_add_gateway_step(message, user, state)
+            await self.handle_gateway_message(message, user, state)
 
         elif action == "edit_gateway" and step == "input":
             await self._handle_edit_gateway_field(message, user, state)
@@ -1363,23 +1369,22 @@ UUID:  <code>{u.uuid}</code>
 
         # ── Cards ────────────────────────────────
         elif action == "add_card":
-            await self._handle_add_card_step(message, user, state)
+            await self.handle_card_message(message, user, state)
 
         elif action == "edit_card" and step == "input":
             await self._handle_edit_card_field(message, user, state)
 
         # ── Crypto ───────────────────────────────
         elif action == "add_crypto":
-            await self._handle_add_crypto_step(message, user, state)
+            await self.handle_crypto_message(message, user, state)
 
         elif action == "edit_crypto" and step == "input":
             await self._handle_edit_crypto_field(message, user, state)
 
         # ── Legacy fallback ──────────────────────
         elif state.state_data.get("admin_action") == "search_user":
-            query = message.text.strip()
-            await message.reply(f"🔍 جستجو برای: {query}")
-            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+            state.state_data["control_action"] = "usersearch"
+            await self.handle_control_message(message, user, state)
         else:
             # Unknown action — reset state and show menu
             logger.warning(f"Unhandled admin action: {action}, step: {step}, data: {state.state_data}")
@@ -1557,6 +1562,12 @@ UUID:  <code>{u.uuid}</code>
             buttons.extend(
                 [
                     [{"text": "📊 داشبورد", "callback_data": "admin_dashboard"}],
+                    [{"text": "👥 کاربران ربات", "callback_data": "ac:users"}],
+                    [{"text": "📋 پلن‌ها", "callback_data": "ac:plans"}],
+                    [{"text": "🔗 لینک‌های معرفی", "callback_data": "ac:links"}],
+                    [{"text": "🏆 تنظیمات چالش", "callback_data": "ac:challenge"}],
+                    [{"text": "🔔 ساخت و زمان‌بندی نوتیف", "callback_data": "ac:rules"}],
+                    [{"text": "📈 آمار گیمیفیکیشن", "callback_data": "ac:report"}],
                     [
                         {
                             "text": "👥 مدیریت کاربران پنل",
@@ -1640,7 +1651,7 @@ UUID:  <code>{u.uuid}</code>
         pending_orders = await Order.objects.filter(
             brand=self.brand, status="pending"
         ).acount()
-        open_tickets = await SupportTicket.objects.filter(
+        open_tickets = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
             brand=self.brand, status="open"
         ).acount()
 
@@ -2164,13 +2175,13 @@ UUID:  <code>{u.uuid}</code>
             return
 
         try:
-            open_count = await SupportTicket.objects.filter(
+            open_count = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, status="open"
             ).acount()
-            in_progress_count = await SupportTicket.objects.filter(
+            in_progress_count = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, status="in_progress"
             ).acount()
-            resolved_count = await SupportTicket.objects.filter(
+            resolved_count = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, status="resolved"
             ).acount()
 
@@ -2738,8 +2749,8 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             order = await Order.objects.filter(
-                brand=self.brand, order_number=order_number
-            ).select_related("user", "plan", "recipient").afirst()
+                brand=self.brand
+            ).filter(Q(order_number=str(order_number)) | Q(pk=int(order_number) if str(order_number).isdigit() else -1)).select_related("user", "plan", "recipient").afirst()
 
             if not order:
                 text = "❌ سفارش یافت نشد"
@@ -3019,8 +3030,7 @@ UUID:  <code>{u.uuid}</code>
             if not order:
                 text = "❌ سفارش یافت نشد"
             else:
-                order.status = "completed"
-                await order.asave()
+                order = await sync_to_async(change_order_safely)(self.brand.pk, str(order.pk), "completed")
                 text = "✅ سفارش با موفقیت تایید شد"
 
         except Exception as e:
@@ -3042,8 +3052,7 @@ UUID:  <code>{u.uuid}</code>
             if not order:
                 text = "❌ سفارش یافت نشد"
             else:
-                order.status = "failed"
-                await order.asave()
+                order = await sync_to_async(change_order_safely)(self.brand.pk, str(order.pk), "cancelled")
                 text = "✅ سفارش با موفقیت لغو شد"
 
         except Exception as e:
@@ -3055,145 +3064,25 @@ UUID:  <code>{u.uuid}</code>
         )
         await callback.answer()
 
-    async def show_open_tickets(self, callback: types.CallbackQuery):
-        """Show open support tickets"""
-        user, _ = await self.get_or_create_user(callback.from_user)
+    async def show_open_tickets(self, callback):
+        await self.control_tickets(callback, "open")
 
-        try:
-            # استفاده از select_related برای جلوگیری از کوئری‌های سینک (Lazy Loading) در حلقه
-            queryset = SupportTicket.objects.filter(
-                brand=self.brand, status="open"
-            ).order_by("-created_at").select_related('customer')
 
-            # گرفتن لیست تیکت‌ها با async for (چون queryset قابل await نیست)
-            tickets = [ticket async for ticket in queryset]
+    async def show_in_progress_tickets(self, callback):
+        await self.control_tickets(callback, "in_progress")
 
-            if not tickets:
-                text = "❌ هیچ تیکت باز وجود ندارد"
-            else:
-                text = f"🔴 تیکت‌های باز ({len(tickets)}):\n\n"
 
-                for i, ticket in enumerate(tickets, 1):
-                    text += f"{i}. تیکت #{ticket.id}\n"
-                    text += f"   کاربر: {ticket.customer.username}\n"
-                    text += f"   موضوع: {ticket.subject[:30]}\n"
-                    text += f"   تاریخ: {ticket.created_at.strftime('%Y-%m-%d')}\n\n"
+    async def show_resolved_tickets(self, callback):
+        await self.control_tickets(callback, "resolved")
 
-            keyboard = self.create_keyboard(
-                [
-                    [
-                        {
-                            "text": "🔄 بروزرسانی",
-                            "callback_data": "admin_open_tickets",
-                        }
-                    ],
-                    [{"text": "🔙 بازگشت", "callback_data": "admin_tickets"}],
-                ]
-            )
-
-        except Exception as e:
-            text = f"❌ خطا: {e}"
-            keyboard = self.get_back_keyboard("admin_tickets")
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
-        )
-        await callback.answer()
-
-    async def show_in_progress_tickets(self, callback: types.CallbackQuery):
-        """Show in-progress support tickets"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-
-        try:
-            # اسلایس [:10] قبل از حلقه اعمال می‌شود و در دیتابیس لیمیت می‌شود
-            queryset = SupportTicket.objects.filter(
-                brand=self.brand, status="in_progress"
-            ).order_by("-created_at").select_related('customer')[:10]
-
-            tickets = [ticket async for ticket in queryset]
-
-            if not tickets:
-                text = "❌ هیچ تیکت در حال انجام وجود ندارد"
-            else:
-                text = f"🟡 تیکت‌های در حال انجام ({len(tickets)}):\n\n"
-
-                for i, ticket in enumerate(tickets, 1):
-                    text += f"{i}. تیکت #{ticket.id}\n"
-                    text += f"   کاربر: {ticket.customer.username}\n"
-                    text += f"   موضوع: {ticket.subject[:30]}\n"
-                    text += f"   تاریخ: {ticket.created_at.strftime('%Y-%m-%d')}\n\n"
-
-            keyboard = self.create_keyboard(
-                [
-                    [
-                        {
-                            "text": "🔄 بروزرسانی",
-                            "callback_data": "admin_in_progress_tickets",
-                        }
-                    ],
-                    [{"text": "🔙 بازگشت", "callback_data": "admin_tickets"}],
-                ]
-            )
-
-        except Exception as e:
-            text = f"❌ خطا: {e}"
-            keyboard = self.get_back_keyboard("admin_tickets")
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
-        )
-        await callback.answer()
-
-    async def show_resolved_tickets(self, callback: types.CallbackQuery):
-        """Show resolved support tickets"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-
-        try:
-            queryset = SupportTicket.objects.filter(
-                brand=self.brand, status="resolved"
-            ).order_by("-created_at").select_related('customer')[:10]
-
-            tickets = [ticket async for ticket in queryset]
-
-            if not tickets:
-                text = "❌ هیچ تیکت حل شده‌ای وجود ندارد"
-            else:
-                text = f"🟢 تیکت‌های حل شده ({len(tickets)}):\n\n"
-
-                for i, ticket in enumerate(tickets, 1):
-                    text += f"{i}. تیکت #{ticket.id}\n"
-                    text += f"   کاربر: {ticket.customer.username}\n"
-                    text += f"   موضوع: {ticket.subject[:30]}\n"
-                    text += f"   تاریخ: {ticket.created_at.strftime('%Y-%m-%d')}\n\n"
-
-            keyboard = self.create_keyboard(
-                [
-                    [
-                        {
-                            "text": "🔄 بروزرسانی",
-                            "callback_data": "admin_resolved_tickets",
-                        }
-                    ],
-                    [{"text": "🔙 بازگشت", "callback_data": "admin_tickets"}],
-                ]
-            )
-
-        except Exception as e:
-            text = f"❌ خطا: {e}"
-            keyboard = self.get_back_keyboard("admin_tickets")
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
-        )
-        await callback.answer()
 
     async def view_ticket_details(self, callback: types.CallbackQuery, ticket_id: int):
         """View details of a specific ticket"""
         try:
             # اضافه کردن select_related برای خواندن رابطه user بدون کوئری سینک
-            ticket = await SupportTicket.objects.filter(
+            ticket = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, id=ticket_id
-            ).select_related('user').afirst()
+            ).select_related("customer", "category", "assigned_to").afirst()
 
             if not ticket:
                 text = "❌ تیکت یافت نشد"
@@ -3210,14 +3099,16 @@ UUID:  <code>{u.uuid}</code>
 
 👤 کاربر: {ticket.customer.username}
 📧 ایمیل: {ticket.customer.email}
-📋 موضوع: {ticket.subject}
-📝 توضیحات: {ticket.description[:200]}...
+📋 موضوع: {escape(ticket.subject)}
+📝 توضیحات: {escape(ticket.description[:200])}...
 📊 وضعیت: {ticket.get_status_display()}
 📅 تاریخ: {ticket.created_at.strftime("%Y-%m-%d %H:%M")}
                 """
 
                 keyboard = self.create_keyboard(
                     [
+                        [{"text": "💬 پیام‌های تیکت", "callback_data": f"admin_ticket_messages_{ticket_id}"}],
+                        [{"text": "✉️ پاسخ", "callback_data": f"admin_reply_ticket_{ticket_id}"}],
                         [
                             {
                                 "text": "👤 تخصیص به خود",
@@ -3260,7 +3151,7 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             # اینجا چون user را ست می‌کنیم نیازی به select_related نیست
-            ticket = await SupportTicket.objects.filter(
+            ticket = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, id=ticket_id
             ).afirst()
 
@@ -3284,7 +3175,7 @@ UUID:  <code>{u.uuid}</code>
     async def close_ticket(self, callback: types.CallbackQuery, ticket_id: int):
         """Close a support ticket"""
         try:
-            ticket = await SupportTicket.objects.filter(
+            ticket = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, id=ticket_id
             ).afirst()
 
@@ -3307,7 +3198,7 @@ UUID:  <code>{u.uuid}</code>
     async def reopen_ticket(self, callback: types.CallbackQuery, ticket_id: int):
         """Reopen a support ticket"""
         try:
-            ticket = await SupportTicket.objects.filter(
+            ticket = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, id=ticket_id
             ).afirst()
 
@@ -3330,18 +3221,18 @@ UUID:  <code>{u.uuid}</code>
     #  BROADCAST
     # ═══════════════════════════════════════════════
 
-    async def start_broadcast(self, callback: types.CallbackQuery, *args):
+    async def start_broadcast(self, callback: types.CallbackQuery, audience="all"):
         """Initiate broadcast — ask for message text"""
         user, _ = await self.get_or_create_user(callback.from_user)
         await self.update_user_state(
             user,
             BotState.StateType.ADMIN_ACTION,
-            {"action": "broadcast", "step": "message"},
+            {"action": "broadcast", "step": "message", "audience": audience},
         )
         text = (
             "📢  <b>ارسال پیام جمعی</b>\n\n"
             "پیام خود را وارد کنید.\n"
-            "⚠️ پیام برای <b>تمام کاربران فعال</b> ارسال خواهد شد."
+            f"گروه انتخاب‌شده: {escape(audience)}"
         )
         keyboard = self.create_keyboard(
             [{"text": "❌ انصراف", "callback_data": "admin"}]
@@ -3406,9 +3297,8 @@ UUID:  <code>{u.uuid}</code>
 
         status_msg = await origin_message.reply("📡 در حال ارسال پیام به کاربران…")
         try:
-            users_qs = User.objects.filter(
-                is_active=True, telegram_id__isnull=False
-            )
+            from apps.referrals.scheduling import audience_users
+            users_qs = await sync_to_async(audience_users)(self.brand.pk, ("active" if state.state_data.get("audience") == "premium" else state.state_data.get("audience", "all")))
 
             total = 0
             success = 0
@@ -3445,7 +3335,7 @@ UUID:  <code>{u.uuid}</code>
         await status_msg.edit_text(result, parse_mode="HTML")
         keyboard = self.create_keyboard([{"text": "🔙 بازگشت", "callback_data": "admin"}])
         await self.bot.send_message(
-            origin_message.chat.id, " ", reply_markup=keyboard
+            origin_message.chat.id, "مدیریت", reply_markup=keyboard
         )
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
@@ -3477,39 +3367,25 @@ UUID:  <code>{u.uuid}</code>
             return
 
         try:
-            ticket = await SupportTicket.objects.select_related("user").aget(pk=ticket_id)
+            ticket = await SupportTicket.objects.select_related("customer").aget(pk=ticket_id, brand=self.brand)
         except SupportTicket.DoesNotExist:
             await message.reply("❌ تیکت یافت نشد.")
             await self.update_user_state(user, BotState.StateType.MAIN_MENU)
             return
 
         try:
-            # Create reply message — adapt the model name if different
-            if hasattr(ticket, "messages"):
-                await ticket.messages.acreate(
-                    sender=user,
-                    text=reply_text,
-                    is_admin=True,
-                )
-            elif hasattr(ticket, "replies"):
-                await ticket.replies.acreate(
-                    admin=user,
-                    text=reply_text,
-                )
-            else:
-                # Fallback: update ticket directly
-                ticket.admin_reply = reply_text
-                ticket.status = "replied" if hasattr(ticket, "status") else ticket.status
-                await ticket.asave()
+            await ticket.messages.acreate(sender=user, content=reply_text, message_type="agent", is_public=True)
+            ticket.status = "pending_customer"
+            await ticket.asave(update_fields=["status", "updated_at"])
 
             # Notify the user who opened the ticket
-            if ticket.user and ticket.customer.telegram_id:
+            if ticket.customer and ticket.customer.telegram_id:
                 try:
                     await self.bot.send_message(
                         chat_id=ticket.customer.telegram_id,
                         text=(
                             f"📩 <b>پاسخ به تیکت شما</b>\n\n"
-                            f"{reply_text}\n\n"
+                            f"{escape(reply_text)}\n\n"
                             f"━" * 20 + "\n"
                             "برای ادامه مکالمه از منوی تیکت‌ها استفاده کنید."
                         ),
@@ -3526,7 +3402,7 @@ UUID:  <code>{u.uuid}</code>
         keyboard = self.create_keyboard(
             [{"text": "🔙 بازگشت به تیکت‌ها", "callback_data": "admin_tickets"}]
         )
-        await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
+        await self.send_message_with_keyboard(message.chat.id, "مدیریت", keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     # ═══════════════════════════════════════════════
@@ -3576,7 +3452,7 @@ UUID:  <code>{u.uuid}</code>
         keyboard = self.create_keyboard(
             [{"text": "🔙 بازگشت به تنظیمات", "callback_data": "admin_settings"}]
         )
-        await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
+        await self.send_message_with_keyboard(message.chat.id, "مدیریت", keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     # ═══════════════════════════════════════════════
@@ -3701,114 +3577,17 @@ UUID:  <code>{u.uuid}</code>
     #  PAYMENT SEARCH
     # ═══════════════════════════════════════════════
 
-    async def _handle_search_payment(self, message: types.Message, user: User, state: BotState):
-        """Execute payment/order search"""
-        query = message.text.strip()
-        if not query:
-            await message.reply("❌ لطفاً عبارتی برای جستجو وارد کنید.")
-            return
+    async def _handle_search_payment(self, message, user, state):
+        await self.handle_payment_search_message(message, user, state)
 
-        try:
-            orders = await Order.objects.filter(
-                Q(id__icontains=query)
-                | Q(user__username__icontains=query)
-                | Q(user__telegram_id__icontains=query)
-                | Q(transaction_id__icontains=query)
-            ).select_related("user")[:20].alist()
 
-            if not orders:
-                text = f"❌ سفارشی با «<code>{query}</code>» یافت نشد"
-            else:
-                lines = [f"🔍 نتایج جستجو ({len(orders)} نتیجه):\n"]
-                for o in orders:
-                    status_emoji = "✅" if o.status == "paid" else "⏳" if o.status == "pending" else "❌"
-                    uname = o.user.username if o.user else "—"
-                    lines.append(
-                        f"{status_emoji} <b>#{o.id}</b> | {uname} | {o.amount or '—'}"
-                    )
-                text = "\n".join(lines)
-        except Exception as e:
-            text = f"❌ خطا:\n<code>{e}</code>"
+    async def start_add_card(self, callback):
+        await self.add_payment_card(callback)
 
-        keyboard = self.create_keyboard(
-            [
-                {"text": "🔍 جستجوی مجدد", "callback_data": "admin_search_payment"},
-                {"text": "🔙 بازگشت", "callback_data": "admin_orders"},
-            ]
-        )
-        await self.send_message_with_keyboard(message.chat.id, text, keyboard)
-        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
-    # ═══════════════════════════════════════════════
-    #  PAYMENT CARDS
-    # ═══════════════════════════════════════════════
+    async def _handle_add_card_step(self, message, user, state):
+        await self.handle_card_message(message, user, state)
 
-    async def start_add_card(self, callback: types.CallbackQuery):
-        """Begin multi-step card addition"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        await self.update_user_state(
-            user,
-            BotState.StateType.ADMIN_ACTION,
-            {"action": "add_card", "step": "name", "card_data": {}},
-        )
-        text = "💳  <b>افزودن کارت پرداخت</b>\n\nنام کارت را وارد کنید (مثلاً: ملت):"
-        keyboard = self.get_back_keyboard("admin_settings")
-        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
-        await callback.answer()
-
-    async def _handle_add_card_step(self, message: types.Message, user: User, state: BotState):
-        """Multi-step card creation"""
-        step = state.state_data.get("step")
-        card_data = state.state_data.get("card_data", {})
-        value = message.text.strip()
-
-        if not value:
-            await message.reply("❌ مقدار نمی‌تواند خالی باشد.")
-            return
-
-        if step == "name":
-            card_data["name"] = value
-            state.state_data["card_data"] = card_data
-            state.state_data["step"] = "number"
-            await state.asave()
-            await message.reply("شماره کارت را وارد کنید:")
-
-        elif step == "number":
-            card_data["number"] = value.replace("-", "").replace(" ", "")
-            state.state_data["card_data"] = card_data
-            state.state_data["step"] = "holder"
-            await state.asave()
-            await message.reply("نام صاحب حساب را وارد کنید:")
-
-        elif step == "holder":
-            card_data["holder_name"] = value
-            state.state_data["card_data"] = card_data
-            state.state_data["step"] = "save"
-            await state.asave()
-
-            # Save the card
-            if PaymentCard is not None:
-                try:
-                    await PaymentCard.objects.acreate(
-                        brand=self.brand,
-                        name=card_data["name"],
-                        card_number=card_data["number"],
-                        holder_name=card_data["holder_name"],
-                        is_active=True,
-                    )
-                    await message.reply(
-                        f"✅ کارت «{card_data['name']}» با موفقیت اضافه شد."
-                    )
-                except Exception as e:
-                    await message.reply(f"❌ خطا در ذخیره کارت:\n<code>{e}</code>")
-            else:
-                await message.reply("❌ مدل PaymentCard یافت نشد. لطفاً ایمپورت را بررسی کنید.")
-
-            keyboard = self.create_keyboard(
-                [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
-            )
-            await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
-            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     async def start_edit_card_field(self, callback: types.CallbackQuery, card_id: int, field: str):
         """Set state for editing a card field"""
@@ -3840,7 +3619,10 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             card = await PaymentCard.objects.aget(pk=card_id, brand=self.brand)
+            if field not in {"bank_name", "card_number", "cardholder_name"}:
+                raise ValueError("Invalid card field")
             setattr(card, field, value)
+            await sync_to_async(card.full_clean)()
             await card.asave()
             await message.reply("✅ با موفقیت بروزرسانی شد.")
         except PaymentCard.DoesNotExist:
@@ -3851,70 +3633,20 @@ UUID:  <code>{u.uuid}</code>
         keyboard = self.create_keyboard(
             [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
         )
-        await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
+        await self.send_message_with_keyboard(message.chat.id, "مدیریت", keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     # ═══════════════════════════════════════════════
     #  CRYPTO WALLETS
     # ═══════════════════════════════════════════════
 
-    async def start_add_crypto(self, callback: types.CallbackQuery):
-        """Begin multi-step crypto wallet addition"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        await self.update_user_state(
-            user,
-            BotState.StateType.ADMIN_ACTION,
-            {"action": "add_crypto", "step": "network", "crypto_data": {}},
-        )
-        text = "🪙  <b>افزودن کیف پول رمزارز</b>\n\nنام شبکه را وارد کنید (مثلاً: TRC20, ERC20):"
-        keyboard = self.get_back_keyboard("admin_settings")
-        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
-        await callback.answer()
+    async def start_add_crypto(self, callback):
+        await self.add_crypto_currency(callback)
 
-    async def _handle_add_crypto_step(self, message: types.Message, user: User, state: BotState):
-        """Multi-step crypto wallet creation"""
-        step = state.state_data.get("step")
-        crypto_data = state.state_data.get("crypto_data", {})
-        value = message.text.strip()
 
-        if not value:
-            await message.reply("❌ مقدار نمی‌تواند خالی باشد.")
-            return
+    async def _handle_add_crypto_step(self, message, user, state):
+        await self.handle_crypto_message(message, user, state)
 
-        if step == "network":
-            crypto_data["network"] = value
-            state.state_data["crypto_data"] = crypto_data
-            state.state_data["step"] = "address"
-            await state.asave()
-            await message.reply("آدرس کیف پول را وارد کنید:")
-
-        elif step == "address":
-            crypto_data["address"] = value
-            state.state_data["crypto_data"] = crypto_data
-            state.state_data["step"] = "save"
-            await state.asave()
-
-            if CryptoCurrency is not None:
-                try:
-                    await CryptoCurrency.objects.acreate(
-                        brand=self.brand,
-                        network=crypto_data["network"],
-                        address=crypto_data["address"],
-                        is_active=True,
-                    )
-                    await message.reply(
-                        f"✅ کیف پول «{crypto_data['network']}» با موفقیت اضافه شد."
-                    )
-                except Exception as e:
-                    await message.reply(f"❌ خطا در ذخیره:\n<code>{e}</code>")
-            else:
-                await message.reply("❌ مدل CryptoCurrency یافت نشد. لطفاً ایمپورت را بررسی کنید.")
-
-            keyboard = self.create_keyboard(
-                [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
-            )
-            await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
-            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     async def start_edit_crypto_field(self, callback: types.CallbackQuery, wallet_id: int, field: str):
         """Set state for editing a crypto wallet field"""
@@ -3946,7 +3678,10 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             wallet = await CryptoCurrency.objects.aget(pk=wallet_id, brand=self.brand)
+            if field not in {"name", "symbol", "wallet_address", "conversion_rate"}:
+                raise ValueError("Invalid cryptocurrency field")
             setattr(wallet, field, value)
+            await sync_to_async(wallet.full_clean)()
             await wallet.asave()
             await message.reply("✅ با موفقیت بروزرسانی شد.")
         except CryptoCurrency.DoesNotExist:
@@ -3957,73 +3692,20 @@ UUID:  <code>{u.uuid}</code>
         keyboard = self.create_keyboard(
             [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
         )
-        await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
+        await self.send_message_with_keyboard(message.chat.id, "مدیریت", keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     # ═══════════════════════════════════════════════
     #  GATEWAY
     # ═══════════════════════════════════════════════
 
-    async def start_add_gateway(self, callback: types.CallbackQuery):
-        """Begin multi-step gateway addition"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-        await self.update_user_state(
-            user,
-            BotState.StateType.ADMIN_ACTION,
-            {"action": "add_gateway", "step": "name", "gw_data": {}},
-        )
-        text = "🌐  <b>افزودن دروازه پرداخت</b>\n\nنام دروازه را وارد کنید (مثلاً: زرین‌پال):"
-        keyboard = self.get_back_keyboard("admin_settings")
-        await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
-        await callback.answer()
+    async def start_add_gateway(self, callback):
+        await self.add_payment_gateway(callback)
 
-    async def _handle_add_gateway_step(self, message: types.Message, user: User, state: BotState):
-        """Multi-step gateway creation"""
-        step = state.state_data.get("step")
-        gw_data = state.state_data.get("gw_data", {})
-        value = message.text.strip()
 
-        if not value:
-            await message.reply("❌ مقدار نمی‌تواند خالی باشد.")
-            return
+    async def _handle_add_gateway_step(self, message, user, state):
+        await self.handle_gateway_message(message, user, state)
 
-        if step == "name":
-            gw_data["name"] = value
-            state.state_data["gw_data"] = gw_data
-            state.state_data["step"] = "api_key"
-            await state.asave()
-            await message.reply("کلید API را وارد کنید:")
-
-        elif step == "api_key":
-            gw_data["api_key"] = value
-            state.state_data["gw_data"] = gw_data
-            state.state_data["step"] = "save"
-            await state.asave()
-
-            # Try to save — adapt model name to your actual model
-            try:
-                await PaymentGateway.objects.acreate(
-                    brand=self.brand,
-                    name=gw_data["name"],
-                    api_key=gw_data["api_key"],
-                    is_active=True,
-                )
-                await message.reply(f"✅ دروازه «{gw_data['name']}» با موفقیت اضافه شد.")
-            except ImportError:
-                await message.reply(
-                    f"ℹ️ داده‌های دروازه دریافت شد:\n"
-                    f"نام: {gw_data['name']}\n"
-                    f"API Key: {gw_data['api_key'][:10]}…\n\n"
-                    f"⚠️ مدل PaymentGateway یافت نشد — داده‌ها ذخیره نشدند."
-                )
-            except Exception as e:
-                await message.reply(f"❌ خطا در ذخیره:\n<code>{e}</code>")
-
-            keyboard = self.create_keyboard(
-                [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
-            )
-            await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
-            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     async def start_edit_gateway_field(self, callback: types.CallbackQuery, gateway_id: int, field: str):
         """Set state for editing a gateway field"""
@@ -4050,7 +3732,10 @@ UUID:  <code>{u.uuid}</code>
 
         try:
             gw = await PaymentGateway.objects.aget(pk=gateway_id, brand=self.brand)
+            if field not in {"name", "api_key", "merchant_id", "secret_key"}:
+                raise ValueError("Invalid gateway field")
             setattr(gw, field, value)
+            await sync_to_async(gw.full_clean)()
             await gw.asave()
             await message.reply("✅ با موفقیت بروزرسانی شد.")
         except ImportError:
@@ -4063,7 +3748,7 @@ UUID:  <code>{u.uuid}</code>
         keyboard = self.create_keyboard(
             [{"text": "🔙 بازگشت", "callback_data": "admin_settings"}]
         )
-        await self.send_message_with_keyboard(message.chat.id, " ", keyboard)
+        await self.send_message_with_keyboard(message.chat.id, "مدیریت", keyboard)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
 
     async def confirm_broadcast(self, callback: types.CallbackQuery):
@@ -4394,16 +4079,16 @@ UUID:  <code>{u.uuid}</code>
         from apps.orders.models import Payment
 
         try:
-            payments = await Payment.objects.filter(brand=self.brand).order_by(
+            payments = [item async for item in Payment.objects.select_related("user").filter(brand=self.brand).order_by(
                 "-created_at"
-            )[:20]
+            )[:20]]
 
             if not payments:
                 text = "❌ هیچ تراکنشی ثبت نشده است"
             else:
                 text = f"💵 تاریخچه تراکنش‌ها ({len(payments)} آخر):\n\n"
 
-                async for i, payment in enumerate(payments, 1):
+                for i, payment in enumerate(payments, 1):
                     status_emoji = {
                         "pending": "⏳",
                         "awaiting_confirmation": "🔍",
@@ -4452,14 +4137,14 @@ UUID:  <code>{u.uuid}</code>
 
     async def show_revenue_report(self, callback: types.CallbackQuery):
         """Show revenue report"""
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         from django.db.models import Sum
 
         from apps.orders.models import Payment
 
         try:
-            today = datetime.now().date()
+            today = timezone.localdate()
             week_ago = today - timedelta(days=7)
             month_ago = today - timedelta(days=30)
 
@@ -4594,7 +4279,7 @@ UUID:  <code>{u.uuid}</code>
         from apps.support.models import SupportMessage, SupportTicket
 
         try:
-            ticket = await SupportTicket.objects.filter(
+            ticket = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, id=ticket_id
             ).afirst()
 
@@ -4602,16 +4287,16 @@ UUID:  <code>{u.uuid}</code>
                 text = "❌ تیکت یافت نشد"
                 keyboard = self.get_back_keyboard("admin_tickets")
             else:
-                messages = await SupportMessage.objects.filter(ticket=ticket).aorder_by(
+                messages = [item async for item in SupportMessage.objects.filter(ticket=ticket).order_by(
                     "created_at"
-                )[:20]
+                )[:20]]
 
                 text = f"💬 پیام‌های تیکت #{ticket_id}\n\n"
 
-                async for msg in messages:
-                    sender = "👤 کاربر" if msg.is_from_customer else "👨‍💼 پشتیبان"
+                for msg in messages:
+                    sender = "👤 کاربر" if msg.message_type == "customer" else "👨‍💼 پشتیبان"
                     time_str = msg.created_at.strftime("%H:%M")
-                    text += f"[{time_str}] {sender}:\n{msg.content[:100]}\n\n"
+                    text += f"[{time_str}] {sender}:\n{escape(msg.content[:100])}\n\n"
 
                 keyboard = self.create_keyboard(
                     [
@@ -4644,7 +4329,7 @@ UUID:  <code>{u.uuid}</code>
         from apps.support.models import SupportMessage, SupportTicket
 
         try:
-            ticket = await SupportTicket.objects.filter(
+            ticket = await SupportTicket.objects.select_related("customer", "category", "assigned_to").filter(
                 brand=self.brand, id=ticket_id
             ).afirst()
 
@@ -4652,13 +4337,11 @@ UUID:  <code>{u.uuid}</code>
                 await message.reply("❌ تیکت یافت نشد")
                 return
 
-            # Create support message
-            await SupportMessage.objects.acreate(
-                ticket=ticket,
-                sender=message.from_user.id,
-                content=message.text,
-                is_from_customer=False,
-            )
+            admin_user, _ = await self.get_or_create_user(message.from_user)
+            if not await self.has_admin_access(admin_user):
+                await message.reply("❌ دسترسی ندارید")
+                return
+            await SupportMessage.objects.acreate(ticket=ticket, sender=admin_user, content=message.text, message_type="agent", is_public=True)
 
             # Update ticket status if needed
             if ticket.status == "open":
@@ -4757,6 +4440,10 @@ UUID:  <code>{u.uuid}</code>
         user, _ = await self.get_or_create_user(callback.from_user)
         state = await self.get_user_state(user)
 
+        if gw_type not in PaymentGateway.GatewayType.values:
+            await callback.answer("نوع درگاه نامعتبر است.", show_alert=True)
+            return
+        state.state_data.setdefault("gateway_data", {})["gateway_type"] = gw_type
         state.state_data["gateway_type"] = gw_type
         state.state_data["step"] = "name"
         await state.asave()
@@ -4774,15 +4461,15 @@ UUID:  <code>{u.uuid}</code>
         from apps.orders.models import PaymentCard
 
         try:
-            cards = await PaymentCard.objects.filter(brand=self.brand).aorder_by(
+            cards = [item async for item in PaymentCard.objects.filter(brand=self.brand).order_by(
                 "display_order"
-            )
+            )]
 
             if not cards:
                 text = "❌ هیچ کارت بانکی ثبت نشده است"
             else:
                 text = f"💳 کارت‌های بانکی ({len(cards)}):\n\n"
-                async for i, card in enumerate(cards, 1):
+                for i, card in enumerate(cards, 1):
                     status = "✅" if card.is_active else "❌"
                     masked = (
                         f"{card.card_number[:4]}****{card.card_number[-4:]}"
@@ -4821,15 +4508,15 @@ UUID:  <code>{u.uuid}</code>
         from apps.orders.models import CryptoCurrency
 
         try:
-            cryptos = await CryptoCurrency.objects.filter(brand=self.brand).aorder_by(
+            cryptos = [item async for item in CryptoCurrency.objects.filter(brand=self.brand).order_by(
                 "display_order"
-            )
+            )]
 
             if not cryptos:
                 text = "❌ هیچ ارز دیجیتالی تنظیم نشده است"
             else:
                 text = f"🪙 ارزهای دیجیتال ({len(cryptos)}):\n\n"
-                async for i, crypto in enumerate(cryptos, 1):
+                for i, crypto in enumerate(cryptos, 1):
                     status = "✅" if crypto.is_active else "❌"
                     text += f"{i}. {status} {crypto.name} ({crypto.symbol})\n"
                     text += f"   شبکه: {crypto.get_network_display()}\n"
@@ -4879,16 +4566,16 @@ UUID:  <code>{u.uuid}</code>
             total_count = await Payment.objects.filter(brand=self.brand).acount()
             total_pages = (total_count + per_page - 1) // per_page
 
-            payments = await Payment.objects.filter(brand=self.brand).aorder_by(
+            payments = [item async for item in Payment.objects.select_related("user").filter(brand=self.brand).order_by(
                 "-created_at"
-            )[offset : offset + per_page]
+            )[offset : offset + per_page]]
 
             if not payments:
                 text = "❌ هیچ تراکنشی ثبت نشده است"
             else:
                 text = f"💵 تاریخچه تراکنش‌ها (صفحه {page}/{total_pages}):\n\n"
 
-                async for i, payment in enumerate(payments, 1):
+                for i, payment in enumerate(payments, 1):
                     status_emoji = {
                         "pending": "⏳",
                         "awaiting_confirmation": "🔍",
@@ -5053,16 +4740,16 @@ UUID:  <code>{u.uuid}</code>
             ).acount()
             total_pages = (total_count + per_page - 1) // per_page
 
-            payments = await Payment.objects.filter(
+            payments = [p async for p in Payment.objects.filter(
                 brand=self.brand, status=status
-            ).aorder_by("-created_at")[offset : offset + per_page]
+            ).select_related("user").order_by("-created_at")[offset : offset + per_page]]
 
             if not payments:
                 text = f"❌ هیچ تراکنش {status_names.get(status, '')}‌ای وجود ندارد"
             else:
                 text = f"📊 تراکنش‌های {status_names.get(status, '')} (صفحه {page}/{total_pages}):\n\n"
 
-                async for i, payment in enumerate(payments, 1):
+                for i, payment in enumerate(payments, 1):
                     text += f"{offset + i}. {payment.get_payment_method_display()}\n"
                     text += f"   مبلغ: {payment.amount:,.0f} {payment.currency}\n"
                     text += f"   کاربر: {payment.user.username}\n"
@@ -5116,21 +4803,21 @@ UUID:  <code>{u.uuid}</code>
 
     # Revenue Chart and Export Methods
 
-    async def show_revenue_chart(self, callback: types.CallbackQuery):
+    async def show_revenue_chart(self, callback: types.CallbackQuery, days_count=7):
         """Show revenue chart"""
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         from django.db.models import Sum
 
         from apps.orders.models import Payment
 
         try:
-            today = datetime.now().date()
+            today = timezone.localdate()
             days = []
             revenues = []
 
-            for i in range(7):
-                date = today - timedelta(days=6 - i)
+            for i in range(min(days_count, 90)):
+                date = today - timedelta(days=days_count - 1 - i)
                 revenue = await Payment.objects.filter(
                     brand=self.brand, status="confirmed", created_at__date=date
                 ).aaggregate(total=Sum("amount"))
@@ -5148,7 +4835,7 @@ UUID:  <code>{u.uuid}</code>
                 chart_lines.append(f"{day}: {bar} {rev:,.0f}")
 
             text = f"""
-📈 نمودار درآمد ۷ روز اخیر
+📈 نمودار درآمد {days_count} روز اخیر
 
 {chr(10).join(chart_lines)}
 
@@ -5175,7 +4862,7 @@ UUID:  <code>{u.uuid}</code>
 
     async def export_revenue_excel(self, callback: types.CallbackQuery):
         """Export revenue report to Excel"""
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         from apps.orders.models import Payment
 
@@ -5183,24 +4870,24 @@ UUID:  <code>{u.uuid}</code>
             # Show processing message
             await callback.answer("⏳ در حال تهیه فایل...", show_alert=False)
 
-            end_date = datetime.now().date()
+            end_date = timezone.localdate()
             start_date = end_date - timedelta(days=30)
 
             payments = (
-                await Payment.objects.filter(
+                [item async for item in Payment.objects.filter(
                     brand=self.brand,
                     status="confirmed",
                     created_at__date__gte=start_date,
                     created_at__date__lte=end_date,
                 )
-                .aselect_related("user")
-                .aorder_by("-created_at")
+                .select_related("user")
+                .order_by("-created_at")]
             )
 
             # Create CSV content (simple text format for Telegram)
             csv_content = "تاریخ,کاربر,روش پرداخت,مبلغ,وضعیت\n"
 
-            async for payment in payments:
+            for payment in payments:
                 date_str = payment.created_at.strftime("%Y-%m-%d %H:%M")
                 csv_content += f"{date_str},{payment.user.username},{payment.get_payment_method_display()},{payment.amount},{payment.get_status_display()}\n"
 
@@ -5255,9 +4942,9 @@ UUID:  <code>{u.uuid}</code>
         from apps.orders.models import PaymentCard
 
         try:
-            cards = await PaymentCard.objects.filter(brand=self.brand).aorder_by(
+            cards = [item async for item in PaymentCard.objects.filter(brand=self.brand).order_by(
                 "display_order"
-            )
+            )]
 
             if not cards:
                 text = "❌ هیچ کارت بانکی ثبت نشده است"
@@ -5266,7 +4953,7 @@ UUID:  <code>{u.uuid}</code>
                 text = "✏️ انتخاب کارت برای ویرایش:\n"
                 buttons = []
 
-                async for card in cards:
+                for card in cards:
                     masked = (
                         f"{card.card_number[:4]}****{card.card_number[-4:]}"
                         if len(card.card_number) >= 8
@@ -5339,7 +5026,7 @@ UUID:  <code>{u.uuid}</code>
                         [
                             {
                                 "text": "✏️ تغییر صاحب کارت",
-                                "callback_data": f"admin_card_field_{card_id}_cardholder",
+                                "callback_data": f"admin_card_field_{card_id}_cardholder_name",
                             }
                         ],
                         [
@@ -5392,9 +5079,9 @@ UUID:  <code>{u.uuid}</code>
         from apps.orders.models import PaymentCard
 
         try:
-            cards = await PaymentCard.objects.filter(brand=self.brand).aorder_by(
+            cards = [item async for item in PaymentCard.objects.filter(brand=self.brand).order_by(
                 "display_order"
-            )
+            )]
 
             if not cards:
                 text = "❌ هیچ کارت بانکی ثبت نشده است"
@@ -5403,7 +5090,7 @@ UUID:  <code>{u.uuid}</code>
                 text = "🗑️ انتخاب کارت برای حذف:\n"
                 buttons = []
 
-                async for card in cards:
+                for card in cards:
                     masked = (
                         f"{card.card_number[:4]}****{card.card_number[-4:]}"
                         if len(card.card_number) >= 8
@@ -5529,9 +5216,9 @@ UUID:  <code>{u.uuid}</code>
         from apps.orders.models import CryptoCurrency
 
         try:
-            cryptos = await CryptoCurrency.objects.filter(brand=self.brand).aorder_by(
+            cryptos = [item async for item in CryptoCurrency.objects.filter(brand=self.brand).order_by(
                 "display_order"
-            )
+            )]
 
             if not cryptos:
                 text = "❌ هیچ ارز دیجیتالی ثبت نشده است"
@@ -5540,7 +5227,7 @@ UUID:  <code>{u.uuid}</code>
                 text = "✏️ انتخاب ارز برای ویرایش:\n"
                 buttons = []
 
-                async for crypto in cryptos:
+                for crypto in cryptos:
                     status = "✅" if crypto.is_active else "❌"
                     buttons.append(
                         [
@@ -5605,7 +5292,7 @@ UUID:  <code>{u.uuid}</code>
                         [
                             {
                                 "text": "✏️ تغییر آدرس",
-                                "callback_data": f"admin_crypto_field_{crypto_id}_address",
+                                "callback_data": f"admin_crypto_field_{crypto_id}_wallet_address",
                             }
                         ],
                         [
@@ -5657,9 +5344,9 @@ UUID:  <code>{u.uuid}</code>
         from apps.orders.models import CryptoCurrency
 
         try:
-            cryptos = await CryptoCurrency.objects.filter(brand=self.brand).aorder_by(
+            cryptos = [item async for item in CryptoCurrency.objects.filter(brand=self.brand).order_by(
                 "display_order"
-            )
+            )]
 
             if not cryptos:
                 text = "❌ هیچ ارز دیجیتالی ثبت نشده است"
@@ -5668,7 +5355,7 @@ UUID:  <code>{u.uuid}</code>
                 text = "🗑️ انتخاب ارز برای حذف:\n"
                 buttons = []
 
-                async for crypto in cryptos:
+                for crypto in cryptos:
                     buttons.append(
                         [
                             {
@@ -5769,7 +5456,7 @@ UUID:  <code>{u.uuid}</code>
             ).aall()
 
             updated = 0
-            async for crypto in cryptos:
+            for crypto in cryptos:
                 # In a real implementation, fetch from API
                 # For now, just update the timestamp
                 crypto.last_rate_update = timezone.now()
@@ -6006,14 +5693,14 @@ UUID:  <code>{u.uuid}</code>
         try:
             # Search by payment ID, user username, or amount
             payments = (
-                await Payment.objects.filter(brand=self.brand)
+                [item async for item in Payment.objects.filter(brand=self.brand)
                 .filter(
                     Q(payment_id__icontains=query)
                     | Q(user__username__icontains=query)
                     | Q(amount__icontains=query)
                 )
-                .aselect_related("user")
-                .aorder_by("-created_at")[:10]
+                .select_related("user")
+                .order_by("-created_at")[:10]]
             )
 
             if not payments:
@@ -6021,7 +5708,7 @@ UUID:  <code>{u.uuid}</code>
             else:
                 text = f"🔍 نتایج جستجو برای «{query}»:\n\n"
 
-                async for i, payment in enumerate(payments, 1):
+                for i, payment in enumerate(payments, 1):
                     status_emoji = {
                         "pending": "⏳",
                         "awaiting_confirmation": "🔍",
@@ -6064,3 +5751,20 @@ UUID:  <code>{u.uuid}</code>
         keyboard = self.get_back_keyboard("admin_manage_crypto")
         await self.send_message_with_keyboard(callback.message.chat.id, text, keyboard)
         await callback.answer()
+
+    async def toggle_panel_user_status(self, callback, user_uuid):
+        provider = await self.get_hiddify_provider()
+        if not provider:
+            await callback.answer("پنل Hiddify تنظیم نشده است.", show_alert=True)
+            return
+        try:
+            panel_user = await provider.get_user(user_uuid)
+            if not panel_user:
+                await callback.answer("کاربر یافت نشد.", show_alert=True)
+                return
+            panel_user.enable = not panel_user.enable
+            success = await provider.update_hiddify_user(user_uuid, panel_user)
+            await callback.answer("ذخیره شد." if success else "ذخیره انجام نشد.")
+        finally:
+            await provider.close()
+        await self.view_panel_user_details(callback, user_uuid)

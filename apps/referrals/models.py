@@ -9,6 +9,16 @@ from django.db import models
 from django.utils import timezone
 
 
+def referral_link_code():
+    return uuid.uuid4().hex[:20]
+
+
+class NotificationTrigger(models.TextChoices):
+    JOINED = "joined", "عضویت در ربات"
+    FIRST_PURCHASE = "first_purchase", "اولین خرید کاملاً پرداخت‌شده"
+    LAST_PURCHASE = "last_purchase", "هر خرید کاملاً پرداخت‌شده"
+
+
 class ReferralProgram(models.Model):
     """Brand-specific referral program configuration"""
 
@@ -90,9 +100,12 @@ class ReferralProgram(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            previous = type(self).objects.filter(pk=self.pk).values(
-                "lifetime_reference_service_id", "lifetime_point_value"
-            ).first()
+            previous = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .values("lifetime_reference_service_id", "lifetime_point_value")
+                .first()
+            )
             if previous and previous["lifetime_reference_service_id"]:
                 self.lifetime_reference_service_id = previous[
                     "lifetime_reference_service_id"
@@ -113,17 +126,27 @@ class ReferralProgram(models.Model):
         super().clean()
         from django.core.exceptions import ValidationError
 
-        for service_id in (self.reference_service_id, self.lifetime_reference_service_id):
-            if service_id and RewardService.objects.filter(pk=service_id).exclude(
-                brand_id=self.brand_id
-            ).exists():
+        for service_id in (
+            self.reference_service_id,
+            self.lifetime_reference_service_id,
+        ):
+            if (
+                service_id
+                and RewardService.objects.filter(pk=service_id)
+                .exclude(brand_id=self.brand_id)
+                .exists()
+            ):
                 raise ValidationError("Reference services must belong to this brand")
         if self.lifetime_point_value is not None and self.lifetime_point_value <= 0:
-            raise ValidationError({"lifetime_point_value": "Point value must be positive"})
+            raise ValidationError(
+                {"lifetime_point_value": "Point value must be positive"}
+            )
         if self.purchase_reward_percent <= 0 or self.purchase_reward_percent > 100:
-            raise ValidationError({
-                "purchase_reward_percent": "Referral purchase reward percent must be greater than 0 and at most 100."
-            })
+            raise ValidationError(
+                {
+                    "purchase_reward_percent": "Referral purchase reward percent must be greater than 0 and at most 100."
+                }
+            )
 
 
 class ReferralLevel(models.Model):
@@ -160,13 +183,18 @@ class ReferralLink(models.Model):
     """Individual referral links for users"""
 
     user = models.ForeignKey(
-        "accounts.User", on_delete=models.CASCADE, related_name="referral_links"
+        "accounts.User",
+        on_delete=models.CASCADE,
+        related_name="referral_links",
+        null=True,
+        blank=True,
     )
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="referral_links"
     )
 
-    code = models.CharField(max_length=50, unique=True)
+    code = models.CharField(max_length=50, unique=True, default=referral_link_code)
+    is_default = models.BooleanField(default=False)
     custom_code = models.CharField(max_length=50, null=True, blank=True)
 
     click_count = models.PositiveIntegerField(default=0)
@@ -182,14 +210,35 @@ class ReferralLink(models.Model):
 
     class Meta:
         db_table = "referral_links"
-        unique_together = ["user", "brand"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "brand"],
+                condition=models.Q(is_default=True),
+                name="uniq_default_referral_link",
+            )
+        ]
         indexes = [
             models.Index(fields=["code"]),
             models.Index(fields=["user", "brand"]),
         ]
 
     def __str__(self):
-        return f"{self.user.username} - {self.code}"
+        return self.campaign_name or self.code
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        import re
+
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", self.code or ""):
+            raise ValidationError(
+                {
+                    "code": "کد لینک فقط می‌تواند شامل حروف انگلیسی، عدد، خط تیره و زیرخط باشد."
+                }
+            )
+        if self.user_id and self.user.brand_id != self.brand_id:
+            raise ValidationError({"user": "صاحب لینک باید عضو همین برند باشد."})
+        if self.is_default and not self.user_id:
+            raise ValidationError({"is_default": "لینک پیش‌فرض به صاحب لینک نیاز دارد."})
 
 
 class ReferralClick(models.Model):
@@ -205,6 +254,7 @@ class ReferralClick(models.Model):
         "brands.Brand", on_delete=models.CASCADE, related_name="referral_visits"
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    is_registration = models.BooleanField(default=False)
 
     class Meta:
         db_table = "referral_clicks"
@@ -289,7 +339,11 @@ class ReferralReward(models.Model):
         CANCELLED = "cancelled", "Cancelled"
 
     referral = models.ForeignKey(
-        Referral, on_delete=models.CASCADE, related_name="rewards", null=True, blank=True
+        Referral,
+        on_delete=models.CASCADE,
+        related_name="rewards",
+        null=True,
+        blank=True,
     )
     order = models.ForeignKey(
         "orders.Order",
@@ -396,7 +450,7 @@ class Achievement(models.Model):
         blank=True,
         help_text=(
             "Thresholds: referrals, conversions, purchases, lifetime_points, "
-            "total_spent, wallet_deposits. Example: {\"referrals\": 5}."
+            'total_spent, wallet_deposits. Example: {"referrals": 5}.'
         ),
     )
 
@@ -502,9 +556,12 @@ class RewardService(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            previous = type(self).objects.filter(pk=self.pk).values_list(
-                "point_value_snapshot", flat=True
-            ).first()
+            previous = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .values_list("point_value_snapshot", flat=True)
+                .first()
+            )
             if previous is not None:
                 self.point_value_snapshot = previous
         if self.point_value_snapshot is None and self.plan_id:
@@ -533,7 +590,9 @@ class RewardBoxCapacity(models.Model):
             models.UniqueConstraint(
                 fields=["service", "sequence"], name="uniq_reward_box_sequence"
             ),
-            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_box_capacity_positive"),
+            models.CheckConstraint(
+                condition=models.Q(capacity__gt=0), name="reward_box_capacity_positive"
+            ),
         ]
 
 
@@ -605,11 +664,26 @@ class RewardPointBox(models.Model):
                 fields=["account", "service", "cycle", "sequence"],
                 name="uniq_reward_point_box_cycle",
             ),
-            models.CheckConstraint(condition=models.Q(capacity__gt=0), name="reward_point_box_capacity_positive"),
-            models.CheckConstraint(condition=models.Q(filled__gte=0), name="reward_point_box_filled_nonnegative"),
-            models.CheckConstraint(condition=models.Q(filled__lte=models.F("capacity")), name="reward_point_box_filled_within_capacity"),
-            models.CheckConstraint(condition=models.Q(spent_points__gte=0), name="reward_point_box_spent_nonnegative"),
-            models.CheckConstraint(condition=models.Q(spent_points__lte=models.F("filled")), name="reward_point_box_spent_within_filled"),
+            models.CheckConstraint(
+                condition=models.Q(capacity__gt=0),
+                name="reward_point_box_capacity_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(filled__gte=0),
+                name="reward_point_box_filled_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(filled__lte=models.F("capacity")),
+                name="reward_point_box_filled_within_capacity",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(spent_points__gte=0),
+                name="reward_point_box_spent_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(spent_points__lte=models.F("filled")),
+                name="reward_point_box_spent_within_filled",
+            ),
         ]
 
 
@@ -698,6 +772,7 @@ class MarketingMaterial(models.Model):
         db_table = "marketing_materials"
         ordering = ["name"]
 
+
 class ChallengeProgram(models.Model):
     """Brand-level configuration for the one-time Propzino challenge."""
 
@@ -707,6 +782,14 @@ class ChallengeProgram(models.Model):
     name = models.CharField(max_length=100, default="پراپزینو")
     is_active = models.BooleanField(default=True)
     offer_delay_days = models.PositiveSmallIntegerField(default=5)
+    offer_trigger = models.CharField(
+        max_length=20,
+        choices=NotificationTrigger.choices,
+        default=NotificationTrigger.FIRST_PURCHASE,
+    )
+    offer_delay_minutes = models.PositiveIntegerField(
+        default=7200, help_text="مثلاً ۶۰ = یک ساعت، ۳۰۰ = پنج ساعت؛ از مبدأ انتخاب‌شده."
+    )
     duration_days = models.PositiveSmallIntegerField(default=7)
     reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=13)
     require_referral_join_during_challenge = models.BooleanField(
@@ -731,12 +814,12 @@ class ChallengeProgram(models.Model):
         from django.core.exceptions import ValidationError
 
         errors = {}
-        if self.offer_delay_days < 1:
-            errors["offer_delay_days"] = "Offer delay must be at least one day."
         if self.duration_days < 1:
             errors["duration_days"] = "Challenge duration must be at least one day."
         if self.reward_percent <= 0 or self.reward_percent > 100:
-            errors["reward_percent"] = "Challenge reward percent must be greater than 0 and at most 100."
+            errors["reward_percent"] = (
+                "Challenge reward percent must be greater than 0 and at most 100."
+            )
         if errors:
             raise ValidationError(errors)
 
@@ -802,9 +885,15 @@ class UserChallenge(models.Model):
         ChallengeProgram, on_delete=models.PROTECT, related_name="user_challenges"
     )
     tier = models.ForeignKey(
-        ChallengeTier, on_delete=models.PROTECT, null=True, blank=True, related_name="user_challenges"
+        ChallengeTier,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="user_challenges",
     )
-    status = models.CharField(max_length=24, choices=Status.choices, default=Status.OFFERED)
+    status = models.CharField(
+        max_length=24, choices=Status.choices, default=Status.OFFERED
+    )
     offered_at = models.DateTimeField(default=timezone.now)
     accepted_at = models.DateTimeField(null=True, blank=True)
     declined_at = models.DateTimeField(null=True, blank=True)
@@ -813,6 +902,7 @@ class UserChallenge(models.Model):
     entry_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     target_referrals = models.PositiveSmallIntegerField(default=0)
     reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    require_referral_join_during_challenge = models.BooleanField(default=True)
     successful_referrals = models.PositiveSmallIntegerField(default=0)
     reward_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     settled_at = models.DateTimeField(null=True, blank=True)
@@ -842,7 +932,9 @@ class ChallengeReferralEvent(models.Model):
         Referral, on_delete=models.PROTECT, related_name="challenge_events"
     )
     order = models.OneToOneField(
-        "orders.Order", on_delete=models.PROTECT, related_name="challenge_referral_event"
+        "orders.Order",
+        on_delete=models.PROTECT,
+        related_name="challenge_referral_event",
     )
     reward = models.OneToOneField(
         ReferralReward,
@@ -876,17 +968,32 @@ class GamificationNotification(models.Model):
         EXPIRY_5D = "expiry_5d", "Subscription expiry 5d"
         REFERRAL_REWARD = "referral_reward", "Referral reward"
         PROFILE_COMPLETION = "profile_completion", "Profile completion reminder"
+        CUSTOM = "custom", "Admin notification"
 
     user = models.ForeignKey(
-        "accounts.User", on_delete=models.CASCADE, related_name="gamification_notifications"
+        "accounts.User",
+        on_delete=models.CASCADE,
+        related_name="gamification_notifications",
     )
     brand = models.ForeignKey(
-        "brands.Brand", on_delete=models.CASCADE, related_name="gamification_notifications"
+        "brands.Brand",
+        on_delete=models.CASCADE,
+        related_name="gamification_notifications",
     )
-    notification_type = models.CharField(max_length=32, choices=NotificationType.choices)
+    notification_type = models.CharField(
+        max_length=32, choices=NotificationType.choices
+    )
     dedupe_key = models.CharField(max_length=255, unique=True)
     metadata = models.JSONField(default=dict, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
+    rule = models.ForeignKey(
+        "NotificationRule",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deliveries",
+    )
+    created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         db_table = "gamification_notifications"
@@ -913,9 +1020,98 @@ class ServiceSurvey(models.Model):
     class Meta:
         db_table = "service_surveys"
         constraints = [
-            models.UniqueConstraint(fields=["user", "brand"], name="uniq_service_survey_user_brand"),
-            models.CheckConstraint(condition=models.Q(quality_rating__isnull=True) | (models.Q(quality_rating__gte=1) & models.Q(quality_rating__lte=5)), name="survey_quality_1_5"),
-            models.CheckConstraint(condition=models.Q(app_rating__isnull=True) | (models.Q(app_rating__gte=1) & models.Q(app_rating__lte=5)), name="survey_app_1_5"),
-            models.CheckConstraint(condition=models.Q(support_rating__isnull=True) | (models.Q(support_rating__gte=1) & models.Q(support_rating__lte=5)), name="survey_support_1_5"),
+            models.UniqueConstraint(
+                fields=["user", "brand"], name="uniq_service_survey_user_brand"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quality_rating__isnull=True)
+                | (models.Q(quality_rating__gte=1) & models.Q(quality_rating__lte=5)),
+                name="survey_quality_1_5",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(app_rating__isnull=True)
+                | (models.Q(app_rating__gte=1) & models.Q(app_rating__lte=5)),
+                name="survey_app_1_5",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(support_rating__isnull=True)
+                | (models.Q(support_rating__gte=1) & models.Q(support_rating__lte=5)),
+                name="survey_support_1_5",
+            ),
         ]
 
+
+class NotificationRule(models.Model):
+    """Brand-managed lifecycle messages, one delivery per user and trigger occurrence."""
+
+    class Kind(models.TextChoices):
+        CUSTOM = "custom", "پیام سفارشی"
+        SURVEY = "survey", "نظرسنجی سرویس"
+        REFERRAL_INTRO = "referral_intro", "معرفی سیستم امتیاز"
+        PROFILE_COMPLETION = "profile_completion", "تکمیل پروفایل"
+
+    class Audience(models.TextChoices):
+        ALL = "all", "همه کاربران"
+        ACTIVE = "active", "دارای اشتراک فعال"
+        INACTIVE = "inactive", "بدون اشتراک فعال"
+        ROYAL = "royal", "اشتراک رویال فعال"
+        NORMAL = "normal", "اشتراک نرمال فعال"
+        IRAN_IP = "iran_ip", "اشتراک آی‌پی ایران فعال"
+
+    brand = models.ForeignKey(
+        "brands.Brand", on_delete=models.CASCADE, related_name="notification_rules"
+    )
+    name = models.CharField(max_length=100)
+    kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.CUSTOM)
+    trigger = models.CharField(
+        max_length=20,
+        choices=NotificationTrigger.choices,
+        default=NotificationTrigger.JOINED,
+    )
+    delay_minutes = models.PositiveIntegerField(
+        default=0, help_text="مدت انتظار بعد از عضویت یا پرداخت کامل خرید (به دقیقه)"
+    )
+    audience = models.CharField(
+        max_length=20, choices=Audience.choices, default=Audience.ALL
+    )
+    message = models.TextField(
+        help_text="متن ساده؛ به طور خودکار برای تلگرام ایمن می‌شود."
+    )
+    button_text = models.CharField(max_length=60, blank=True)
+    button_action = models.CharField(
+        max_length=40,
+        blank=True,
+        choices=[
+            ("main_menu", "منوی اصلی"),
+            ("purchase_subscription", "خرید"),
+            ("active_challenges", "چالش"),
+            ("referral_system", "معرفی"),
+            ("complete_profile", "تکمیل پروفایل"),
+            ("service_survey_start", "نظرسنجی"),
+            ("my_subscriptions", "اشتراک‌ها"),
+            ("useful_content", "آکادمی"),
+        ],
+    )
+    is_active = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "notification_rules"
+        ordering = ["brand", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["brand", "name"], name="uniq_notification_rule_name"
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not self.message.strip() or len(self.message) > 3500:
+            raise ValidationError({"message": "متن باید بین ۱ و ۳۵۰۰ کاراکتر باشد."})
+        if bool(self.button_text) != bool(self.button_action):
+            raise ValidationError("عنوان و مقصد دکمه باید با هم تنظیم شوند.")

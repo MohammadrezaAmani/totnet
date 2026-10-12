@@ -19,10 +19,9 @@ async def referral_level_progress(*, user_id: int, brand_id: int) -> dict:
         brand_id=brand_id,
         status=Referral.ReferralStatus.REWARDED,
     ).acount()
-    link = await ReferralLink.objects.filter(
-        user_id=user_id, brand_id=brand_id
-    ).afirst()
-    clicks = link.click_count if link else 0
+    from django.db.models import Sum
+    total = await ReferralLink.objects.filter(user_id=user_id, brand_id=brand_id).aaggregate(clicks=Sum("click_count"))
+    clicks = total["clicks"] or 0
     conversion_rate = Decimal(conversions * 100) / Decimal(max(clicks, 1))
     program = await ReferralProgram.objects.filter(
         brand_id=brand_id, is_active=True

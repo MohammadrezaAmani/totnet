@@ -3,6 +3,8 @@
 from aiogram import BaseMiddleware, types
 from aiogram.filters import CommandStart
 
+from django.db.models import Q
+
 from apps.accounts.models import User
 from apps.brands.models import Brand
 from apps.referrals.models import ReferralLink
@@ -29,10 +31,9 @@ async def registration_allowed(brand_id: int, referral_code: str | None = None) 
         return False
     return await ReferralLink.objects.filter(
         brand_id=brand_id,
-        user__brand_id=brand_id,
         is_active=True,
         code=referral_code,
-    ).aexists()
+    ).filter(Q(user__isnull=True) | Q(user__brand_id=brand_id)).aexists()
 
 
 class BrandAdmissionMiddleware(BaseMiddleware):
@@ -43,9 +44,18 @@ class BrandAdmissionMiddleware(BaseMiddleware):
         telegram_user = event.from_user
         if telegram_user is None:
             return
-        if await User.objects.filter(
-            brand_id=self.brand_id, telegram_id=telegram_user.id
-        ).aexists():
+        existing = await User.objects.filter(brand_id=self.brand_id, telegram_id=telegram_user.id).afirst()
+        if existing:
+            if not existing.is_active:
+                if isinstance(event, types.CallbackQuery):
+                    await event.answer("حساب شما غیرفعال است.", show_alert=True)
+                elif isinstance(event, types.Message):
+                    await event.answer("حساب شما غیرفعال است؛ با پشتیبانی تماس بگیرید.")
+                elif isinstance(event, types.PreCheckoutQuery):
+                    await event.answer(ok=False, error_message="حساب غیرفعال است.")
+                elif isinstance(event, types.InlineQuery):
+                    await event.answer([], cache_time=0, is_personal=True)
+                return
             return await handler(event, data)
 
         code = None

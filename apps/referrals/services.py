@@ -6,7 +6,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, localcontext
 
-from django.db import IntegrityError, connection, transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -66,7 +66,7 @@ def _record_zero_referral_reward(
 
 
 @transaction.atomic
-def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = None) -> bool:
+def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = None, is_registration: bool = False) -> bool:
     """Count one branded bot start per visitor without granting attribution."""
     link = ReferralLink.objects.filter(
         code=code, brand_id=brand_id, is_active=True
@@ -76,31 +76,12 @@ def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = N
     if visitor_id is not None:
         if not User.objects.filter(pk=visitor_id, brand_id=brand_id).exists():
             return False
-        table = connection.ops.quote_name(ReferralClick._meta.db_table)
-        link_column = connection.ops.quote_name(
-            ReferralClick._meta.get_field("link").column
+        visit, created = ReferralClick.objects.get_or_create(
+            link=link, visitor_id=visitor_id,
+            defaults={"brand_id": brand_id, "is_registration": is_registration},
         )
-        visitor_column = connection.ops.quote_name(
-            ReferralClick._meta.get_field("visitor").column
-        )
-        brand_column = connection.ops.quote_name(
-            ReferralClick._meta.get_field("brand").column
-        )
-        created_column = connection.ops.quote_name(
-            ReferralClick._meta.get_field("created_at").column
-        )
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO {table} "
-                f"({link_column}, {visitor_column}, {brand_column}, {created_column}) "
-                f"VALUES (%s, %s, %s, %s) "
-                f"ON CONFLICT ({link_column}, {visitor_column}) DO NOTHING RETURNING id",
-                [link.pk, visitor_id, brand_id, timezone.now()],
-            )
-            if cursor.fetchone() is None:
-                # Repeated starts are expected; avoid raising a uniqueness error
-                # just to determine that this visitor was already counted.
-                return False
+        if not created:
+            return False
     updated = ReferralLink.objects.filter(pk=link.pk).update(
         click_count=F("click_count") + 1
     )
@@ -125,6 +106,7 @@ def attribute_referral(*, user_id: int, brand_id: int, code: str) -> bool:
     )
     if (
         not referral_link
+        or not referral_link.user_id
         or referral_link.user_id == user.pk
         or referral_link.user.brand_id != brand_id
     ):
@@ -842,8 +824,7 @@ def _qualified_referral_levels(
         brand_id=brand_id,
         status=Referral.ReferralStatus.REWARDED,
     ).count()
-    link = ReferralLink.objects.filter(user_id=user_id, brand_id=brand_id).first()
-    clicks = link.click_count if link else 0
+    clicks = ReferralLink.objects.filter(user_id=user_id, brand_id=brand_id).aggregate(total=Sum("click_count"))["total"] or 0
     conversion_rate = Decimal(conversions * 100) / Decimal(max(clicks, 1))
     program = ReferralProgram.objects.filter(
         brand_id=brand_id, is_active=True, enable_level_rewards=True
@@ -1102,11 +1083,23 @@ def award_claimed_gift(*, order_id: int) -> Decimal:
     # even when the recipient was originally introduced by another customer.
     recipient = User.objects.select_for_update().get(pk=order.recipient_id)
     referral = Referral.objects.filter(referee=recipient, brand_id=order.brand_id).first()
+    if recipient.brand_id != order.brand_id or not recipient.telegram_id:
+        return Decimal(0)
     if referral is None:
-        referral = Referral.objects.create(referrer_id=order.user_id, referee=recipient, brand_id=order.brand_id, status=Referral.ReferralStatus.CONVERTED)
+        link, _ = ReferralLink.objects.get_or_create(user_id=order.user_id, brand_id=order.brand_id, is_default=True)
+        referral = Referral.objects.create(referrer_id=order.user_id, referee=recipient, brand_id=order.brand_id, referral_link=link, status=Referral.ReferralStatus.PENDING)
+        # Membership, rather than delayed processing, defines newcomer eligibility.
+        Referral.objects.filter(pk=referral.pk).update(created_at=recipient.created_at)
+        referral.created_at = recipient.created_at
         User.objects.filter(pk=recipient.pk, referred_by__isnull=True).update(referred_by_id=order.user_id)
         User.objects.filter(pk=order.user_id).update(referral_count=F("referral_count") + 1)
+        ReferralLink.objects.filter(pk=link.pk).update(conversion_count=F("conversion_count") + 1)
     matching_referral = referral if referral.referrer_id == order.user_id else None
+    if matching_referral and order.gift_reward_challenge_id:
+        from .gamification import maybe_record_challenge_referral
+        challenge_reward = maybe_record_challenge_referral(referral=matching_referral, order=order, at=order.recipient_claimed_at, challenge_id=order.gift_reward_challenge_id)
+        if challenge_reward is not None:
+            return challenge_reward.amount
     now = timezone.now()
     account = _locked_reward_account(user_id=order.user_id, brand_id=order.brand_id)
     value = (order.final_price * percent / 100).quantize(Decimal("0.01"))

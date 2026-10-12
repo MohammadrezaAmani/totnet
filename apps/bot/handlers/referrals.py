@@ -40,7 +40,7 @@ class ReferralsHandler(BaseHandler):
 
     async def get_or_create_referral_link(self, user):
         try:
-            return await ReferralLink.objects.aget(user=user, brand=self.brand)
+            return await ReferralLink.objects.aget(user=user, brand=self.brand, is_default=True)
         except ReferralLink.DoesNotExist:
             if not user.referral_code:
                 user.referral_code = secrets.token_hex(4).upper()
@@ -48,6 +48,7 @@ class ReferralsHandler(BaseHandler):
             referral_link, _ = await ReferralLink.objects.aget_or_create(
                 user=user,
                 brand=self.brand,
+                is_default=True,
                 defaults={"code": user.referral_code},
             )
             return referral_link

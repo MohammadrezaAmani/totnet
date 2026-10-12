@@ -155,3 +155,20 @@ class BotAnalytics(models.Model):
     class Meta:
         db_table = "bot_analytics"
         unique_together = ["brand", "date"]
+
+
+class BehaviorEvent(models.Model):
+    """Structured choices/outcomes, without collecting free-text personal input."""
+    brand = models.ForeignKey("brands.Brand", on_delete=models.CASCADE, related_name="behavior_events")
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE, related_name="behavior_events")
+    event = models.CharField(max_length=80)
+    value = models.CharField(max_length=120, blank=True)
+    outcome = models.CharField(max_length=20, default="received")
+    metadata = models.JSONField(default=dict, blank=True)
+    dedupe_key = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "bot_behavior_events"
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["brand", "event", "created_at"]), models.Index(fields=["user", "created_at"])]

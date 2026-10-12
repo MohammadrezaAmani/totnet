@@ -1,0 +1,15 @@
+{% extends "admin/change_list.html" %}
+{% block content %}
+{% for brand, report in gamification_reports %}
+<div class="module" style="padding: 16px; margin-bottom: 16px;">
+<h2>{{ brand.name }} — عملکرد گیمیفیکیشن</h2>
+<p>شرکت‌کننده پرداخت‌شده: {{ report.participants }} | نرخ موفقیت چالش‌های پایان‌یافته: {{ report.success_rate|default_if_none:"—" }}٪ | وجه فیریز: {{ report.frozen }} {{ brand.currency }} | پاداش: {{ report.challenge_rewards }} {{ brand.currency }}</p>
+<table><thead><tr><th>تارگت</th><th>انتخاب</th><th>موفق</th><th>ناموفق</th><th>میانگین معرفی</th></tr></thead><tbody>
+{% for tier in report.tiers %}<tr><td>{{ tier.target_referrals }}</td><td>{{ tier.selected }}</td><td>{{ tier.successes }}</td><td>{{ tier.failures }}</td><td>{{ tier.average_progress|floatformat:1 }}</td></tr>{% endfor %}
+</tbody></table>
+<p>نظرسنجی تکمیل‌شده: {{ report.surveys.completed }}/{{ report.surveys.total }} | کیفیت: {{ report.surveys.quality|default_if_none:"—" }} | برنامه: {{ report.surveys.app|default_if_none:"—" }} | پشتیبانی: {{ report.surveys.support|default_if_none:"—" }}</p>
+<table><thead><tr><th>نوتیف</th><th>قاعده</th><th>تحویل</th><th>کل</th></tr></thead><tbody>{% for n in report.notifications %}<tr><td>{{ n.notification_type }}</td><td>{{ n.rule_id|default_if_none:"—" }}</td><td>{{ n.sent }}</td><td>{{ n.queued }}</td></tr>{% endfor %}</tbody></table>
+</div>
+{% endfor %}
+{{ block.super }}
+{% endblock %}

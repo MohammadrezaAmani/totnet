@@ -127,7 +127,7 @@ class ChallengesHandler(BaseHandler):
             target = challenge.target_referrals or (challenge.tier.target_referrals if challenge.tier_id else 0)
             referral_rule = (
                 "فقط کاربرانی که پس از شروع چالش با لینک شما وارد ربات شوند و در مهلت چالش خرید کنند، داخل تارگت حساب می‌شوند."
-                if challenge.program.require_referral_join_during_challenge
+                if challenge.require_referral_join_during_challenge
                 else "خرید موفق کاربران معرفی‌شده در مهلت چالش داخل تارگت حساب می‌شود."
             )
             text = f"""

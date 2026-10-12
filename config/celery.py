@@ -49,7 +49,7 @@ app.conf.beat_schedule = {
     },
     "run-gamification-notifications": {
         "task": "apps.referrals.tasks.run_gamification_notifications",
-        "schedule": 900.0,
+        "schedule": 60.0,
     },
 }
 

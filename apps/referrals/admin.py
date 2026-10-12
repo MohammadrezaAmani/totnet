@@ -26,13 +26,39 @@ from .models import (
     RewardRedemption,
     RewardService,
     ServiceSurvey,
+    NotificationRule,
     UserAchievement,
     UserChallenge,
 )
 
 
+class ScopedReferralAdmin(admin.ModelAdmin):
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if not request.user.is_superuser:
+            model = db_field.remote_field.model
+            brands = request.user.admin_brands.all()
+            if db_field.name == "brand":
+                kwargs["queryset"] = model.objects.filter(pk__in=brands)
+            elif any(f.name == "brand" for f in model._meta.fields):
+                kwargs["queryset"] = model.objects.filter(brand__in=brands)
+            elif db_field.name == "program":
+                kwargs["queryset"] = model.objects.filter(brand__in=brands)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
+class LedgerAdmin(ScopedReferralAdmin):
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_readonly_fields(self, request, obj=None):
+        return tuple(field.name for field in self.model._meta.fields)
+
+
 @admin.register(ReferralProgram)
-class ReferralProgramAdmin(admin.ModelAdmin):
+class ReferralProgramAdmin(ScopedReferralAdmin):
     list_display = (
         "brand",
         "is_active",
@@ -77,7 +103,7 @@ class ReferralProgramAdmin(admin.ModelAdmin):
 
 
 @admin.register(ReferralLevel)
-class ReferralLevelAdmin(admin.ModelAdmin):
+class ReferralLevelAdmin(ScopedReferralAdmin):
     list_display = (
         "program",
         "level",
@@ -105,8 +131,16 @@ class ReferralLevelAdmin(admin.ModelAdmin):
 
 
 @admin.register(ReferralLink)
-class ReferralLinkAdmin(admin.ModelAdmin):
+class ReferralLinkAdmin(ScopedReferralAdmin):
+    @admin.display(description="لینک ربات")
+    def bot_link(self, obj):
+        if not obj.brand.bot_username:
+            return "نام کاربری ربات در برند تنظیم نشده است."
+        url = f"https://t.me/{obj.brand.bot_username.lstrip('@')}?start={obj.code}"
+        return format_html('<a href="{}">{}</a>', url, url)
+
     list_display = (
+        "campaign_name",
         "code",
         "user",
         "brand",
@@ -116,8 +150,14 @@ class ReferralLinkAdmin(admin.ModelAdmin):
         "created_at",
     )
     list_filter = ("is_active", "brand")
-    search_fields = ("code", "user__username", "brand__name")
-    readonly_fields = ("click_count", "conversion_count", "created_at", "updated_at")
+    search_fields = ("code", "campaign_name", "source", "user__username", "brand__name")
+    readonly_fields = (
+        "click_count",
+        "conversion_count",
+        "created_at",
+        "updated_at",
+        "bot_link",
+    )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -127,7 +167,7 @@ class ReferralLinkAdmin(admin.ModelAdmin):
 
 
 @admin.register(Referral)
-class ReferralAdmin(admin.ModelAdmin):
+class ReferralAdmin(LedgerAdmin):
     list_display = (
         "referrer",
         "referee",
@@ -151,7 +191,7 @@ class ReferralAdmin(admin.ModelAdmin):
 
 
 @admin.register(ReferralReward)
-class ReferralRewardAdmin(admin.ModelAdmin):
+class ReferralRewardAdmin(LedgerAdmin):
     list_display = (
         "referral",
         "user",
@@ -177,7 +217,7 @@ class ReferralRewardAdmin(admin.ModelAdmin):
 
 
 @admin.register(ReferralStats)
-class ReferralStatsAdmin(admin.ModelAdmin):
+class ReferralStatsAdmin(LedgerAdmin):
     list_display = (
         "user",
         "brand",
@@ -199,7 +239,7 @@ class ReferralStatsAdmin(admin.ModelAdmin):
 
 
 @admin.register(Achievement)
-class AchievementAdmin(admin.ModelAdmin):
+class AchievementAdmin(ScopedReferralAdmin):
     list_display = (
         "brand",
         "name",
@@ -227,7 +267,7 @@ class AchievementAdmin(admin.ModelAdmin):
 
 
 @admin.register(UserAchievement)
-class UserAchievementAdmin(admin.ModelAdmin):
+class UserAchievementAdmin(LedgerAdmin):
     list_display = (
         "user",
         "achievement",
@@ -238,7 +278,6 @@ class UserAchievementAdmin(admin.ModelAdmin):
     )
     list_filter = ("is_completed", "reward_claimed", "achievement")
     search_fields = ("user__username", "achievement__name")
-    list_editable = ("is_completed", "reward_claimed")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -248,7 +287,7 @@ class UserAchievementAdmin(admin.ModelAdmin):
 
 
 @admin.register(LoyaltyProgram)
-class LoyaltyProgramAdmin(admin.ModelAdmin):
+class LoyaltyProgramAdmin(ScopedReferralAdmin):
     list_display = (
         "brand",
         "is_active",
@@ -269,7 +308,7 @@ class LoyaltyProgramAdmin(admin.ModelAdmin):
 
 
 @admin.register(MarketingMaterial)
-class MarketingMaterialAdmin(admin.ModelAdmin):
+class MarketingMaterialAdmin(ScopedReferralAdmin):
     list_display = (
         "brand",
         "name",
@@ -289,7 +328,7 @@ class MarketingMaterialAdmin(admin.ModelAdmin):
 
 
 @admin.register(RewardService)
-class RewardServiceAdmin(admin.ModelAdmin):
+class RewardServiceAdmin(ScopedReferralAdmin):
     list_display = ("brand", "plan", "free_points", "point_value", "is_active")
     readonly_fields = ("point_value_snapshot",)
     list_filter = ("brand", "is_active")
@@ -314,7 +353,9 @@ class RewardServiceAdmin(admin.ModelAdmin):
         services = list(queryset.select_related("brand"))
         brand_ids = {service.brand_id for service in services}
         if len(services) != len(brand_ids):
-            self.message_user(request, "Select at most one service per brand.", level="ERROR")
+            self.message_user(
+                request, "Select at most one service per brand.", level="ERROR"
+            )
             return
         from .services import RewardConfigurationError, set_active_reference_service
 
@@ -330,20 +371,28 @@ class RewardServiceAdmin(admin.ModelAdmin):
                 )
                 continue
             updated += 1
-        self.message_user(request, f"Updated active reference service for {updated} brand(s).")
+        self.message_user(
+            request, f"Updated active reference service for {updated} brand(s)."
+        )
 
-    @admin.action(description="Set selected service as the lifetime points reference (once)")
+    @admin.action(
+        description="Set selected service as the lifetime points reference (once)"
+    )
     def set_as_lifetime_reference_service(self, request, queryset):
         services = list(queryset.select_related("brand"))
         if len({service.brand_id for service in services}) != len(services):
-            self.message_user(request, "Select at most one service per brand.", level="ERROR")
+            self.message_user(
+                request, "Select at most one service per brand.", level="ERROR"
+            )
             return
         from django.db import transaction
 
         updated = 0
         for service in services:
             with transaction.atomic():
-                program = ReferralProgram.objects.select_for_update().get(brand_id=service.brand_id)
+                program = ReferralProgram.objects.select_for_update().get(
+                    brand_id=service.brand_id
+                )
                 if program.lifetime_reference_service_id:
                     self.message_user(
                         request,
@@ -352,23 +401,46 @@ class RewardServiceAdmin(admin.ModelAdmin):
                     )
                     continue
                 if not service.is_active or not service.plan.is_active:
-                    self.message_user(request, f"{service.brand.name}: select an active service and plan.", level="ERROR")
+                    self.message_user(
+                        request,
+                        f"{service.brand.name}: select an active service and plan.",
+                        level="ERROR",
+                    )
                     continue
-                if service.plan.currency != service.brand.currency or not service.box_capacities.exists():
-                    self.message_user(request, f"{service.brand.name}: currency and point-box capacities must be configured.", level="ERROR")
+                if (
+                    service.plan.currency != service.brand.currency
+                    or not service.box_capacities.exists()
+                ):
+                    self.message_user(
+                        request,
+                        f"{service.brand.name}: currency and point-box capacities must be configured.",
+                        level="ERROR",
+                    )
                     continue
                 from .services import RewardConfigurationError, _service_value
 
                 try:
                     value = _service_value(service)
                 except RewardConfigurationError:
-                    self.message_user(request, f"{service.brand.name}: service profit configuration is invalid.", level="ERROR")
+                    self.message_user(
+                        request,
+                        f"{service.brand.name}: service profit configuration is invalid.",
+                        level="ERROR",
+                    )
                     continue
                 program.lifetime_reference_service = service
                 program.lifetime_point_value = value
-                program.save(update_fields=("lifetime_reference_service", "lifetime_point_value", "updated_at"))
+                program.save(
+                    update_fields=(
+                        "lifetime_reference_service",
+                        "lifetime_point_value",
+                        "updated_at",
+                    )
+                )
                 updated += 1
-        self.message_user(request, f"Set lifetime reference service for {updated} brand(s).")
+        self.message_user(
+            request, f"Set lifetime reference service for {updated} brand(s)."
+        )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -378,7 +450,7 @@ class RewardServiceAdmin(admin.ModelAdmin):
 
 
 @admin.register(RewardBoxCapacity)
-class RewardBoxCapacityAdmin(admin.ModelAdmin):
+class RewardBoxCapacityAdmin(ScopedReferralAdmin):
     list_display = ("service", "sequence", "capacity")
     list_filter = ("service__brand", "service")
 
@@ -397,8 +469,15 @@ class RewardBoxCapacityAdmin(admin.ModelAdmin):
 
 
 @admin.register(RewardAccount)
-class RewardAccountAdmin(admin.ModelAdmin):
-    list_display = ("user", "brand", "reference_service", "liquid_points", "lifetime_points", "lifetime_profit")
+class RewardAccountAdmin(LedgerAdmin):
+    list_display = (
+        "user",
+        "brand",
+        "reference_service",
+        "liquid_points",
+        "lifetime_points",
+        "lifetime_profit",
+    )
     list_filter = ("brand",)
     search_fields = ("user__username", "brand__name")
     readonly_fields = tuple(field.name for field in RewardAccount._meta.fields)
@@ -411,8 +490,16 @@ class RewardAccountAdmin(admin.ModelAdmin):
 
 
 @admin.register(RewardPointBox)
-class RewardPointBoxAdmin(admin.ModelAdmin):
-    list_display = ("account", "service", "cycle", "sequence", "filled", "capacity", "state")
+class RewardPointBoxAdmin(LedgerAdmin):
+    list_display = (
+        "account",
+        "service",
+        "cycle",
+        "sequence",
+        "filled",
+        "capacity",
+        "state",
+    )
     list_filter = ("service__brand", "state", "service")
     readonly_fields = tuple(field.name for field in RewardPointBox._meta.fields)
 
@@ -424,8 +511,15 @@ class RewardPointBoxAdmin(admin.ModelAdmin):
 
 
 @admin.register(RewardPointLedger)
-class RewardPointLedgerAdmin(admin.ModelAdmin):
-    list_display = ("account", "entry_type", "points_delta", "value_delta", "order", "created_at")
+class RewardPointLedgerAdmin(LedgerAdmin):
+    list_display = (
+        "account",
+        "entry_type",
+        "points_delta",
+        "value_delta",
+        "order",
+        "created_at",
+    )
     list_filter = ("service__brand", "entry_type", "created_at")
     search_fields = ("idempotency_key", "account__user__username")
     readonly_fields = tuple(field.name for field in RewardPointLedger._meta.fields)
@@ -438,7 +532,7 @@ class RewardPointLedgerAdmin(admin.ModelAdmin):
 
 
 @admin.register(RewardRedemption)
-class RewardRedemptionAdmin(admin.ModelAdmin):
+class RewardRedemptionAdmin(LedgerAdmin):
     list_display = ("account", "service", "order", "points_spent", "created_at")
     list_filter = ("service__brand", "created_at")
     search_fields = ("account__user__username", "idempotency_key")
@@ -450,6 +544,7 @@ class RewardRedemptionAdmin(admin.ModelAdmin):
             return qs.filter(account__brand__in=request.user.admin_brands.all())
         return qs
 
+
 class ChallengeTierInline(admin.TabularInline):
     model = ChallengeTier
     fields = ("target_referrals", "entry_fee", "display_order", "is_active")
@@ -457,13 +552,15 @@ class ChallengeTierInline(admin.TabularInline):
 
 
 @admin.register(ChallengeProgram)
-class ChallengeProgramAdmin(admin.ModelAdmin):
+class ChallengeProgramAdmin(ScopedReferralAdmin):
+    exclude = ("offer_delay_days",)
     inlines = (ChallengeTierInline,)
     list_display = (
         "brand",
         "name",
         "is_active",
-        "offer_delay_days",
+        "offer_trigger",
+        "offer_delay_minutes",
         "duration_days",
         "reward_percent",
         "require_referral_join_during_challenge",
@@ -484,7 +581,7 @@ class ChallengeProgramAdmin(admin.ModelAdmin):
 
 
 @admin.register(ChallengeTier)
-class ChallengeTierAdmin(admin.ModelAdmin):
+class ChallengeTierAdmin(ScopedReferralAdmin):
     list_display = (
         "program",
         "target_referrals",
@@ -497,7 +594,9 @@ class ChallengeTierAdmin(admin.ModelAdmin):
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if not request.user.is_superuser and db_field.name == "program":
-            kwargs["queryset"] = ChallengeProgram.objects.filter(brand__in=request.user.admin_brands.all())
+            kwargs["queryset"] = ChallengeProgram.objects.filter(
+                brand__in=request.user.admin_brands.all()
+            )
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     def get_queryset(self, request):
@@ -508,7 +607,7 @@ class ChallengeTierAdmin(admin.ModelAdmin):
 
 
 @admin.register(UserChallenge)
-class UserChallengeAdmin(admin.ModelAdmin):
+class UserChallengeAdmin(LedgerAdmin):
     list_display = (
         "user",
         "brand",
@@ -525,7 +624,11 @@ class UserChallengeAdmin(admin.ModelAdmin):
     list_filter = ("status", "brand", "program")
     search_fields = ("user__username", "user__telegram_id", "program__name")
     readonly_fields = (
-        "user", "brand", "program", "tier", "status",
+        "user",
+        "brand",
+        "program",
+        "tier",
+        "status",
         "offered_at",
         "accepted_at",
         "declined_at",
@@ -555,7 +658,7 @@ class UserChallengeAdmin(admin.ModelAdmin):
 
 
 @admin.register(ChallengeReferralEvent)
-class ChallengeReferralEventAdmin(admin.ModelAdmin):
+class ChallengeReferralEventAdmin(LedgerAdmin):
     list_display = ("challenge", "referral", "order", "reward_value", "created_at")
     search_fields = (
         "challenge__user__username",
@@ -572,11 +675,13 @@ class ChallengeReferralEventAdmin(admin.ModelAdmin):
 
 
 @admin.register(GamificationNotification)
-class GamificationNotificationAdmin(admin.ModelAdmin):
+class GamificationNotificationAdmin(LedgerAdmin):
     list_display = ("user", "brand", "notification_type", "dedupe_key", "sent_at")
     list_filter = ("notification_type", "brand", "sent_at")
     search_fields = ("user__username", "dedupe_key")
-    readonly_fields = tuple(field.name for field in GamificationNotification._meta.fields)
+    readonly_fields = tuple(
+        field.name for field in GamificationNotification._meta.fields
+    )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -586,7 +691,7 @@ class GamificationNotificationAdmin(admin.ModelAdmin):
 
 
 @admin.register(ServiceSurvey)
-class ServiceSurveyAdmin(admin.ModelAdmin):
+class ServiceSurveyAdmin(LedgerAdmin):
     list_display = (
         "user",
         "brand",
@@ -605,3 +710,35 @@ class ServiceSurveyAdmin(admin.ModelAdmin):
             return qs.filter(brand__in=request.user.admin_brands.all())
         return qs
 
+
+@admin.register(NotificationRule)
+class NotificationRuleAdmin(ScopedReferralAdmin):
+    list_display = (
+        "name",
+        "brand",
+        "kind",
+        "trigger",
+        "delay_minutes",
+        "audience",
+        "is_active",
+        "delivered",
+    )
+    list_filter = ("brand", "kind", "trigger", "audience", "is_active")
+    search_fields = ("name", "message")
+    list_editable = ("is_active",)
+    readonly_fields = ("created_at", "updated_at", "delivered")
+
+    @admin.display(description="تحویل موفق / کل")
+    def delivered(self, obj):
+        return f"{obj.deliveries.filter(sent_at__isnull=False).count()} / {obj.deliveries.count()}"
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return (
+            qs
+            if request.user.is_superuser
+            else qs.filter(brand__in=request.user.admin_brands.all())
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return False
