@@ -26,6 +26,7 @@ FIELDS = (
     "duration_unit",
     "traffic_limit_gb",
     "max_users",
+    "gift_days",
     "is_featured",
     "display_order",
     "discount_percentage",
@@ -36,7 +37,7 @@ FIELDS = (
 
 
 def catalog_key(brand_id):
-    return f"subscription-plan-catalog:v4:{brand_id}"
+    return f"subscription-plan-catalog:v6:{brand_id}"
 
 
 def invalidate_plan_catalog(brand_id):
@@ -65,7 +66,7 @@ def refresh_plan_catalog(brand_id):
                 & ~Q(orders__order_type="reward_redemption"),
             )
         )
-        .order_by("display_order", "price", "pk")
+        .order_by("display_order", "pk")
         .values(*FIELDS, "purchase_count", "vpn_provider__provider_type")
     )
     for row in rows:
@@ -81,9 +82,13 @@ def refresh_plan_catalog(brand_id):
                 row[key] = str(row[key])
         if row["offer_expires_at"]:
             row["offer_expires_at"] = row["offer_expires_at"].isoformat()
+    # Snapshot the brand-wide free-plan switch with the catalogue, so a hot
+    # cache read needs no extra DB query. Brand post-save invalidates this key.
+    show_free_plans = Brand.objects.filter(pk=brand_id, show_free_plans=True).exists()
+    snapshot = {"rows": rows, "show_free_plans": show_free_plans}
     try:
         cache.set(
-            catalog_key(brand_id), rows, timeout=settings.PLAN_CATALOG_CACHE_TTL_SECONDS
+            catalog_key(brand_id), snapshot, timeout=settings.PLAN_CATALOG_CACHE_TTL_SECONDS
         )
     except Exception as exc:
         logger.warning(
@@ -93,21 +98,30 @@ def refresh_plan_catalog(brand_id):
 
 
 async def get_cached_plans(brand_id, *, refresh=False):
-    # Read the flag live rather than from the long-lived bot Brand instance.
-    # Keep the cached catalog complete so toggling the flag works immediately.
-    show_free_plans = await Brand.objects.filter(
-        pk=brand_id, show_free_plans=True
-    ).aexists()
-    rows = None
+    snapshot = None
     if not refresh:
         try:
-            rows = await cache.aget(catalog_key(brand_id))
+            snapshot = await cache.aget(catalog_key(brand_id))
         except Exception as exc:
             logger.warning(
                 "Plan cache read failed for brand %s (%s)", brand_id, type(exc).__name__
             )
-    if rows is None:
+    if snapshot is None:
+        # Refresh only once. Redis may be down; serving the correct live catalogue
+        # is preferable to crashing (the next read can retry the cache).
         rows = await sync_to_async(refresh_plan_catalog)(brand_id)
+        try:
+            snapshot = await cache.aget(catalog_key(brand_id))
+        except Exception as exc:
+            logger.warning("Plan cache read after refresh failed for brand %s (%s)",
+                           brand_id, type(exc).__name__)
+        if snapshot is None:
+            show_free_plans = await Brand.objects.filter(
+                pk=brand_id, show_free_plans=True
+            ).aexists()
+            snapshot = {"rows": rows, "show_free_plans": show_free_plans}
+    rows = snapshot["rows"]
+    show_free_plans = snapshot["show_free_plans"]
     plans = []
     for row in rows:
         values = dict(row)

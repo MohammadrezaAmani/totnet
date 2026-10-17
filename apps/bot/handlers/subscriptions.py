@@ -21,6 +21,7 @@ from apps.subscriptions.models import (
 from apps.vpn_providers.models import VPNProvider
 from apps.subscriptions.usage import remaining_usage
 from apps.subscriptions.presentation import compact_plan_specs
+from apps.subscriptions.policy import temporary_duration_blocked
 from apps.subscriptions.catalog import get_cached_plans
 
 from .base import BaseHandler
@@ -323,13 +324,15 @@ class SubscriptionHandler(BaseHandler):
         for candidate in plans:
             category = category_labels.get(candidate.service_category, candidate.name)
             prefix = "♻️" if candidate.pk == plan.pk else ""
-            label = f"{prefix}{category} {compact_plan_specs(candidate)} 💰{self.format_price(self.payable_plan_price(candidate, credits[candidate.currency]), candidate.currency)}"
+            blocked = temporary_duration_blocked(candidate)
+            label = f"{'🔴' if blocked else ''}{prefix}{category} {compact_plan_specs(candidate)} 💰{self.format_price(self.payable_plan_price(candidate, credits[candidate.currency]), candidate.currency)}"
             callback_data = (
                 f"repurchase_subscription_{subscription.pk}"
                 if candidate.pk == plan.pk
                 else f"renew_with_plan_{subscription.pk}_{candidate.pk}"
             )
-            rows.append([{"text": label, "callback_data": callback_data}])
+            rows.append([{"text": label, "callback_data": callback_data,
+                          "style": "danger" if blocked else None}])
 
         if not plans:
             text += "\n⚠️ در حال حاضر هیچ پلن فعالی برای خرید وجود ندارد."

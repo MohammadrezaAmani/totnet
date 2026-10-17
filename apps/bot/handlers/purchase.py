@@ -20,6 +20,7 @@ from apps.orders.services import WalletCheckoutError, cancel_unpaid_order, pay_o
 from apps.subscriptions.models import Subscription, SubscriptionPlan
 from apps.subscriptions.catalog import get_cached_plans, is_plan_visible_in_bot
 from apps.subscriptions.presentation import compact_plan_specs
+from apps.subscriptions.policy import TEMPORARILY_UNAVAILABLE_TEXT, temporary_duration_blocked
 from apps.subscriptions.tasks import provision_paid_order
 from apps.vpn_providers.models import VPNProvider
 
@@ -102,8 +103,11 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             ):
                 plan_text += f" • {plan.discount_percentage:g}% تخفیف"
 
+            blocked = temporary_duration_blocked(plan)
             keyboard_buttons.append(
-                [{"text": plan_text, "callback_data": f"select_plan_{plan.id}"}]
+                [{"text": ("🔴 " if blocked else "") + plan_text,
+                  "callback_data": f"select_plan_{plan.id}",
+                  "style": "danger" if blocked else None}]
             )
 
         navigation = []
@@ -269,6 +273,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         if not await is_plan_visible_in_bot(plan, self.brand.pk):
             await callback.answer("❌ این پلن در دسترس نیست.", show_alert=True)
             return
+        if temporary_duration_blocked(plan):
+            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
+            return
 
         state = await self.get_user_state(user)
         state_data = state.state_data or {}
@@ -362,6 +369,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
 
         if not await is_plan_visible_in_bot(plan, self.brand.pk):
             await callback.answer("❌ این پلن در دسترس نیست.", show_alert=True)
+            return
+        if temporary_duration_blocked(plan):
+            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
             return
 
         if purchase_type == "other":
@@ -480,6 +490,10 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             await callback.answer(
                 "❌ این پلن دیگر برای خرید فعال نیست.", show_alert=True
             )
+            return
+
+        if temporary_duration_blocked(plan):
+            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
             return
 
         recipient = (
@@ -604,6 +618,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         if not await is_plan_visible_in_bot(plan, self.brand.pk):
             await message.reply("این پلن دیگر برای خرید موجود نیست.")
             return
+        if temporary_duration_blocked(plan):
+            await message.reply(TEMPORARILY_UNAVAILABLE_TEXT)
+            return
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username):
             await message.reply("نام کاربری معتبر تلگرام گیرنده را با @ ارسال کنید.")
             return
@@ -664,6 +681,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED,
         }:
             return "این سفارش دیگر برای پرداخت فعال نیست.", self.get_back_keyboard("purchase_subscription")
+        if (order.status in {Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT}
+                and temporary_duration_blocked(order.plan)):
+            return TEMPORARILY_UNAVAILABLE_TEXT, self.get_back_keyboard("purchase_subscription")
         if order.status in {Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT}:
             if await self.purchase_credit(user, order.currency) > 0:
                 try:
@@ -723,7 +743,8 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         ):
             text = text.replace(
                 "لطفاً روش پرداخت خود را انتخاب کنید:",
-                "برای پرداخت مبلغ باقی‌مانده، با پشتیبانی هماهنگ کنید.",
+                "⚠️ در حال حاضر روش پرداختی فعال نیست.\n"
+                "برای راهنمایی با پشتیبانی هماهنگ کنید.",
             )
             keyboard.inline_keyboard.insert(0, [types.InlineKeyboardButton(
                 text="🛟 پشتیبانی", callback_data="support"
@@ -831,6 +852,14 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
     ):
         """Process wallet payment"""
         user, _ = await self.get_or_create_user(callback.from_user)
+        requested_plan = await Order.objects.filter(
+            order_id=order_id, user=user, brand=self.brand
+        ).values_list("plan_id", flat=True).afirst()
+        if requested_plan:
+            plan = await SubscriptionPlan.objects.filter(pk=requested_plan).afirst()
+            if plan and temporary_duration_blocked(plan):
+                await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
+                return
 
         try:
             result = await sync_to_async(pay_order_with_wallet)(
@@ -845,6 +874,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 "Insufficient wallet balance": "❌ موجودی کیف پول کافی نیست.",
                 "Wallet currency does not match order currency": "❌ ارز کیف پول با سفارش یکسان نیست.",
                 "Wallet is unavailable": "❌ کیف پول در دسترس نیست.",
+                "Requested duration is temporarily unavailable": TEMPORARILY_UNAVAILABLE_TEXT,
             }
             await callback.answer(
                 messages.get(str(exc), "❌ پرداخت از کیف پول انجام نشد."),
@@ -992,13 +1022,16 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         try:
-            order = await Order.objects.aget(
+            order = await Order.objects.select_related("plan").aget(
                 order_id=order_id, user=user, brand=self.brand
             )
         except Order.DoesNotExist:
             await callback.answer("❌ سفارش یافت نشد.", show_alert=True)
             return
 
+        if temporary_duration_blocked(order.plan):
+            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
+            return
         state = await self.get_user_state(user)
         sd = state.state_data or {}
         if (

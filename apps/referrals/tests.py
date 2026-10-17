@@ -326,6 +326,33 @@ class ReferralCashPointTests(TestCase):
         self.assertEqual(account.lifetime_points, Decimal("3"))
         self.assertEqual(account.liquid_points, Decimal("0"))
 
+    def test_royal_unlimited_always_uses_four_percent_for_every_user_duration(self):
+        """Real confirmed-purchase award, not only a display/helper test."""
+        for users, months in ((1, 1), (2, 2), (3, 3), (4, 1)):
+            with self.subTest(users=users, months=months):
+                self.plan.plan_type = SubscriptionPlan.PlanType.UNLIMITED
+                self.plan.service_category = SubscriptionPlan.ServiceCategory.ROYAL
+                self.plan.duration_unit = SubscriptionPlan.DurationUnit.MONTHS
+                self.plan.duration_value = months
+                self.plan.max_users = users
+                self.plan.save(update_fields=("plan_type", "service_category", "duration_unit", "duration_value", "max_users"))
+                _order, payment = self._purchase("100.00")
+                self.assertEqual(award_level_one_referral_for_payment(payment_id=str(payment.payment_id)), Decimal("1"))
+                reward = ReferralReward.objects.get(order=payment.order)
+                self.assertEqual(reward.cash_value, Decimal("4.00"))
+                self.assertIn("4%", reward.notes)
+
+    def test_royal_unlimited_challenge_rate_is_capped_at_four_percent(self):
+        from apps.subscriptions.policy import effective_reward_percent
+        self.plan.plan_type = SubscriptionPlan.PlanType.UNLIMITED
+        self.plan.service_category = SubscriptionPlan.ServiceCategory.ROYAL
+        self.plan.save(update_fields=("plan_type", "service_category"))
+        _order, payment = self._purchase("100.00")
+        self.assertEqual(effective_reward_percent(payment.order, Decimal("13")), Decimal("4"))
+        self.plan.service_category = SubscriptionPlan.ServiceCategory.NORMAL
+        self.plan.save(update_fields=("service_category",))
+        self.assertEqual(effective_reward_percent(payment.order, Decimal("13")), Decimal("13"))
+
     def test_partial_payment_does_not_award_full_order_early(self):
         order = Order.objects.create(
             brand=self.brand,

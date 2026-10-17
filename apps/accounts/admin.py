@@ -6,6 +6,9 @@ from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.forms import ReadOnlyPasswordHashField
+from django.urls import path
+from django.http import HttpResponseForbidden
+from .admin_export import ActiveSubscriptionFilter, ActiveServiceFilter, export_customers
 from django.db.models import OuterRef, Subquery
 
 from apps.referrals.models import RewardAccount
@@ -170,7 +173,10 @@ class UserAdmin(BaseUserAdmin):
         "is_active",
         "created_at",
     )
+    change_list_template = "admin/accounts/user/change_list.html"
     list_filter = (
+        ActiveSubscriptionFilter,
+        ActiveServiceFilter,
         "user_type",
         "brand",
         "is_active",
@@ -265,7 +271,27 @@ class UserAdmin(BaseUserAdmin):
         "unverify_users",
         "reset_passwords",
         "export_users_csv",
+        "export_users_xlsx",
     ]
+
+    def get_urls(self):
+        urls = super().get_urls()
+        return [
+            path("export-filtered-xlsx/", self.admin_site.admin_view(self.export_filtered_xlsx),
+                 name="accounts_user_export_filtered_xlsx"),
+        ] + urls
+
+    def export_filtered_xlsx(self, request):
+        """Export *all* current changelist results (search/filters included)."""
+        if not self.has_view_permission(request):
+            return HttpResponseForbidden("Permission denied")
+        # Changelist applies UserAdmin.get_queryset(), brand scope, search and filters.
+        changelist = self.get_changelist_instance(request)
+        return export_customers(changelist.get_queryset(request))
+
+    @admin.action(description="خروجی Excel کاربران انتخاب‌شده")
+    def export_users_xlsx(self, request, queryset):
+        return export_customers(queryset)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

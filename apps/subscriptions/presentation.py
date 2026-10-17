@@ -11,6 +11,14 @@ def number(value):
     return format(Decimal(str(value)).normalize(), "f")
 
 
+def plan_gift_label(plan):
+    """Gift days from admin or a legacy/upstream `+Nd` suffix."""
+    from .policy import plan_gift_days
+
+    days = plan_gift_days(plan)
+    return f" +{str(days).translate(PERSIAN_DIGITS)}روز هدیه" if days else ""
+
+
 def compact_plan_specs(plan):
     details = []
     if plan.plan_type == "unlimited":
@@ -22,7 +30,7 @@ def compact_plan_specs(plan):
         details.append(
             f"📅{number(plan.duration_value)}{DURATION_LABELS[plan.duration_unit]}"
         )
-    return " ".join(item.translate(PERSIAN_DIGITS) for item in details)
+    return " ".join(item.translate(PERSIAN_DIGITS) for item in details) + plan_gift_label(plan)
 
 
 def connectix_service_category(group_name, fallback="normal"):

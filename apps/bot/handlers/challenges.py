@@ -42,6 +42,7 @@ class ChallengesHandler(BaseHandler):
             f"🏆 <b>ویژگی‌های چالش {escape(program.name)}</b>\n\n"
             "• شرکت در چالش هیچ ضرری برای شما ندارد؛ اصل وجه ورودی در پایان برمی‌گردد.\n"
             f"• پاداش معرفی تا سقف تارگت با نرخ ویژه <b>{program.reward_percent:g}٪</b> محاسبه می‌شود.\n"
+            "• استثنا: نرخ امتیاز خرید تمام پلن‌های نامحدود رویال ۴٪ است.\n"
             "• با پاس کردن کامل چالش، ارزش نقدی امتیازهای چالش مستقیم به موجودی نقد کیف پول منتقل می‌شود.\n\n"
             "<b>توضیح چالش:</b>\n"
             "1- بعد از مطالعه شرایط، سطح چالش خود را انتخاب کنید.\n"
@@ -137,6 +138,7 @@ class ChallengesHandler(BaseHandler):
 ✅ پیشرفت: {challenge.successful_referrals} از {target}
 ⏳ زمان باقی‌مانده: {remaining_days} روز
 💎 درصد پاداش چالش: {(challenge.reward_percent or challenge.program.reward_percent):g}٪ از خرید مستقیم
+💡 استثنای نامحدود رویال: ۴٪ برای همه تعداد کاربران و مدت‌ها
 🧊 <b>وجه فیریز شده:</b> {self.format_price(frozen_balance, self.brand.currency)}
 
 {referral_rule}

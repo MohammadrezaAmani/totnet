@@ -77,7 +77,8 @@ def duration_key(plan):
 def duration_label(key):
     if key == "n":
         return "بدون محدودیت زمانی مشخص"
-    return f"{key[1:]} { {'d': 'روز', 'w': 'هفته', 'm': 'ماه', 'y': 'سال'}[key[0]] }"
+    numeral = key[1:].translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+    return f"{numeral} { {'d': 'روز', 'w': 'هفته', 'm': 'ماه', 'y': 'سال'}[key[0]] }"
 
 
 def duration_options(plans):

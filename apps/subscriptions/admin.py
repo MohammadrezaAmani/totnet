@@ -79,6 +79,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "duration_unit",
         "traffic_limit_gb",
         "max_users",
+        "gift_days",
         "is_active",
         "is_visible",
         "sync_bot_settings",
@@ -108,7 +109,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
                 "brand", "vpn_provider", "is_active", "plan_type", "duration_value",
                 "duration_unit", "traffic_limit_gb", "max_users", "upstream_cost", "currency",
                 "upstream_plan_id", "upstream_plan_name", "upstream_group_id",
-                "upstream_group_name", "upstream_count_of_devices",
+                "upstream_group_name", "upstream_count_of_devices", "gift_days",
             )
         return super().get_readonly_fields(request, obj)
 

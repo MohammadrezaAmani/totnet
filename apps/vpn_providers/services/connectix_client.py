@@ -114,6 +114,7 @@ class ConnectixSellerPlan:
     plan_type: str = ""
     displayed_in_panel: bool | None = None
     displayed_in_robot: bool | None = None
+    archived: bool | None = None
 
 
 def _optional_str(data: dict[str, Any], key: str) -> str:
@@ -386,6 +387,7 @@ class ConnectixClient:
                         displayed_in_robot=_optional_nullable_bool(
                             item, "is_displayed_in_robot"
                         ),
+                        archived=_optional_nullable_bool(item, "is_archived"),
                     )
                 )
         return tuple(plans)

@@ -138,6 +138,9 @@ def pay_order_with_wallet(
         Order.OrderStatus.AWAITING_PAYMENT,
     ):
         raise WalletCheckoutError("Order cannot be paid in its current state")
+    from apps.subscriptions.policy import temporary_duration_blocked
+    if temporary_duration_blocked(order.plan):
+        raise WalletCheckoutError("Requested duration is temporarily unavailable")
     try:
         wallet = Wallet.objects.select_for_update().get(
             user_id=user_id, brand_id=brand_id

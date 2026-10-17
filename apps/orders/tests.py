@@ -3,7 +3,7 @@ from decimal import Decimal
 import uuid
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -115,6 +115,19 @@ class WalletCheckoutTests(TestCase):
         )
         provision_delay.assert_called_once_with(self.order.pk)
         reward_delay.assert_called_once()
+
+    @override_settings(TEMP_DISABLE_2_3_MONTH_PLANS=True)
+    def test_old_two_month_order_cannot_debit_wallet_while_temporarily_disabled(self):
+        self.plan.duration_value = 2
+        self.plan.duration_unit = SubscriptionPlan.DurationUnit.MONTHS
+        self.plan.save(update_fields=("duration_value", "duration_unit"))
+        with self.assertRaisesRegex(WalletCheckoutError, "temporarily unavailable"):
+            pay_order_with_wallet(
+                order_id=str(self.order.order_id), user_id=self.user.pk, brand_id=self.brand.pk
+            )
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("15.00"))
+        self.assertFalse(Payment.objects.filter(order=self.order).exists())
 
     def test_insufficient_balance_changes_nothing(self):
         self.wallet.balance = Decimal("9.99")

@@ -68,6 +68,10 @@ class SubscriptionPlan(models.Model):
     )
 
     max_users = models.PositiveIntegerField(default=1)
+    gift_days = models.PositiveSmallIntegerField(
+        "روز هدیه", default=0,
+        help_text="روز هدیه (در سرویس‌دهنده به شکل +3d). فقط برای نمایش؛ ارائه واقعی توسط سرویس‌دهنده انجام می‌شود.",
+    )
 
     features = models.JSONField(default=list, blank=True)
 
@@ -114,6 +118,8 @@ class SubscriptionPlan(models.Model):
             errors["price"] = "قیمت نمی‌تواند منفی باشد."
         if self.discount_percentage is not None and not 0 <= self.discount_percentage <= 100:
             errors["discount_percentage"] = "درصد تخفیف باید بین صفر و صد باشد."
+        if self.gift_days is not None and not 0 <= self.gift_days <= 365:
+            errors["gift_days"] = "روز هدیه باید بین ۰ تا ۳۶۵ باشد."
         if self.max_users is not None and self.max_users < 1:
             errors["max_users"] = "تعداد کاربر باید حداقل یک نفر باشد."
         if (

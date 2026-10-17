@@ -1,0 +1,46 @@
+--- apps/bot/handlers/purchase.py	2026-10-15 10:23:15.000000000 +0000
++++ apps/bot/handlers/purchase.py	2026-10-17 11:46:13.240002818 +0000
+@@ -21,6 +21,7 @@
+ from apps.subscriptions.models import Subscription, SubscriptionPlan
+ from apps.subscriptions.catalog import get_cached_plans, is_plan_visible_in_bot
+ from apps.subscriptions.presentation import compact_plan_specs, connectix_plan_name
++from apps.subscriptions.policy import TEMPORARILY_UNAVAILABLE_TEXT, temporary_duration_blocked
+ from apps.subscriptions.tasks import provision_paid_order
+ from apps.vpn_providers.models import VPNProvider
+ 
+@@ -918,13 +947,16 @@
+     async def show_card_transfer_payment(self, callback: types.CallbackQuery, order_id: str):
+         """Show only active bank names; the card details appear after selection."""
+         user, _ = await self.get_or_create_user(callback.from_user)
+-        order = await Order.objects.filter(
++        order = await Order.objects.select_related("plan").filter(
+             order_id=order_id, user=user, brand=self.brand,
+             status__in=[Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT],
+         ).afirst()
+         if not order or max(order.final_price - await self._confirmed_order_payments(order), 0) <= 0:
+             await callback.answer("این سفارش قابل پرداخت نیست.", show_alert=True)
+             return
++        if temporary_duration_blocked(order.plan):
++            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
++            return
+         if not await self.brand.payment_methods.filter(
+             payment_type="card_transfer", is_enabled=True
+         ).aexists():
+@@ -956,13 +988,16 @@
+             await callback.answer("این انتخاب قدیمی است؛ از ابتدا بانک را انتخاب کنید.", show_alert=True)
+             return
+         card = await PaymentCard.objects.filter(pk=card_id, brand=self.brand, is_active=True).afirst()
+-        order = await Order.objects.filter(
++        order = await Order.objects.select_related("plan").filter(
+             order_id=order_id, user=user, brand=self.brand,
+             status__in=[Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT],
+         ).afirst()
+         if not card or not order:
+             await callback.answer("کارت یا سفارش معتبر نیست.", show_alert=True)
+             return
++        if temporary_duration_blocked(order.plan):
++            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
++            return
+         due = max(order.final_price - await self._confirmed_order_payments(order), 0)
+         if due <= 0:
+             await callback.answer("این سفارش تسویه شده است.", show_alert=True)

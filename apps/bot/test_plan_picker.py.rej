@@ -1,0 +1,18 @@
+--- apps/bot/test_plan_picker.py	2026-10-15 10:13:11.000000000 +0000
++++ apps/bot/test_plan_picker.py	2026-10-17 11:47:41.280056700 +0000
+@@ -73,6 +73,7 @@
+         self.feed(callback="purchase_subscription", user_id=1)
+         self.feed(callback=f"purchase_category_{category}", user_id=1)
+ 
++    @override_settings(TEMP_DISABLE_2_3_MONTH_PLANS=False)
+     def test_initial_duration_and_users_come_before_ranges(self):
+         chosen = self.plan(40, users=2, months=2)
+         self.plan(40, users=1, months=1)
+@@ -92,6 +93,7 @@
+         self.click("back")
+         self.assertEqual(self.picker()["users"], 2)
+ 
++    @override_settings(TEMP_DISABLE_2_3_MONTH_PLANS=False)
+     def test_royal_volume_minimum_varies_by_duration(self):
+         first = self.plan(10, category="royal")
+         second = self.plan(40, category="royal", months=2)

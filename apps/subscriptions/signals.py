@@ -15,3 +15,12 @@ def refresh_changed_plan_catalog(sender, instance, **kwargs):
 @receiver(post_save, sender=VPNProvider)
 def invalidate_provider_plan_catalog(sender, instance, **kwargs):
     transaction.on_commit(lambda: invalidate_plan_catalog(instance.brand_id))
+
+
+from apps.brands.models import Brand
+
+
+@receiver(post_save, sender=Brand)
+def invalidate_brand_catalog_policy(sender, instance, **kwargs):
+    # A change to show_free_plans must also refresh the cached snapshot.
+    transaction.on_commit(lambda: invalidate_plan_catalog(instance.pk))

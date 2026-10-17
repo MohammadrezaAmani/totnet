@@ -406,7 +406,11 @@ class MultiBrandDispatcher:
                 outcome="received", metadata={"state": state.current_state, "step": state.state_data.get("step"), "category": state.state_data.get("service_category"), "notification_id": notification.pk if notification else None, "notification_rule_id": notification.rule_id if notification else None},
             )
         try:
-            if await handlers["admin_hiddify"].handle_control_callback(callback, user):
+            # Admin routes are optional in focused purchase/registration dispatchers.
+            # Real production dispatchers provide this handler; never let a missing
+            # unrelated handler break every customer callback.
+            admin_handler = handlers.get("admin_hiddify")
+            if admin_handler is not None and await admin_handler.handle_control_callback(callback, user):
                 return
             data = callback.data
 

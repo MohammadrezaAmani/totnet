@@ -920,7 +920,11 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
     if challenge_reward is not None:
         return Decimal("1")
 
-    percent, _ = active_purchase_reward_percent(user_id=referral.referrer_id, brand_id=order.brand_id)
+    from apps.subscriptions.policy import effective_reward_percent
+    # Only actual qualifying challenge conversions earn the challenge rate.
+    # Repeat purchases and referrals outside the join window must use the
+    # ordinary program rate; merely having an active challenge is insufficient.
+    percent = effective_reward_percent(order, program.purchase_reward_percent)
     if percent <= 0 or percent > 100:
         raise RewardConfigurationError("Referral purchase reward percent must be between 0 and 100")
     cash_value = (order.final_price * percent / Decimal("100")).quantize(Decimal("0.01"))
@@ -1055,7 +1059,9 @@ def snapshot_gift_reward(*, order_id: int):
     if order.final_price <= 0 or (payments.aggregate(total=Sum("amount"))["total"] or Decimal(0)) < order.final_price:
         return
     last = payments.annotate(confirmed_at=Coalesce("verified_at", "created_at")).order_by("-confirmed_at", "-pk").first()
-    percent, challenge = active_purchase_reward_percent(user_id=order.user_id, brand_id=order.brand_id, at=last.confirmed_at)
+    from apps.subscriptions.policy import effective_reward_percent
+    configured_percent, challenge = active_purchase_reward_percent(user_id=order.user_id, brand_id=order.brand_id, at=last.confirmed_at)
+    percent = effective_reward_percent(order, configured_percent)
     Order.objects.filter(pk=order.pk).update(gift_reward_percent=percent, gift_reward_challenge=challenge)
 
 
@@ -1073,7 +1079,8 @@ def award_claimed_gift(*, order_id: int) -> Decimal:
         return Decimal(0)
     snapshot_gift_reward(order_id=order.pk)
     order.refresh_from_db(fields=["gift_reward_percent", "gift_reward_challenge"])
-    percent = Decimal(order.gift_reward_percent or 0)
+    from apps.subscriptions.policy import effective_reward_percent
+    percent = effective_reward_percent(order, order.gift_reward_percent or 0)
     if not 0 < percent <= 100:
         return Decimal(0)
     program = ReferralProgram.objects.filter(brand_id=order.brand_id, is_active=True).first()

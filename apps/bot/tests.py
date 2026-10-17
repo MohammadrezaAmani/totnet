@@ -154,6 +154,47 @@ class BotConnectixFlowTests(TestCase):
             self.assertEqual(sync_connectix_plans.run(self.provider.pk), 1)
         return SubscriptionPlan.objects.get(vpn_provider=self.provider)
 
+    def test_remote_archive_hides_local_plan_after_successful_sync(self):
+        plan = self.import_plan()
+        self.assertTrue(plan.is_active)
+        upstream_client = self.provider_client()
+        with (
+            patch("apps.vpn_providers.tasks._client", return_value=upstream_client),
+            patch("apps.vpn_providers.tasks.call_command"),
+            patch.object(upstream_client.client, "get_seller_plans", new_callable=AsyncMock, return_value=[]),
+        ):
+            self.assertEqual(sync_connectix_plans.run(self.provider.pk), 0)
+        plan.refresh_from_db()
+        self.assertFalse(plan.is_active)
+        self.assertNotIn(plan.pk, [p.pk for p in async_to_sync(get_cached_plans)(self.brand.pk, refresh=True)])
+
+    def test_remote_gift_suffix_imported_and_displayed(self):
+        from apps.subscriptions.presentation import compact_plan_specs
+        from dataclasses import replace
+        upstream_client = self.provider_client()
+        upstream_plan = None
+
+        async def load_plan():
+            try:
+                plans = await upstream_client.client.get_seller_plans(for_client_page=False, is_archived=False)
+                return plans[0]
+            except Exception:
+                raise
+
+        upstream_plan = async_to_sync(load_plan)()
+        # The real panel plan title is the source for gift days.
+        upstream_plan = replace(upstream_plan, title="Royal +5d")
+        updater = self.provider_client()
+        with (
+            patch("apps.vpn_providers.tasks._client", return_value=updater),
+            patch("apps.vpn_providers.tasks.call_command"),
+            patch.object(updater.client, "get_seller_plans", new_callable=AsyncMock, return_value=[upstream_plan]),
+        ):
+            self.assertEqual(sync_connectix_plans.run(self.provider.pk), 1)
+        plan = SubscriptionPlan.objects.get(vpn_provider=self.provider)
+        self.assertEqual(plan.gift_days, 5)
+        self.assertIn("+۵روز هدیه", compact_plan_specs(plan))
+
     def test_import_selection_purchase_payment_activation_and_delivery(self):
         plan = self.import_plan()
         self.assertEqual(plan.price, Decimal("98000"))
@@ -175,14 +216,17 @@ class BotConnectixFlowTests(TestCase):
             await self.handler.show_subscription_plans(self.callback)
             await self.handler.show_plans_by_category(self.callback, "normal")
             keyboard = self.bot.edit_message_text.call_args.kwargs["reply_markup"]
-            self.assertEqual(
-                keyboard.inline_keyboard[0][0].callback_data, f"select_plan_{plan.pk}"
-            )
+            self.assertTrue(any(
+                button.callback_data and button.callback_data.endswith(":all:")
+                for row in keyboard.inline_keyboard for button in row
+            ))
             await self.handler.show_plan_details(self.callback, plan.pk)
-            self.assertIn(
-                "Monthly &lt;VPN&gt;",
-                self.bot.edit_message_text.call_args.kwargs["text"],
-            )
+            # The checkout deliberately uses customer-facing specifications,
+            # not the upstream Connectix plan title (which may contain HTML).
+            details_text = self.bot.edit_message_text.call_args.kwargs["text"]
+            self.assertIn("98,000", details_text)
+            self.assertIn("۱۵گیگ", details_text)
+            self.assertNotIn("Monthly &lt;VPN&gt;", details_text)
             await self.handler.initiate_purchase(self.callback, plan.pk)
             self.assertIn(
                 "payment_card_transfer_",
@@ -261,6 +305,32 @@ class BotConnectixFlowTests(TestCase):
         self.assertEqual(
             async_to_sync(get_cached_plans)(self.brand.pk)[0].price, Decimal("110000")
         )
+
+    def test_free_plan_switch_invalidates_snapshot_without_hot_read_queries(self):
+        trial = SubscriptionPlan.objects.create(
+            brand=self.brand, name="Free trial", plan_type="hybrid",
+            price=Decimal("0"), currency="T",
+            duration_value=1, duration_unit="months", traffic_limit_gb=20,
+        )
+        refresh_plan_catalog(self.brand.pk)
+        with self.assertNumQueries(0):
+            self.assertEqual(async_to_sync(get_cached_plans)(self.brand.pk), [])
+        self.brand.show_free_plans = True
+        with self.captureOnCommitCallbacks(execute=True):
+            self.brand.save(update_fields=("show_free_plans", "updated_at"))
+        self.assertEqual([p.pk for p in async_to_sync(get_cached_plans)(self.brand.pk)], [trial.pk])
+        with self.assertNumQueries(0):
+            self.assertEqual([p.pk for p in async_to_sync(get_cached_plans)(self.brand.pk)], [trial.pk])
+
+    def test_sync_cannot_reenable_admin_hidden_plan(self):
+        plan = self.import_plan()
+        plan.is_visible = False
+        plan.sync_bot_settings = False
+        plan.save(update_fields=("is_visible", "sync_bot_settings"))
+        self.import_plan()
+        plan.refresh_from_db()
+        self.assertFalse(plan.is_visible)
+        self.assertNotIn(plan.pk, [p.pk for p in async_to_sync(get_cached_plans)(self.brand.pk, refresh=True)])
 
     def test_refresh_hides_plans_not_allowed_for_client_creation(self):
         plan = self.import_plan()

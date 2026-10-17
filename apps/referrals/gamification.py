@@ -323,8 +323,10 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
         if had_prior_completed_purchase:
             return None
 
+    from apps.subscriptions.policy import effective_reward_percent
+    applied_percent = effective_reward_percent(order, challenge.reward_percent)
     reward_value = _money(
-        order.final_price * Decimal(challenge.reward_percent) / Decimal("100")
+        order.final_price * applied_percent / Decimal("100")
     )
     reward = ReferralReward.objects.create(
         referral=referral,
@@ -337,7 +339,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
         currency=order.currency,
         status=ReferralReward.RewardStatus.PENDING,
         processed_at=None,
-        notes=f"Challenge {challenge.program.name}; {challenge.reward_percent}% of direct purchase.",
+        notes=f"Challenge {challenge.program.name}; {applied_percent}% of direct purchase.",
     )
     ChallengeReferralEvent.objects.create(
         challenge=challenge,
