@@ -252,9 +252,9 @@ class SubscriptionHandler(BaseHandler):
         await self.show_my_subscriptions(callback)
 
     async def show_renewal_details(
-        self, callback: types.CallbackQuery, subscription_id: int
+        self, callback: types.CallbackQuery, subscription_id: int, page: int = 1
     ):
-        """Show all purchasable plans for one subscription, with its current plan first."""
+        """Page through active renewal plans without exceeding Telegram markup limits."""
         user, _ = await self.get_or_create_user(callback.from_user)
         try:
             subscription = (
@@ -294,6 +294,12 @@ class SubscriptionHandler(BaseHandler):
         plans = await get_cached_plans(self.brand.pk)
         plans.sort(key=lambda candidate: candidate.pk != plan.pk)
         current_plan_available = any(candidate.pk == plan.pk for candidate in plans)
+        # A brand can have hundreds of Connectix plans. Sending one button per
+        # plan in a single inline keyboard is rejected by Telegram as too long.
+        page_size = 8
+        total_pages = max(1, (len(plans) + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        visible_plans = plans[(page - 1) * page_size:page * page_size]
         renewal_hint = (
             "طرح موردنظر را انتخاب کنید. طرح فعلی شما در ابتدای فهرست قرار گرفته است."
             if current_plan_available
@@ -315,13 +321,15 @@ class SubscriptionHandler(BaseHandler):
         """
 
         rows = []
+        if total_pages > 1:
+            text += f"\n📄 صفحه {page} از {total_pages} · {len(plans)} طرح فعال\n"
         credits = {
             currency: await self.purchase_credit(user, currency)
-            for currency in {p.currency for p in plans}
+            for currency in {p.currency for p in visible_plans}
         }
         if any(credits.values()):
             text += "\n💰 مبالغ پلن‌ها پس از کسر موجودی نقد قابل‌استفاده شماست.\n"
-        for candidate in plans:
+        for candidate in visible_plans:
             category = category_labels.get(candidate.service_category, candidate.name)
             prefix = "♻️" if candidate.pk == plan.pk else ""
             blocked = temporary_duration_blocked(candidate)
@@ -336,6 +344,20 @@ class SubscriptionHandler(BaseHandler):
 
         if not plans:
             text += "\n⚠️ در حال حاضر هیچ پلن فعالی برای خرید وجود ندارد."
+
+        if total_pages > 1:
+            navigation = []
+            if page > 1:
+                navigation.append({
+                    "text": "◀️ قبلی",
+                    "callback_data": f"renewal_plans_page_{subscription.pk}_{page - 1}",
+                })
+            if page < total_pages:
+                navigation.append({
+                    "text": "بعدی ▶️",
+                    "callback_data": f"renewal_plans_page_{subscription.pk}_{page + 1}",
+                })
+            rows.append(navigation)
 
         rows.extend(
             [

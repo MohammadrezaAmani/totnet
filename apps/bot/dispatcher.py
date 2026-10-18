@@ -650,6 +650,14 @@ class MultiBrandDispatcher:
                 await handlers["subscriptions"].show_family_subscriptions(callback)
             elif data == "renewal_page":
                 await handlers["subscriptions"].show_renewal_page(callback)
+            elif data.startswith("renewal_plans_page_"):
+                try:
+                    sub_id_text, page_text = data.removeprefix("renewal_plans_page_").split("_", 1)
+                    sub_id, page = int(sub_id_text), int(page_text)
+                except ValueError:
+                    await callback.answer("❌ درخواست نامعتبر است.", show_alert=True)
+                else:
+                    await handlers["subscriptions"].show_renewal_details(callback, sub_id, page=page)
             elif data.startswith("renewal_details_"):
                 sub_id = int(data.removeprefix("renewal_details_"))
                 await handlers["subscriptions"].show_renewal_details(callback, sub_id)
