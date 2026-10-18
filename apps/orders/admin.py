@@ -239,7 +239,7 @@ class CryptoCurrencyAdmin(admin.ModelAdmin):
     )
     list_filter = ("network", "is_active", "auto_convert_to_usd", "brand")
     search_fields = ("brand__name", "name", "symbol")
-    list_editable = ("is_active", "unique_amount_enabled", "display_order")
+    list_editable = ("is_active", "display_order")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
