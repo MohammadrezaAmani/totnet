@@ -29,6 +29,14 @@ async def registration_allowed(brand_id: int, referral_code: str | None = None) 
         return True
     if not referral_code:
         return False
+    if referral_code.startswith('gift_'):
+        from django.utils import timezone
+        from apps.orders.models import GiftVoucher, Order
+        return await GiftVoucher.objects.filter(
+            token=referral_code[5:], order__brand_id=brand_id,
+            claimed_by__isnull=True, expires_at__gt=timezone.now(),
+            order__status__in=[Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED],
+        ).aexists()
     return await ReferralLink.objects.filter(
         brand_id=brand_id,
         is_active=True,

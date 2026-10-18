@@ -27,6 +27,9 @@ def provision_paid_order(order_pk: int):
     except Order.DoesNotExist:
         logger.warning("Provisioning skipped: order %s does not exist", order_pk)
         return False
+    if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
+        logger.info("Gift %s awaiting a recipient", order.pk)
+        return False
     if order.status not in (Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING):
         logger.info("Provisioning skipped for order %s in state %s", order.pk, order.status)
         return False

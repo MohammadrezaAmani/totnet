@@ -160,6 +160,30 @@ def payment_post_save(sender, instance, created, **kwargs):
                     order.status = Order.OrderStatus.PAID
                     order.save(update_fields=["status", "updated_at"])
 
+                # A paid gift without a recipient becomes a redeemable link,
+                # never a provider account owned by its purchaser.
+                if order.order_type == Order.OrderType.GIFT and order.recipient_id is None:
+                    from apps.orders.checkout_links import issue_paid_gift, paid_gift_link
+                    voucher = issue_paid_gift(order_id=order.pk)
+                    if voucher:
+                        link = paid_gift_link(voucher)
+                        message = (
+                            '🎁 هدیه شما آماده است!\n\n'
+                            + (f'لینک دریافت هدیه:\n{link}\n\n' if link else 'نام کاربری ربات در پنل ثبت نشده؛ با پشتیبانی تماس بگیرید.\n')
+                            + f'مهلت دریافت: {timezone.localtime(voucher.expires_at):%Y/%m/%d %H:%M}\n'
+                            + 'کد یک‌بارمصرف است و اولین دریافت‌کننده آن، صاحب اشتراک خواهد شد.'
+                        )
+                        transaction.on_commit(
+                            lambda brand_id=order.brand_id, telegram_id=order.user.telegram_id, msg=message:
+                                broadcast_message(brand_id=brand_id, user_ids=[telegram_id], text=msg)
+                        )
+                    from apps.referrals.services import snapshot_gift_reward
+                    snapshot_gift_reward(order_id=order.pk)
+                    transaction.on_commit(
+                        lambda payment_id=instance.payment_id: _enqueue_referral_reward(payment_id)
+                    )
+                    return
+
                 provider = None
                 if order.plan.vpn_provider_id:
                     provider = VPNProvider.objects.filter(
@@ -363,6 +387,10 @@ def order_completed_post_save(sender, instance, created, **kwargs):
             "Completed order %s is not fully paid; provisioning was not started",
             instance.pk,
         )
+        return
+
+    if instance.order_type == Order.OrderType.GIFT and not instance.recipient_id:
+        # An unclaimed gift must NEVER be provisioned under the purchaser's ID.
         return
 
     subscription = Subscription.objects.filter(order=instance).first()

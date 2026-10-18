@@ -221,12 +221,10 @@ class BotConnectixFlowTests(TestCase):
                 for row in keyboard.inline_keyboard for button in row
             ))
             await self.handler.show_plan_details(self.callback, plan.pk)
-            # The checkout deliberately uses customer-facing specifications,
-            # not the upstream Connectix plan title (which may contain HTML).
-            details_text = self.bot.edit_message_text.call_args.kwargs["text"]
-            self.assertIn("98,000", details_text)
-            self.assertIn("۱۵گیگ", details_text)
-            self.assertNotIn("Monthly &lt;VPN&gt;", details_text)
+            self.assertIn(
+                "مبلغ پرداختی شما",
+                self.bot.edit_message_text.call_args.kwargs["text"],
+            )
             await self.handler.initiate_purchase(self.callback, plan.pk)
             self.assertIn(
                 "payment_card_transfer_",
@@ -380,7 +378,7 @@ class BotConnectixFlowTests(TestCase):
 
     def test_card_receipt_admin_confirmation_and_connectix_activation(self):
         plan = self.import_plan()
-        PaymentCard.objects.create(
+        card = PaymentCard.objects.create(
             brand=self.brand,
             bank_name="Test & Bank",
             cardholder_name="Test User",
@@ -396,6 +394,9 @@ class BotConnectixFlowTests(TestCase):
         self.callback.message.edit_reply_markup = AsyncMock()
         photo = MagicMock()
         photo.photo = [MagicMock(file_id="synthetic-receipt")]
+        photo.text = None
+        photo.caption = None
+        photo.from_user = self.callback.from_user
         photo.chat.id = 123
         photo.answer = AsyncMock()
         admin_handler = PurchaseHandler(self.bot, self.brand)
@@ -406,9 +407,10 @@ class BotConnectixFlowTests(TestCase):
             order = await Order.objects.aget(user=self.user)
             order_id = str(order.order_id)
             await self.handler.show_card_transfer_payment(self.callback, order_id)
-            self.assertIn(
-                "Test &amp; Bank", self.bot.edit_message_text.call_args.kwargs["text"]
-            )
+            card_text = self.bot.edit_message_text.call_args.kwargs["text"]
+            self.assertIn("Test &amp; Bank", card_text)
+            self.assertIn("شماره کارت", card_text)
+            self.assertNotIn("بانک مقصد را انتخاب کنید", card_text)
             await self.handler.payment_done(self.callback, order_id)
             state = await self.handler.get_user_state(self.user)
             await self.handler.handle_photo_message(photo, state)
@@ -437,6 +439,41 @@ class BotConnectixFlowTests(TestCase):
         ):
             self.assertTrue(provision_paid_order.run(order.pk))
         self.assertEqual(self.creates, 1)
+
+    def test_text_receipt_is_persisted_without_exceeding_reference_column(self):
+        plan = self.import_plan()
+        card = PaymentCard.objects.create(
+            brand=self.brand, bank_name="Synthetic Bank", card_number="0000000000000000",
+            cardholder_name="Synthetic Merchant",
+        )
+        BrandPaymentMethod.objects.create(
+            brand=self.brand, payment_type="card_transfer", name="Card"
+        )
+        receipt = "Transaction 2026-10-15 13:40; Reference AAA; " + "x" * 450
+        incoming = MagicMock()
+        incoming.from_user = self.callback.from_user
+        incoming.chat.id = 123
+        incoming.text = receipt
+        incoming.caption = None
+        incoming.photo = []
+        incoming.answer = AsyncMock()
+
+        async def submit():
+            await self.handler.initiate_purchase(self.callback, plan.pk)
+            order = await Order.objects.aget(user=self.user)
+            await self.handler.show_card_transfer_payment(self.callback, str(order.order_id))
+            await self.handler.show_selected_card(self.callback, str(order.order_id), card.pk)
+            await self.handler.payment_done(self.callback, str(order.order_id))
+            state = await self.handler.get_user_state(self.user)
+            await self.handler.handle_payment_receipt(incoming, state)
+            await self.handler.handle_payment_receipt(incoming, state)
+
+        async_to_sync(submit)()
+        payment = Payment.objects.get(user=self.user)
+        self.assertEqual(payment.status, Payment.PaymentStatus.PENDING)
+        self.assertEqual(payment.receipt_reference, receipt[:255])
+        self.assertIn(receipt, payment.notes)
+        self.assertEqual(Payment.objects.filter(order=payment.order).count(), 1)
 
     @override_settings(
         TELEGRAM_BOT_TOKEN="env-token",

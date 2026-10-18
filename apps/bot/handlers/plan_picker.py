@@ -135,7 +135,6 @@ class PlanPickerMixin:
         elif stage == "bundle":
             lines.extend([
                 "\nابتدا مدت زمان و تعداد کاربر مورد نیاز را انتخاب کنید.",
-                "مدت و تعداد کاربر فقط در قیمت اشتراک‌های نامحدود مؤثرند؛ قیمت اشتراک حجمی از فهرست واقعی سرویس خوانده می‌شود.",
                 "\n<b>مدت زمان:</b>",
             ])
             durations = sorted({duration_key(p) for p in volume_plans}, key=self._duration_sort, reverse=True)

@@ -4,6 +4,7 @@ Each brand operates independently with its own configuration
 """
 
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 class Brand(models.Model):
@@ -36,6 +37,11 @@ class Brand(models.Model):
         "ورود کاربران جدید فقط با لینک دعوت",
         default=False,
         help_text="با فعال شدن این گزینه، کاربران جدید فقط با لینک دعوت فعال همین برند وارد می‌شوند. کاربران موجود محدودیتی ندارند.",
+    )
+    gift_expiry_hours = models.PositiveIntegerField(
+        "مهلت استفاده از هدیه (ساعت)", default=72,
+        validators=[MinValueValidator(1), MaxValueValidator(720)],
+        help_text="پیش‌فرض ۷۲ ساعت پس از تأیید کامل پرداخت؛ حداکثر ۷۲۰ ساعت.",
     )
     show_free_plans = models.BooleanField(
         "نمایش پلن‌های رایگان در ربات",

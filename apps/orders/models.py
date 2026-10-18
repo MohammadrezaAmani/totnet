@@ -4,6 +4,7 @@ Supports multiple payment methods: Card Transfer, Online Gateway, Crypto, Telegr
 """
 
 import uuid
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 from django.db import models
 
@@ -234,6 +235,15 @@ class PaymentCard(models.Model):
     card_color = models.CharField(max_length=7, default="#007bff")
 
     is_active = models.BooleanField(default=True)
+    unique_amount_enabled = models.BooleanField(
+        "افزودن شناسه مبلغ برای تطبیق پیامک", default=False,
+        help_text="تنها برای کارت‌های دریافت‌کننده پیامک مجاز؛ تأیید نهایی نیازمند اعتبارسنجی مستقل تراکنش است.",
+    )
+    unique_amount_max_extra = models.PositiveSmallIntegerField(
+        "حداکثر اختلاف مبلغ (تومان)", default=99,
+        validators=[MinValueValidator(1), MaxValueValidator(99)],
+        help_text="عددی بین ۱ تا ۹۹ تومان؛ باید با واحد مبلغ سفارش سازگار باشد.",
+    )
     display_order = models.PositiveIntegerField(default=0)
 
     total_payments = models.PositiveIntegerField(default=0)
@@ -486,3 +496,48 @@ class CouponUsage(models.Model):
     class Meta:
         db_table = "coupon_usages"
         unique_together = ["coupon", "user", "order"]
+
+
+class CardTransferQuote(models.Model):
+    """A durable, unambiguous payable amount per recipient card and unpaid order.
+
+    The unique suffix is only a reconciliation hint, NEVER proof of settled funds.
+    Reservations are retained for seven days after issuance (longer than the
+    payment window), so late bank messages cannot match recent new orders.
+    """
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name="card_quote")
+    card = models.ForeignKey(PaymentCard, on_delete=models.PROTECT, related_name="transfer_quotes")
+    base_amount = models.DecimalField(max_digits=15, decimal_places=2)
+    expected_amount = models.DecimalField(max_digits=15, decimal_places=2)
+    unique_suffix = models.BooleanField(default=False)
+    reserved = models.BooleanField(default=False)
+    release_after = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "card_transfer_quotes"
+        constraints = [models.UniqueConstraint(
+            fields=["card", "expected_amount"], condition=models.Q(reserved=True),
+            name="uniq_card_quote_amount_forever"
+        )]
+
+
+class GiftVoucher(models.Model):
+    """Single-use paid gift link, assigned to the first valid Telegram account."""
+    order = models.OneToOneField(Order, on_delete=models.PROTECT, related_name="gift_voucher")
+    token = models.CharField(max_length=64, unique=True, editable=False)
+    expires_at = models.DateTimeField()
+    claimed_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.PROTECT, related_name="claimed_gift_vouchers"
+    )
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    new_member_at_claim = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "gift_vouchers"
+        indexes = [models.Index(fields=["expires_at", "claimed_at"], name="gift_voucher_expiry_idx")]
+
+    def __str__(self):
+        return f"Gift voucher for {self.order.order_number}"

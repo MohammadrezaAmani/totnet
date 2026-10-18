@@ -17,3 +17,4 @@ backups/
 .docker-build-cache/
 
 media/
+.DS_Store

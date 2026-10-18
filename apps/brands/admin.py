@@ -25,7 +25,7 @@ class BrandPaymentMethodInline(admin.TabularInline):
 
 class BrandPaymentCardInline(admin.TabularInline):
     model = PaymentCard
-    fields = ("bank_name", "card_number", "cardholder_name", "is_active", "display_order")
+    fields = ("bank_name", "card_number", "cardholder_name", "is_active", "unique_amount_enabled", "unique_amount_max_extra", "display_order")
     extra = 0
 
 
@@ -37,7 +37,7 @@ class BrandAdmin(admin.ModelAdmin):
         "slug",
         "domain",
         "bot_username",
-        "show_free_plans",
+        "show_free_plans", "gift_expiry_hours",
         "status",
         "is_verified",
         "commission_rate",

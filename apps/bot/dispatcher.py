@@ -252,13 +252,6 @@ class MultiBrandDispatcher:
                 await handlers["start"].handle_existing_subscription_message(
                     message, user, state
                 )
-            elif (
-                state.current_state == BotState.StateType.PURCHASE_FLOW
-                and (state.state_data or {}).get("step") in {"gift_recipient", "other_recipient"}
-            ):
-                await handlers["purchase"].handle_gift_recipient_message(
-                    message, user, state
-                )
 
             # elif state.current_state == BotState.StateType.SUPPORT_TICKET:
             #     step = (state.state_data or {}).get("step")

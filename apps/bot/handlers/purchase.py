@@ -10,22 +10,24 @@ from html import escape
 from aiogram import types
 from asgiref.sync import sync_to_async
 from django.db.models import Q, Sum
+from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.bot.models import BotState
 from apps.brands.models import BrandConfiguration
-from apps.orders.models import Order, Payment
+from apps.orders.models import Order, Payment, PaymentCard
 from apps.orders.services import WalletCheckoutError, cancel_unpaid_order, pay_order_with_wallet
 from apps.subscriptions.models import Subscription, SubscriptionPlan
 from apps.subscriptions.catalog import get_cached_plans, is_plan_visible_in_bot
-from apps.subscriptions.presentation import compact_plan_specs
+from apps.subscriptions.presentation import compact_plan_specs, connectix_plan_name
 from apps.subscriptions.policy import TEMPORARILY_UNAVAILABLE_TEXT, temporary_duration_blocked
 from apps.subscriptions.tasks import provision_paid_order
 from apps.vpn_providers.models import VPNProvider
 
 from .base import BaseHandler
 from .plan_picker import PlanPickerMixin
+from .useful_content import UsefulContentHandler
 
 logger = logging.getLogger(__name__)
 
@@ -298,33 +300,21 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             },
         )
 
-        text = (
-            f"💊 <b>نام:</b>\n<code>{escape(plan.name)}</code>\n\n"
-            f"🩺 {self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display())}\n\n"
-            f"📋 <b>مشخصات:</b>\n{compact_plan_specs(plan)}\n"
-        )
-
-        if plan.features:
-            text += "\n✨ ویژگی‌ها:\n"
-            for feature in plan.features:
-                text += f"• {escape(str(feature))}\n"
-
-        text += f"\n💰 قیمت: {self.format_price(plan.price, plan.currency)}\n"
-        if plan.discounted_price < plan.price:
-            text += f"🔥 تخفیف: {plan.discount_percentage:g}%\n"
-            text += f"💵 قیمت نهایی: {self.format_price(plan.discounted_price, plan.currency)}\n"
         credit = min(await self.purchase_credit(user, plan.currency), max(plan.discounted_price, 0))
-        text += (
-            f"💊 کسر از موجودی نقد: {self.format_price(credit, plan.currency)}\n"
-            f"💳 مبلغ قابل پرداخت: {self.format_price(self.payable_plan_price(plan, credit), plan.currency)}\n"
+        text = (
+            f"🛒 <b>{escape(self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display()))}</b>\n"
+            f"📋 {compact_plan_specs(plan)}\n\n"
+            f"💳 <b>مبلغ پرداختی شما:</b> {self.format_price(self.payable_plan_price(plan, credit), plan.currency)}\n"
+            f"💰 قیمت بدون احتساب امتیازات نقد: {self.format_price(plan.price, plan.currency)}"
         )
-        text += "\nهدف راه اندازی این سیستم خرید راحت و آزادانه شماست\n"
+        if plan.discounted_price != plan.price:
+            text += f"\n🔥 قیمت با تخفیف عمومی: {self.format_price(plan.discounted_price, plan.currency)}"
 
         keyboard = self.create_keyboard(
             [
                 [
                     {
-                        "text": "🛒 خرید این پلن",
+                        "text": "✅ ادامه و رفتن به خرید",
                         "callback_data": f"purchase_plan_{plan_id}",
                         "style": "success",
                     }
@@ -358,6 +348,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         if purchase_type == "gift":
             await self.show_plan_details(callback, plan_id)
             return
+        if purchase_type == "other" and not (self.brand.bot_username or '').strip():
+            await callback.answer('لینک هدیه فعال نیست؛ نام کاربری ربات در پنل ثبت نشده است.', show_alert=True)
+            return
 
         try:
             plan = await SubscriptionPlan.objects.aget(
@@ -372,28 +365,6 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             return
         if temporary_duration_blocked(plan):
             await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
-            return
-
-        if purchase_type == "other":
-            await self.update_user_state(
-                user,
-                BotState.StateType.PURCHASE_FLOW,
-                {
-                    "step": "other_recipient",
-                    "plan_id": plan.pk,
-                    "purchase_type": purchase_type,
-                    "purchase_message_id": callback.message.message_id,
-                },
-            )
-            await self.edit_message_with_keyboard(
-                callback.message.chat.id,
-                callback.message.message_id,
-                "👤 <b>خرید برای دیگری</b>\n\n"
-                "نام کاربری تلگرام فرد موردنظر را بفرستید (مثلاً @username).\n"
-                "اطلاعات اشتراک پس از خرید برای شما ارسال می‌شود.",
-                self.get_back_keyboard(f"select_plan_{plan.pk}"),
-            )
-            await callback.answer()
             return
 
         order = await Order.objects.acreate(
@@ -411,6 +382,20 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             currency=plan.currency,
             status=Order.OrderStatus.PENDING,
         )
+
+        if order.final_price <= 0 and order.order_type == Order.OrderType.GIFT:
+            from apps.orders.checkout_links import issue_paid_gift, paid_gift_link
+            order.status = Order.OrderStatus.PAID
+            await order.asave(update_fields=['status', 'updated_at'])
+            voucher = await sync_to_async(issue_paid_gift)(order_id=order.pk)
+            link = paid_gift_link(voucher) if voucher else None
+            msg = ('🎁 هدیه آماده شد.\n' + link) if link else '🎁 هدیه ثبت شد؛ نام کاربری ربات باید در پنل تکمیل شود.'
+            await self.edit_message_with_keyboard(
+                callback.message.chat.id, callback.message.message_id, msg,
+                self.get_back_keyboard('purchase_subscription'),
+            )
+            await callback.answer()
+            return
 
         if order.final_price <= 0:
             queued, message = await self._queue_free_order(order)
@@ -593,76 +578,6 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             "پس از آماده‌شدن، پیام تأیید دریافت می‌کنی؛ وضعیت را از «اشتراک‌های من» ببین."
         )
 
-    async def handle_gift_recipient_message(self, message: types.Message, user, state):
-        """Resolve a same-brand Telegram account before creating a gift order."""
-        data = state.state_data or {}
-        if data.get("purchase_type") == "gift":
-            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-            await message.reply("خرید هدیه حذف شده است. از گزینه «خرید برای دیگری» استفاده کنید.")
-            return
-        plan_id = data.get("plan_id")
-        username = (message.text or "").strip().lstrip("@").strip()
-        if not username or not plan_id:
-            await message.reply("نام کاربری معتبر را با @ بفرستید.")
-            return
-        try:
-            plan = await SubscriptionPlan.objects.aget(
-                pk=plan_id,
-                brand=self.brand,
-                is_active=True,
-                is_visible=True,
-            )
-        except SubscriptionPlan.DoesNotExist:
-            await message.reply("این پلن دیگر برای خرید موجود نیست.")
-            return
-        if not await is_plan_visible_in_bot(plan, self.brand.pk):
-            await message.reply("این پلن دیگر برای خرید موجود نیست.")
-            return
-        if temporary_duration_blocked(plan):
-            await message.reply(TEMPORARILY_UNAVAILABLE_TEXT)
-            return
-        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username):
-            await message.reply("نام کاربری معتبر تلگرام گیرنده را با @ ارسال کنید.")
-            return
-        if username.lower() == (message.from_user.username or "").lower():
-            await message.reply("برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید.")
-            return
-        recipient = await User.objects.filter(brand=self.brand, username__iexact=username, is_active=True).afirst()
-        if recipient and recipient.pk == user.pk:
-            await message.reply("برای خرید اشتراک خودتان از گزینه خرید معمولی استفاده کنید.")
-            return
-
-        order = await Order.objects.acreate(
-            brand=self.brand,
-            user=user,
-            recipient=recipient,
-            recipient_telegram_username=username,
-            plan=plan,
-            order_type=Order.OrderType.GIFT,
-            original_price=plan.price,
-            discount_amount=plan.price - plan.discounted_price,
-            final_price=plan.discounted_price,
-            currency=plan.currency,
-            status=Order.OrderStatus.PENDING,
-        )
-        if order.final_price <= 0:
-            _, result_text = await self._queue_free_order(order)
-            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-            await self._replace_recipient_prompt(
-                message, data, result_text,
-                self.create_keyboard([[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}]]),
-            )
-            return
-        text, keyboard = await self._order_payment_content(user, order)
-        await self._replace_recipient_prompt(message, data, text, keyboard)
-
-    async def _replace_recipient_prompt(self, message, data, text, keyboard):
-        prompt_id = data.get("purchase_message_id")
-        if prompt_id:
-            await self.edit_message_with_keyboard(message.chat.id, prompt_id, text, keyboard)
-        else:
-            await self.send_message_with_keyboard(message.chat.id, text, keyboard)
-
     async def show_payment_methods(
         self, callback: types.CallbackQuery, order: Order, *, answer_callback: bool = True
     ):
@@ -674,6 +589,15 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         )
         if answer_callback:
             await callback.answer()
+
+    @staticmethod
+    def _copyable_amount(amount, currency):
+        # Copy only the exact numeric amount; neither group separators nor currency
+        # labels should be pasted into a bank transfer amount field.
+        numeric = f"{amount:.2f}".rstrip("0").rstrip(".")
+        unit = {"T": "تومان", "IRT": "تومان", "IRR": "ریال",
+                "USD": "دلار"}.get(currency, currency)
+        return f"<code>{numeric}</code> {escape(unit)}"
 
     async def _order_payment_content(self, user, order):
         if order.status not in {
@@ -712,25 +636,21 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                     [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
                 ]),
             )
-        paid_line = (
-            f"💊 کسر از موجودی نقد: {self.format_price(wallet_paid, order.currency)}\n"
-            if wallet_paid
-            else ""
+        plan = order.plan
+        plan_code = connectix_plan_name(
+            max_users=plan.max_users, plan_type=plan.plan_type,
+            traffic_limit_gb=plan.traffic_limit_gb,
+            duration_value=plan.duration_value, duration_unit=plan.duration_unit,
+            service_category=plan.service_category,
         )
-        if total_paid > wallet_paid:
-            paid_line += f"پرداخت خارج از کیف پول: {self.format_price(total_paid - wallet_paid, order.currency)}\n"
-        text = f"""
-💳 انتخاب روش پرداخت
-
-سفارش شما: {order.order_number}
-پلن: {escape(order.plan.name)}
-مبلغ کل: {self.format_price(order.final_price, order.currency)}
-{paid_line}مبلغ باقی‌مانده: {self.format_price(remaining_due, order.currency)}
-
-لطفاً روش پرداخت خود را انتخاب کنید:
-        """
-        if order.recipient_telegram_username:
-            text = f"👤 خرید برای @{escape(order.recipient_telegram_username)}\n" + text
+        text = (
+            "💳 <b>انتخاب روش پرداخت</b>\n\n"
+            f"Plan : <code>{escape(plan_code)}</code>\n"
+            f"مبلغ قابل پرداخت: {self._copyable_amount(remaining_due, order.currency)}\n\n"
+            "روش پرداخت را انتخاب کنید:"
+        )
+        if order.order_type == Order.OrderType.GIFT:
+            text = '🎁 <b>خرید هدیه</b>\nلینک یک‌بارمصرف بعد از تأیید پرداخت برای شما فرستاده می‌شود.\n\n' + text
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
@@ -742,9 +662,8 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             for row in keyboard.inline_keyboard for button in row
         ):
             text = text.replace(
-                "لطفاً روش پرداخت خود را انتخاب کنید:",
-                "⚠️ در حال حاضر روش پرداختی فعال نیست.\n"
-                "برای راهنمایی با پشتیبانی هماهنگ کنید.",
+                "روش پرداخت را انتخاب کنید:",
+                "⚠️ در حال حاضر روش پرداختی فعال نیست.\nبرای راهنمایی با پشتیبانی هماهنگ کنید.",
             )
             keyboard.inline_keyboard.insert(0, [types.InlineKeyboardButton(
                 text="🛟 پشتیبانی", callback_data="support"
@@ -785,7 +704,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             keyboard_buttons.append(
                 [
                     {
-                        "text": method.name,
+                        "text": "💳 کارت‌به‌کارت",
                         "callback_data": f"payment_{method.payment_type}_{order.order_id}",
                     }
                 ]
@@ -922,95 +841,63 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             else "✅ پرداخت با موفقیت انجام شد!"
         )
 
-    async def show_card_transfer_payment(
-        self, callback: types.CallbackQuery, order_id: str
-    ):
-        """Show card transfer payment instructions"""
+    async def show_card_transfer_payment(self, callback: types.CallbackQuery, order_id: str):
+        """One card/amount screen after payment method: no intermediate bank menu."""
         user, _ = await self.get_or_create_user(callback.from_user)
-
+        order = await Order.objects.select_related('plan').filter(
+            order_id=order_id, user=user, brand=self.brand,
+            status__in=[Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT],
+        ).afirst()
+        if not order or max(order.final_price - await self._confirmed_order_payments(order), 0) <= 0:
+            await callback.answer('این سفارش قابل پرداخت نیست.', show_alert=True)
+            return
+        if temporary_duration_blocked(order.plan):
+            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
+            return
+        if not await self.brand.payment_methods.filter(
+            payment_type='card_transfer', is_enabled=True,
+        ).aexists():
+            await callback.answer('روش کارت‌به‌کارت فعال نیست.', show_alert=True)
+            return
+        card = await self.brand.payment_cards.filter(is_active=True).order_by('display_order', 'pk').afirst()
+        if not card:
+            await callback.answer('کارت بانکی فعالی ثبت نشده است.', show_alert=True)
+            return
+        from apps.orders.checkout_links import reserve_card_quote, QuoteUnavailable
         try:
-            order = await Order.objects.aget(
-                order_id=order_id, user=user, brand=self.brand
+            quote = await sync_to_async(reserve_card_quote)(
+                order_id=order_id, user_id=user.pk, brand_id=self.brand.pk, card_id=card.pk,
             )
-        except Order.DoesNotExist:
-            await callback.answer("❌ سفارش یافت نشد.", show_alert=True)
+        except (QuoteUnavailable, Order.DoesNotExist, PaymentCard.DoesNotExist) as exc:
+            await callback.answer(str(exc) if isinstance(exc, QuoteUnavailable) else 'اطلاعات پرداخت در دسترس نیست.', show_alert=True)
             return
-
-        cards = []
-        async for card in self.brand.payment_cards.filter(is_active=True).order_by(
-            "display_order"
-        ):
-            cards.append(card)
-
-        if not cards:
-            await callback.answer("❌ کارت بانکی فعالی موجود نیست.", show_alert=True)
-            return
-
-        remaining_due = max(
-            order.final_price - await self._confirmed_order_payments(order), 0
+        await self.update_user_state(user, BotState.StateType.PAYMENT_PROCESS, {
+            'step': PurchaseStep.CARD_TRANSFER, 'order_id': order_id, 'card_id': card.pk,
+            'action': None,
+        })
+        extra = quote.expected_amount - quote.base_amount
+        text = (
+            '💳 <b>کارت‌به‌کارت</b>\n\n'
+            f'💰 مبلغ واریز: {self._copyable_amount(quote.expected_amount, order.currency)}\n'
+            f'🏦 بانک {escape(card.bank_name)}\n'
+            f'💳 شماره کارت: <code>{escape(card.card_number)}</code>\n'
+            f'👤 {escape(card.cardholder_name)}\n\n'
+            'روی مبلغ بزنید تا کپی شود؛ لطفاً دقیقاً همین مبلغ را واریز کنید.\n'
+            'بعد از واریز، رسید متنی یا تصویری را بفرستید.'
         )
-        if remaining_due <= 0:
-            await callback.answer("✅ این سفارش قبلاً تسویه شده است.", show_alert=True)
-            return
-
-        await self.update_user_state(
-            user,
-            BotState.StateType.PAYMENT_PROCESS,
-            {"step": PurchaseStep.CARD_TRANSFER, "order_id": order_id},
-        )
-
-        text = f"""
-💳 پرداخت با کارت بانکی
-
-سفارش: <code>{order.order_number}</code>
-
-مبلغ قابل پرداخت: {self.format_price(remaining_due, order.currency)}
-
-💳 اطلاعات کارت‌های دریافت:
-
-"""
-
-        keyboard_buttons = []
-        for i, card in enumerate(cards):
-            text += f"""
-🏦 {escape(card.bank_name)}
-💳 شماره کارت: <code>{card.card_number}</code> 
-👤 نام صاحب کارت: {escape(card.cardholder_name)}
-
-"""
-        keyboard_buttons.append(
-            [
-                {
-                    "text": "واریز کردم",
-                    "callback_data": f"payment_done_{order_id}",
-                },
-                {
-                    "text": "لغو فرآیند",
-                    "callback_data": f"payment_not_done_{order_id}",
-                },
-            ]
-        )
-
-        text += """
-📤 مراحل پرداخت:
-1️⃣ مبلغ را به یکی از کارت‌های بالا واریز کنید
-2️⃣ عکس رسید واریز را ارسال کنید
-3️⃣ بر روی واریز کردم کلیک کرده و منتظر تایید پرداخت باشید
-        """
-
-        keyboard_buttons.append(
-            [{"text": "🔙 بازگشت", "callback_data": "purchase_subscription"}]
-        )
-        keyboard = self.create_keyboard(keyboard_buttons)
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id,
-            callback.message.message_id,
-            text,
-            keyboard,
-            parse_mode="html",
-        )
+        if extra > 0:
+            text += '\n\nمبلغ شامل یک اختلاف کوچک برای شناسایی آسان‌تر واریز شماست.'
+        kb = self.create_keyboard([
+            [{'text': '✅ واریز کردم', 'callback_data': f'payment_done_{order_id}'}],
+            [{'text': '🔙 روش‌های پرداخت', 'callback_data': f'payment_methods_{order_id}'}],
+        ])
+        await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, kb)
         await callback.answer()
+
+    async def show_selected_card(self, callback: types.CallbackQuery, order_id: str, card_id: int):
+        # Old Telegram keyboards may still exist. Never let them bypass the
+        # currently configured single-card checkout or its reserved quote.
+        await self.show_card_transfer_payment(callback, order_id)
 
     async def create_subscription(self, order: Order):
         """Delegate provisioning to the provider-aware subscription service."""
@@ -1061,24 +948,23 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         await self.update_user_state(
             user,
             BotState.StateType.PAYMENT_PROCESS,
-            {"step": PurchaseStep.WAITING_RECEIPT, "order_id": order_id},
+            {"step": PurchaseStep.WAITING_RECEIPT, "order_id": order_id, "action": None,
+             "card_id": sd["card_id"]},
         )
 
-        text = f"""
-    📤 ارسال رسید پرداخت
-
-    💳 سفارش: {order.order_number}
-    💰 مبلغ: {self.format_price(max(order.final_price - await self._confirmed_order_payments(order), 0), order.currency)}
-
-    📸 لطفاً **عکس رسید واریز** را ارسال کنید.
-
-    ⚠️ دقت کنید:
-    • عکس واضح باشد
-    • مبلغ قابل مشاهده باشد
-    • تاریخ تراکنش مشخص باشد
-    """
+        now = timezone.localtime(timezone.now()).strftime("%Y/%m/%d - %H:%M")
+        text = (
+            "📤 <b>ارسال رسید پرداخت</b>\n\n"
+            "رسید متنی یا عکس واضح تراکنش را ارسال کنید.\n"
+            "تاریخ و ساعت واریز باید در رسید قابل مشاهده باشد.\n"
+            f"🕐 زمان ثبت درخواست: <code>{now}</code>\n\n"
+            "تا زمان تأیید تراکنش و ارسال/تمدید اشتراک شما، "
+            "می‌توانید محتواهای کاربردی آکادمی را مطالعه کنید."
+        )
         keyboard = self.create_keyboard(
             [
+                *[[{"text": label, "callback_data": f"useful_category_{key}"}]
+                  for key, label in UsefulContentHandler.CATEGORY_LABELS.items()],
                 [
                     {
                         "text": "❌ لغو پرداخت",
@@ -1091,7 +977,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
-        await callback.answer("📸 منتظر دریافت عکس رسید هستیم")
+        await callback.answer("منتظر دریافت رسید هستیم")
 
     async def payment_not_done(self, callback: types.CallbackQuery, order_id: str):
         """Cancel payment flow"""
@@ -1138,121 +1024,101 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
 
         await callback.answer("❌ پرداخت لغو شد")
 
-    async def handle_photo_message(
-        self,
-        message: types.Message,
-        state: BotState,
-    ):
-        user, _ = await self.get_or_create_user(message.from_user)
+    async def handle_photo_message(self, message: types.Message, state: BotState):
+        """Legacy entry point, accepts image or text using a shared guarded service."""
+        await self.handle_payment_receipt(message, state)
 
-        if state.current_state != BotState.StateType.PAYMENT_PROCESS:
-            await message.answer("❌ این پیام در این مرحله قابل قبول نیست.")
-            return
-
-        sd = state.state_data or {}
-        if sd.get("step") != PurchaseStep.WAITING_RECEIPT:
-            await message.answer("❌ در حال حاضر منتظر رسید نیستیم.")
-            return
-
-        order_id = sd.get("order_id")
-        if not order_id:
-            await message.answer("❌ اطلاعات سفارش ناقص است.")
-            return
-
-        if not message.photo:
-            await message.answer("❌ لطفاً فقط عکس رسید را ارسال کنید.")
-            return
-
-        try:
-            order = await Order.objects.aget(
-                order_id=order_id, user=user, brand=self.brand
+    @staticmethod
+    @sync_to_async
+    def _record_card_receipt(*, order_id, user_id, brand_id, card_id, receipt_text, file_id):
+        """Serialize concurrent submissions and store exactly one pending receipt."""
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(
+                order_id=order_id, user_id=user_id, brand_id=brand_id,
             )
-        except Order.DoesNotExist:
-            await message.answer("❌ سفارش معتبر نیست.")
+            if order.status not in (Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT):
+                raise ValueError("سفارش دیگر برای پرداخت فعال نیست.")
+            if Payment.objects.filter(order=order, payment_method=Payment.PaymentMethod.CARD_TRANSFER,
+                                      status__in=[Payment.PaymentStatus.PENDING,
+                                                  Payment.PaymentStatus.CONFIRMED]).exists():
+                raise ValueError("رسید این سفارش قبلاً دریافت شده است.")
+            total = Payment.objects.filter(order=order, status=Payment.PaymentStatus.CONFIRMED).aggregate(
+                total=Sum("amount"))["total"] or 0
+            due = max(order.final_price - total, 0)
+            if due <= 0:
+                raise ValueError("سفارش تسویه شده است.")
+            card = PaymentCard.objects.filter(pk=card_id, brand_id=brand_id, is_active=True).first()
+            if not card:
+                raise ValueError("کارت مقصد دیگر فعال نیست؛ بانک دیگری انتخاب کنید.")
+            from apps.orders.models import CardTransferQuote
+            quote = CardTransferQuote.objects.select_for_update().filter(
+                order=order, card=card, expires_at__gt=timezone.now(),
+            ).first()
+            if quote is None or quote.base_amount != due:
+                raise ValueError('مبلغ معتبر این سفارش منقضی یا تغییر کرده است؛ دوباره وارد صفحه پرداخت شوید.')
+            payment = Payment.objects.create(
+                order=order, brand_id=brand_id, user_id=user_id,
+                payment_method=Payment.PaymentMethod.CARD_TRANSFER,
+                amount=quote.expected_amount, currency=order.currency,
+                status=Payment.PaymentStatus.PENDING,
+                receipt_file=file_id or "", receipt_reference=(receipt_text[:255] or None),
+                card_number=card.card_number, cardholder_name=card.cardholder_name,
+                notes=f"Destination bank: {card.bank_name}\nReceipt: {receipt_text}",
+            )
+            order.status = Order.OrderStatus.PROCESSING
+            order.save(update_fields=["status", "updated_at"])
+            return payment
+
+    async def handle_payment_receipt(self, message: types.Message, state: BotState):
+        user, _ = await self.get_or_create_user(message.from_user)
+        sd = state.state_data or {}
+        if (state.current_state != BotState.StateType.PAYMENT_PROCESS or
+            sd.get("step") != PurchaseStep.WAITING_RECEIPT or not sd.get("card_id")):
+            await message.answer("برای ارسال رسید ابتدا روش کارت‌به‌کارت را انتخاب کنید.")
             return
-
-        if order.status not in (
-            Order.OrderStatus.PENDING,
-            Order.OrderStatus.AWAITING_PAYMENT,
-        ):
-            await message.answer("❌ این سفارش دیگر قابل پرداخت نیست.")
+        receipt_text = (message.text or message.caption or "").strip()
+        file_id = message.photo[-1].file_id if message.photo else ""
+        if not file_id and (len(receipt_text) < 10 or len(receipt_text) > 2000):
+            await message.answer("رسید متنی باید شامل جزئیات تراکنش (۱۰ تا ۲۰۰۰ نویسه) یا عکس باشد.")
             return
-
-        existing = await Payment.objects.filter(
-            order=order,
-            payment_method=Payment.PaymentMethod.CARD_TRANSFER,
-            status__in=[
-                Payment.PaymentStatus.PENDING,
-                Payment.PaymentStatus.CONFIRMED,
-            ],
-        ).afirst()
-        if existing:
-            await message.answer("⏳ رسید قبلاً دریافت شده و در حال بررسی است.")
+        try:
+            payment = await self._record_card_receipt(
+                order_id=sd.get("order_id"), user_id=user.pk, brand_id=self.brand.pk,
+                card_id=sd["card_id"], receipt_text=receipt_text[:2000], file_id=file_id,
+            )
+        except (Order.DoesNotExist, ValueError) as exc:
+            await message.answer(escape(str(exc)))
             return
-
-        remaining_due = max(
-            order.final_price - await self._confirmed_order_payments(order), 0
-        )
-        if remaining_due <= 0:
-            await message.answer("✅ این سفارش قبلاً تسویه شده است.")
-            return
-
-        photo = message.photo[-1]
-        file_id = photo.file_id
-
-        payment = await Payment.objects.acreate(
-            order=order,
-            brand=self.brand,
-            user=user,
-            payment_method=Payment.PaymentMethod.CARD_TRANSFER,
-            amount=remaining_due,
-            currency=order.currency,
-            status=Payment.PaymentStatus.PENDING,
-            receipt_file=file_id,
-        )
-
-        order.status = Order.OrderStatus.PROCESSING
-        await order.asave()
-
-        await self.update_user_state(
-            user,
-            BotState.StateType.PAYMENT_PROCESS,
-            {
-                "step": PurchaseStep.UNDER_REVIEW,
-                "order_id": order_id,
-                "payment_id": str(payment.id),
-            },
-        )
-
-        text = (
-            "✅ رسید دریافت شد\n"
-            "⏳ پرداخت شما در صف بررسی توسط ادمین قرار گرفت.\n"
-            "به محض تأیید، اشتراک شما فعال خواهد شد."
-        )
-        keyboard = self.create_keyboard(
-            [
-                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
-            ]
-        )
-
-        await self.send_message_with_keyboard(message.chat.id, text, keyboard)
-
+        await self.update_user_state(user, BotState.StateType.PAYMENT_PROCESS, {
+            "step": PurchaseStep.UNDER_REVIEW, "order_id": sd["order_id"],
+            "payment_id": str(payment.pk),
+        })
+        at = timezone.localtime(payment.created_at).strftime("%Y/%m/%d - %H:%M")
+        keyboard = self.create_keyboard([
+            *[[{"text": label, "callback_data": f"useful_category_{key}"}]
+              for key, label in UsefulContentHandler.CATEGORY_LABELS.items()],
+            [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+        ])
+        await self.send_message_with_keyboard(message.chat.id,
+            f"✅ رسید دریافت شد.\n🕐 تاریخ و ساعت ثبت: <code>{at}</code>\n"
+            "⏳ در انتظار بررسی تراکنش توسط ادمین.\n\n"
+            "تا زمان تأیید تراکنش و ارسال/تمدید اشتراک شما، "
+            "عالی می‌شود اگر از منوی آکادمی محتواهای کاربردی را مطالعه کنید.", keyboard)
+        order = await Order.objects.select_related("plan").aget(pk=payment.order_id)
         notified = await self._notify_admin_receipt(order, payment, file_id)
         if not notified:
-            await self.send_message_with_keyboard(
-                message.chat.id,
-                "⚠️ رسید ذخیره شد، اما اعلان برای ادمین ارسال نشد. لطفاً با پشتیبانی تماس بگیرید.",
-                keyboard,
-            )
+            await message.answer("⚠️ رسید ذخیره شد، اما اعلان ادمین ارسال نشد. لطفاً با پشتیبانی تماس بگیرید.")
 
     async def _notify_admin_receipt(
         self, order: Order, payment: Payment, file_id: str
     ) -> bool:
         """ارسال رسید به ادمین برای تأیید/رد"""
         admin_text = (
-            f"🧾 رسید جدید\n"
-            f"سفارش: {order.order_number}\n"
+            f"🧾 رسید جدید\nسفارش: {escape(order.order_number)}\n"
             f"مبلغ: {self.format_price(payment.amount, order.currency)}\n"
+            f"تاریخ ثبت: {timezone.localtime(payment.created_at).strftime('%Y/%m/%d %H:%M')}\n"
+            f"بانک/کارت مقصد: <code>{escape(payment.card_number or '')}</code>\n"
+            f"متن رسید: {escape((payment.receipt_reference or 'رسید تصویری')[:100])}\n"
             f"payment_id: {payment.id}"
         )
         admin_kb = self.create_keyboard(
@@ -1273,12 +1139,13 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         notified = 0
         async for user in self.get_brand_admin_recipients():
             try:
-                await self.bot.send_photo(
-                    chat_id=user.telegram_id,
-                    photo=file_id,
-                    caption=admin_text,
-                    reply_markup=admin_kb,
-                )
+                if file_id:
+                    await self.bot.send_photo(chat_id=user.telegram_id, photo=file_id,
+                                              caption=admin_text, reply_markup=admin_kb,
+                                              parse_mode="HTML")
+                else:
+                    await self.bot.send_message(chat_id=user.telegram_id, text=admin_text,
+                                                reply_markup=admin_kb, parse_mode="HTML")
                 notified += 1
             except Exception:
                 logger.exception("Failed to send receipt notification to admin %s", user.pk)

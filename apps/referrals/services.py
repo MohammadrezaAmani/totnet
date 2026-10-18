@@ -1069,6 +1069,12 @@ def snapshot_gift_reward(*, order_id: int):
 def award_claimed_gift(*, order_id: int) -> Decimal:
     """Credit the purchaser once, only after the intended recipient claims the gift."""
     order = Order.objects.select_for_update(of=("self",)).select_related("recipient").get(pk=order_id)
+    # Gifts to existing members do not create a fresh invitation or referral
+    # reward; only genuinely new membership via this gift link is eligible.
+    from apps.orders.models import GiftVoucher
+    if not GiftVoucher.objects.filter(order=order, claimed_by_id=order.recipient_id,
+                                       new_member_at_claim=True).exists():
+        return Decimal(0)
     if (order.order_type != Order.OrderType.GIFT or not order.recipient_claimed_at or not order.recipient_id
         or order.recipient_id == order.user_id or order.final_price <= 0
         or order.status not in {Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED}
@@ -1092,15 +1098,8 @@ def award_claimed_gift(*, order_id: int) -> Decimal:
     referral = Referral.objects.filter(referee=recipient, brand_id=order.brand_id).first()
     if recipient.brand_id != order.brand_id or not recipient.telegram_id:
         return Decimal(0)
-    if referral is None:
-        link, _ = ReferralLink.objects.get_or_create(user_id=order.user_id, brand_id=order.brand_id, is_default=True)
-        referral = Referral.objects.create(referrer_id=order.user_id, referee=recipient, brand_id=order.brand_id, referral_link=link, status=Referral.ReferralStatus.PENDING)
-        # Membership, rather than delayed processing, defines newcomer eligibility.
-        Referral.objects.filter(pk=referral.pk).update(created_at=recipient.created_at)
-        referral.created_at = recipient.created_at
-        User.objects.filter(pk=recipient.pk, referred_by__isnull=True).update(referred_by_id=order.user_id)
-        User.objects.filter(pk=order.user_id).update(referral_count=F("referral_count") + 1)
-        ReferralLink.objects.filter(pk=link.pk).update(conversion_count=F("conversion_count") + 1)
+    # An existing recipient must not become a new referral simply by claiming
+    # a gift. New recipients are attributed atomically during /start claim.
     matching_referral = referral if referral.referrer_id == order.user_id else None
     if matching_referral and order.gift_reward_challenge_id:
         from .gamification import maybe_record_challenge_referral

@@ -15,6 +15,8 @@ from .models import (
     Order,
     Payment,
     PaymentCard,
+    CardTransferQuote,
+    GiftVoucher,
     PaymentGateway,
     Wallet,
     WalletTransaction,
@@ -185,13 +187,15 @@ class PaymentCardAdmin(admin.ModelAdmin):
         "cardholder_name",
         "card_type",
         "is_active",
+        "unique_amount_enabled",
+        "unique_amount_max_extra",
         "display_order",
         "total_payments",
         "last_used",
     )
     list_filter = ("is_active", "brand")
     search_fields = ("brand__name", "bank_name", "cardholder_name")
-    list_editable = ("is_active", "display_order")
+    list_editable = ("is_active", "unique_amount_enabled", "display_order")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -235,7 +239,7 @@ class CryptoCurrencyAdmin(admin.ModelAdmin):
     )
     list_filter = ("network", "is_active", "auto_convert_to_usd", "brand")
     search_fields = ("brand__name", "name", "symbol")
-    list_editable = ("is_active", "display_order")
+    list_editable = ("is_active", "unique_amount_enabled", "display_order")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -331,3 +335,51 @@ class CouponUsageAdmin(admin.ModelAdmin):
     list_filter = ("coupon", "user")
     search_fields = ("coupon__code", "user__username")
     date_hierarchy = "used_at"
+
+
+@admin.register(CardTransferQuote)
+class CardTransferQuoteAdmin(admin.ModelAdmin):
+    list_display = ("order", "card", "base_amount", "expected_amount", "expires_at", "created_at")
+    readonly_fields = ("order", "card", "base_amount", "expected_amount", "expires_at", "created_at")
+    list_filter = ("card__brand", "created_at")
+    search_fields = ("order__order_number", "card__card_number")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs if request.user.is_superuser else qs.filter(card__brand__in=request.user.admin_brands.all())
+
+
+@admin.register(GiftVoucher)
+class GiftVoucherAdmin(admin.ModelAdmin):
+    list_display = ("order", "expires_at", "claimed_by", "claimed_at", "new_member_at_claim", "created_at")
+    readonly_fields = ("order", "gift_link", "expires_at", "claimed_by", "claimed_at", "new_member_at_claim", "created_at")
+    search_fields = ("order__order_number",)
+
+    @admin.display(description='لینک هدیه')
+    def gift_link(self, obj):
+        from apps.orders.checkout_links import paid_gift_link
+        link = paid_gift_link(obj) if obj and obj.pk else None
+        return link or 'نام کاربری ربات در تنظیمات برند ثبت نشده است.'
+    list_filter = ("order__brand", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs if request.user.is_superuser else qs.filter(order__brand__in=request.user.admin_brands.all())

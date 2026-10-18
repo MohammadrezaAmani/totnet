@@ -29,6 +29,9 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
     order = await Order.objects.select_related(
         "brand", "user", "recipient", "plan", "plan__vpn_provider"
     ).aget(pk=order_id)
+    if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
+        logger.warning("Unclaimed gift %s cannot be provisioned", order.pk)
+        return None
     subscription = await Subscription.objects.filter(order=order).select_related(
         "vpn_provider", "plan", "owner"
     ).afirst()

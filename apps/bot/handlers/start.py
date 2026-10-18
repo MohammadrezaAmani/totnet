@@ -49,13 +49,26 @@ class StartHandler(BaseHandler):
             await message.answer(INVITE_REQUIRED_MESSAGE)
             return
 
-        if referral_code:
+        gift_feedback = None
+        if referral_code and referral_code.startswith('gift_'):
+            from apps.orders.checkout_links import claim_gift, GiftClaimError
+            try:
+                gift_order = await sync_to_async(claim_gift)(
+                    token=referral_code[5:], brand_id=self.brand.pk,
+                    user_id=user.pk, newly_registered=created,
+                )
+                gift_feedback = '🎁 هدیه شما با موفقیت ثبت شد و در صف فعال‌سازی قرار گرفت.'
+            except GiftClaimError as exc:
+                gift_feedback = f'❌ {escape(str(exc))}'
+        elif referral_code:
             await self.process_referral_safely(user, referral_code, created)
 
         if created:
             await self.show_profile_setup(chat_id, user)
         else:
             await self.show_main_menu(chat_id, user)
+        if gift_feedback:
+            await message.answer(gift_feedback)
 
     async def process_referral_safely(self, user: User, referral_code: str, created=False):
         """Process referral registration safely using sync_to_async for all DB ops"""
