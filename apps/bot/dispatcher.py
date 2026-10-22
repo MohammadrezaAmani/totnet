@@ -211,6 +211,25 @@ class MultiBrandDispatcher:
         ):
             observer.outer_middleware(admission)
 
+        @router.chat_join_request()
+        async def handle_channel_join_request(join_request):
+            # Explicit opt-in. The bot must be admin with can_invite_users rights.
+            from apps.accounts.models import User, UserProfile
+            from apps.brands.models import BrandConfiguration
+            config = await BrandConfiguration.objects.filter(brand_id=brand.pk).afirst()
+            custom = config.custom_fields if config and isinstance(config.custom_fields, dict) else {}
+            if not custom.get("auto_approve_join_requests"):
+                return
+            if str(join_request.chat.id) != str(custom.get("required_channel_id")):
+                return
+            requester = await User.objects.filter(brand_id=brand.pk, telegram_id=join_request.from_user.id).afirst()
+            if not requester or not await UserProfile.objects.filter(user=requester, channel_join_required=True).aexists():
+                return
+            try:
+                await join_request.approve()
+            except Exception as exc:
+                logger.warning("Channel join approval failed for brand %s (%s)", brand.pk, type(exc).__name__)
+
         @router.message(CommandStart())
         async def start_command(message: Message, command: Command):
             await handlers["start"].handle_start_command(message, command)
@@ -235,6 +254,8 @@ class MultiBrandDispatcher:
         async def handle_text_messages(message: Message):
             user, _ = await handlers["start"].get_or_create_user(message.from_user)
             state = await handlers["start"].get_user_state(user)
+            if await handlers["start"].show_channel_gate_if_required(message.chat.id, user):
+                return
 
             if state.current_state == "profile_setup":
                 await handlers["start"].handle_profile_setup_message(
@@ -245,6 +266,11 @@ class MultiBrandDispatcher:
                 await handlers["profile"].handle_profile_field_message(
                     message, user, state
                 )
+            elif (
+                state.current_state == BotState.StateType.SUBSCRIPTION_MANAGEMENT
+                and (state.state_data or {}).get("step") == "rename_subscription"
+            ):
+                await handlers["subscriptions"].handle_rename_message(message, user, state)
             elif (
                 state.current_state == BotState.StateType.SUBSCRIPTION_MANAGEMENT
                 and (state.state_data or {}).get("step") == "claim_existing_subscription"
@@ -288,6 +314,10 @@ class MultiBrandDispatcher:
                     await handlers["wallet"].handle_txid_message(message, user, state)
                 elif action == "wallet_coupon" and step == "waiting_coupon":
                     await handlers["wallet"].handle_coupon_message(message, user, state)
+                elif action == "purchase_coupon" and step == "waiting_purchase_coupon":
+                    await handlers["purchase"].handle_purchase_coupon_message(message, user, state)
+                elif not action and step == PurchaseStep.WAITING_RECEIPT:
+                    await handlers["purchase"].handle_payment_receipt(message, state)
 
             # در متد handle_photo_messages اضافه کنید:
 
@@ -406,6 +436,12 @@ class MultiBrandDispatcher:
             if admin_handler is not None and await admin_handler.handle_control_callback(callback, user):
                 return
             data = callback.data
+            if data == "verify_channel_join":
+                await handlers["start"].verify_channel_join(callback)
+                return
+            if await handlers["start"].show_channel_gate_if_required(callback.message.chat.id, user):
+                await callback.answer("ابتدا عضویت کانال را کامل کنید.", show_alert=True)
+                return
 
             if data == "main_menu":
                 await handlers["start"].update_user_state(user, BotState.StateType.MAIN_MENU)
@@ -420,13 +456,17 @@ class MultiBrandDispatcher:
                 await handlers["profile"].begin_completion(callback)
             elif data == "edit_profile":
                 await handlers["profile"].edit_profile(callback)
+            elif data == "edit_gender":
+                await handlers["profile"].show_gender_options(callback)
+            elif data.startswith("set_gender_"):
+                await handlers["profile"].set_gender(callback, data.removeprefix("set_gender_"))
             elif data == "edit_device":
                 await handlers["profile"].show_device_options(callback)
             elif data.startswith("set_device_"):
                 await handlers["profile"].set_device_type(
                     callback, data.removeprefix("set_device_")
                 )
-            elif data in ["edit_full_name", "edit_birth_date", "edit_phone", "edit_locations", "edit_email"]:
+            elif data in ["edit_full_name", "edit_birth_date", "edit_phone", "edit_locations"]:
                 field = data.replace("edit_", "")
                 await handlers["profile"].request_field_update(callback, field)
             elif data.startswith("setup_device_"):
@@ -481,6 +521,10 @@ class MultiBrandDispatcher:
             elif data.startswith("select_plan_"):
                 plan_id = int(data.split("_")[2])
                 await handlers["purchase"].show_plan_details(callback, plan_id)
+            elif data.startswith("purchase_coupon_"):
+                await handlers["purchase"].request_purchase_coupon(
+                    callback, data.removeprefix("purchase_coupon_")
+                )
             elif data.startswith("purchase_plan_"):
                 plan_id = int(data.split("_")[2])
                 await handlers["purchase"].initiate_purchase(callback, plan_id)
@@ -650,6 +694,13 @@ class MultiBrandDispatcher:
                 await handlers["subscriptions"].show_family_subscriptions(callback)
             elif data == "renewal_page":
                 await handlers["subscriptions"].show_renewal_page(callback)
+            elif data.startswith("rename_subscription_"):
+                try:
+                    sub_id = int(data.removeprefix("rename_subscription_"))
+                except ValueError:
+                    await callback.answer("❌ درخواست نامعتبر است.", show_alert=True)
+                else:
+                    await handlers["subscriptions"].start_rename_subscription(callback, sub_id)
             elif data.startswith("renewal_plans_page_"):
                 try:
                     sub_id_text, page_text = data.removeprefix("renewal_plans_page_").split("_", 1)

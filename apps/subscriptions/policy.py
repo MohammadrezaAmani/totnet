@@ -64,4 +64,14 @@ def effective_reward_percent(order, configured_percent):
         and plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED
     ):
         return Decimal("4")
+    from apps.referrals.models import ServiceRewardRate
+    override = (ServiceRewardRate.objects.filter(
+        brand_id=order.brand_id,
+        service_category=plan.service_category,
+        plan_type__in=[plan.plan_type, "all"],
+        is_active=True,
+    ).order_by("-plan_type").first())
+    # Prefer an exact type override over a category-wide default.
+    if override:
+        return Decimal(override.percent)
     return Decimal(configured_percent)

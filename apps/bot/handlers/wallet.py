@@ -126,30 +126,26 @@ class WalletHandler(BaseHandler):
         total_deposits = await self._calculate_total_by_type(
             wallet, WalletTransaction.TransactionType.DEPOSIT
         )
-        total_spent = await self._calculate_total_by_type(
-            wallet, WalletTransaction.TransactionType.PAYMENT
-        )
-        total_bonuses = await self._calculate_total_by_type(
-            wallet, WalletTransaction.TransactionType.BONUS
-        )
 
         symbol = self._get_currency_symbol(wallet.currency)
 
+        # The existing single-pool wallet does not mark which part of a
+        # withdrawal came from earned rewards versus direct deposits. Do not
+        # mislabel *all* wallet payments as redeemed bonus discounts.
         text = f"""
 <b>💰 کیف پول من</b>
 ━━━━━━━━━━━━━━━━━━━━━━
-
-💵 <b>موجودی فعلی:</b>
-<code>{wallet.balance:,.2f}</code> {symbol}
+💵 <b>موجودی نقد فعلی:</b> <code>{self.format_price(wallet.balance, wallet.currency)}</code>
 
 📊 <b>آمار حساب:</b>
-├ 📥 مجموع واریزها: <code>{total_deposits:,.2f}</code> {symbol}
-├ 📤 مجموع خریدها: <code>{total_spent:,.2f}</code> {symbol}
-├ 🎁 مجموع جوایز: <code>{total_bonuses:,.2f}</code> {symbol}
-└ {status_icon} وضعیت: {status_text}
+📥 مجموع واریزهای مستقیم: <code>{self.format_price(total_deposits, wallet.currency)}</code>
+🎁 جمع کل امتیازات نقدی خرج‌شده: نیازمند تفکیک منبع هزینه در دفترکل
+{status_icon} وضعیت: {status_text}
 
-📅 تاریخ عضویت: <code>{self._format_persian_date(wallet.created_at)}</code>
+با معرفی نزدیکان خود کاهش هزینه دائمی داشته باشید!
 """
+
+        text = await self.section_intro_once(user, "wallet", "اعتبار نقدی شما هنگام خرید از مبلغ اشتراک کسر می‌شود.") + text
 
         # Add recent transactions
         if recent_transactions:
@@ -159,8 +155,8 @@ class WalletHandler(BaseHandler):
                 icon = self._get_transaction_icon(trans.transaction_type)
                 delta = trans.balance_after - trans.balance_before
                 sign = "+" if delta >= 0 else "-"
-                amount_str = f"{sign}{abs(trans.amount):,.2f}"
-                date_str = trans.created_at.strftime("%m/%d %H:%M")
+                amount_str = f"{sign}{self.format_price(abs(trans.amount), wallet.currency)}"
+                date_str = self._format_persian_date(trans.created_at)
                 description = self._truncate_text(trans.description or "تراکنش", 18)
 
                 text += f"│ {icon} <code>{amount_str:>11}</code> {symbol}\n"
@@ -241,7 +237,7 @@ class WalletHandler(BaseHandler):
 ━━━━━━━━━━━━━━━━━━━━━━
 
 📊 <b>خلاصه حساب:</b>
-├ 💰 موجودی: <code>{wallet.balance:,.2f}</code> {symbol}
+├ 💰 موجودی: <code>{self.format_price(wallet.balance, wallet.currency)}</code>
 ├ 📥 واریزها: <code>{total_deposits:,.2f}</code>
 ├ 📤 خریدها: <code>{total_spent:,.2f}</code>
 └ 🎁 جوایز: <code>{total_bonuses:,.2f}</code>
@@ -256,8 +252,8 @@ class WalletHandler(BaseHandler):
                 icon = self._get_transaction_icon(trans.transaction_type)
                 delta = trans.balance_after - trans.balance_before
                 sign = "+" if delta >= 0 else "-"
-                amount_str = f"{sign}{abs(trans.amount):,.2f}"
-                date_str = trans.created_at.strftime("%Y/%m/%d - %H:%M")
+                amount_str = f"{sign}{self.format_price(abs(trans.amount), wallet.currency)}"
+                date_str = self._format_persian_date(trans.created_at)
                 description = trans.description or "تراکنش"
                 type_display = trans.get_transaction_type_display()
 
@@ -747,7 +743,7 @@ class WalletHandler(BaseHandler):
 
 💰 مبلغ: <code>{amount:,.2f}</code> {symbol}
 📋 شناسه پرداخت: <code>{str(payment.payment_id)[:8]}...</code>
-📅 زمان ثبت: <code>{timezone.now().strftime("%Y/%m/%d - %H:%M")}</code>
+📅 زمان ثبت: <code>{self._format_persian_date(timezone.now())}</code>
 
 ⏳ <b>وضعیت:</b> در انتظار تأیید ادمین
 
@@ -1691,10 +1687,8 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         return f"{amount:,.2f}"
 
     def _format_persian_date(self, dt) -> str:
-        """Format date in Persian style"""
-        if dt:
-            return dt.strftime("%Y/%m/%d")
-        return "نامشخص"
+        from utils.jalali import jalali_date
+        return jalali_date(dt, time=True)
 
     def _truncate_text(self, text: str, max_length: int) -> str:
         """Truncate text with ellipsis"""

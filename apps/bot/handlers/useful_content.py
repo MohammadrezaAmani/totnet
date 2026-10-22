@@ -42,6 +42,8 @@ class UsefulContentHandler(BaseHandler):
         await callback.answer()
 
     async def show_menu(self, callback):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        intro = await self.section_intro_once(user, "academy", "آموزش‌ها و راهنماهای این بخش برای استفاده بهتر از سرویس هستند.")
         rows = [
             [{"text": label, "callback_data": f"useful_category_{key}"}]
             for key, label in self.CATEGORY_LABELS.items()
@@ -49,7 +51,7 @@ class UsefulContentHandler(BaseHandler):
         rows.append([{"text": "🔙 بازگشت", "callback_data": "main_menu"}])
         await self._render(
             callback,
-            "📚 <b>آکادمی(محتواهای کاربردی)</b>\n\nبخش موردنظر را انتخاب کنید:",
+            intro + "📚 <b>آکادمی(محتواهای کاربردی)</b>\n\nبخش موردنظر را انتخاب کنید:",
             rows,
         )
 

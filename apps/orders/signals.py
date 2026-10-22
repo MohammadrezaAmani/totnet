@@ -5,6 +5,7 @@ from django.db.models import Sum
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
+from utils.jalali import jalali_date
 
 from apps.orders.models import Order, Payment, Wallet, WalletTransaction
 from apps.subscriptions.models import Subscription
@@ -170,7 +171,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                         message = (
                             '🎁 هدیه شما آماده است!\n\n'
                             + (f'لینک دریافت هدیه:\n{link}\n\n' if link else 'نام کاربری ربات در پنل ثبت نشده؛ با پشتیبانی تماس بگیرید.\n')
-                            + f'مهلت دریافت: {timezone.localtime(voucher.expires_at):%Y/%m/%d %H:%M}\n'
+                            + f'مهلت دریافت: {jalali_date(voucher.expires_at, time=True)}\n'
                             + 'کد یک‌بارمصرف است و اولین دریافت‌کننده آن، صاحب اشتراک خواهد شد.'
                         )
                         transaction.on_commit(

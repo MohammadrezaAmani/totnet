@@ -19,6 +19,34 @@ class NotificationTrigger(models.TextChoices):
     LAST_PURCHASE = "last_purchase", "هر خرید کاملاً پرداخت‌شده"
 
 
+class ServiceRewardRate(models.Model):
+    """Optional per-service purchase-reward override, isolated per brand.
+
+    Royal unlimited always uses the mandatory 4% policy and cannot be
+    overridden here. All other plans fall back to program/challenge rates.
+    """
+    brand = models.ForeignKey("brands.Brand", on_delete=models.CASCADE, related_name="service_reward_rates")
+    service_category = models.CharField(
+        max_length=20, choices=[("normal", "Normal"), ("royal", "Royal"), ("iran_ip", "Iran IP")]
+    )
+    plan_type = models.CharField(
+        max_length=20, choices=[("all", "All plan types"), ("unlimited", "Unlimited"),
+                                ("traffic_based", "Traffic"), ("time_based", "Time"), ("hybrid", "Hybrid")],
+        default="all",
+    )
+    percent = models.DecimalField(max_digits=5, decimal_places=2)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "service_reward_rates"
+        constraints = [models.UniqueConstraint(fields=["brand", "service_category", "plan_type"], name="unique_brand_service_reward_rate")]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.percent is not None and not 0 < self.percent <= 100:
+            raise ValidationError({"percent": "درصد باید بیشتر از صفر و حداکثر صد باشد."})
+
+
 class ReferralProgram(models.Model):
     """Brand-specific referral program configuration"""
 

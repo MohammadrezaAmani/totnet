@@ -25,6 +25,8 @@ from apps.subscriptions.policy import TEMPORARILY_UNAVAILABLE_TEXT, temporary_du
 from apps.subscriptions.tasks import provision_paid_order
 from apps.vpn_providers.models import VPNProvider
 
+from utils.jalali import jalali_date
+
 from .base import BaseHandler
 from .plan_picker import PlanPickerMixin
 from .useful_content import UsefulContentHandler
@@ -95,8 +97,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             currency: await self.purchase_credit(user, currency)
             for currency in {p.currency for p in plans}
         }
-        if any(credits.values()):
-            text += "\n💰 مبالغ پلن‌ها پس از کسر موجودی نقد قابل‌استفاده شماست."
+        text += "\n💰 قیمت‌های فهرست پس از کسر اعتبار نقد قابل‌استفاده شما نمایش داده می‌شوند."
         for plan in plans:
             plan_text = compact_plan_specs(plan)
             plan_text += f" 💰{self.format_price(self.payable_plan_price(plan, credits[plan.currency]), plan.currency)}"
@@ -154,6 +155,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
 
 نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای انتخاب سرویس را ببینید.
         """
+        text = await self.section_intro_once(user, "purchase", "ابتدا نوع سرویس را انتخاب کنید؛ قبل از پرداخت، مشخصات و مبلغ نهایی را مرور کنید.") + text
         services = [{"text": label, "callback_data": f"purchase_category_{category}", }
                     for category, label in self.CATEGORY_LABELS.items()]
         services.append({"text": "💊 تجویز ویژه دکتر", "callback_data": "purchase_special", "style": "primary"})
@@ -657,6 +659,10 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             {"step": PurchaseStep.PAYMENT_METHOD, "order_id": str(order.order_id)},
         )
         keyboard = await self._payment_methods_keyboard(user, order)
+        if not order.coupon_code:
+            keyboard.inline_keyboard.insert(0, [types.InlineKeyboardButton(
+                text="🎟 ثبت کد تخفیف", callback_data=f"purchase_coupon_{order.order_id}"
+            )])
         if not any(
             button.callback_data and button.callback_data.startswith("payment_")
             for row in keyboard.inline_keyboard for button in row
@@ -670,6 +676,42 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             )])
 
         return text, keyboard
+
+    async def request_purchase_coupon(self, callback, order_id: str):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        order = await Order.objects.filter(
+            user=user, brand=self.brand, order_id=order_id,
+            status__in=[Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT],
+        ).afirst()
+        if not order:
+            await callback.answer("سفارش قابل تخفیف نیست.", show_alert=True)
+            return
+        await self.update_user_state(user, BotState.StateType.PAYMENT_PROCESS, {
+            "step": "waiting_purchase_coupon", "action": "purchase_coupon", "order_id": order_id,
+        })
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id,
+            "🎟 کد تخفیف را ارسال کنید. مبلغ نهایی قبل از انتخاب کارت دوباره محاسبه می‌شود.",
+            self.get_back_keyboard(f"payment_methods_{order_id}"),
+        )
+        await callback.answer()
+
+    async def handle_purchase_coupon_message(self, message, user, state):
+        from apps.orders.coupons import apply_purchase_coupon, PurchaseCouponError
+        order_id = (state.state_data or {}).get("order_id")
+        code = (message.text or "").strip()
+        try:
+            order, discount = await sync_to_async(apply_purchase_coupon)(
+                brand_id=self.brand.pk, user_id=user.pk, order_id=order_id, code=code,
+            )
+        except PurchaseCouponError as exc:
+            await message.reply(f"❌ {escape(str(exc))}")
+            return
+        await self._remove_user_input(message)
+        order = await Order.objects.select_related("plan").aget(pk=order.pk)
+        text, keyboard = await self._order_payment_content(user, order)
+        text = f"✅ کد تخفیف اعمال شد: {self.format_price(discount, order.currency)}\n\n" + text
+        await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
     async def show_payment_methods_for_order(
         self, callback: types.CallbackQuery, order_id: str
@@ -952,7 +994,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
              "card_id": sd["card_id"]},
         )
 
-        now = timezone.localtime(timezone.now()).strftime("%Y/%m/%d - %H:%M")
+        now = jalali_date(timezone.now(), time=True)
         text = (
             "📤 <b>ارسال رسید پرداخت</b>\n\n"
             "رسید متنی یا عکس واضح تراکنش را ارسال کنید.\n"
@@ -1093,7 +1135,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             "step": PurchaseStep.UNDER_REVIEW, "order_id": sd["order_id"],
             "payment_id": str(payment.pk),
         })
-        at = timezone.localtime(payment.created_at).strftime("%Y/%m/%d - %H:%M")
+        at = jalali_date(payment.created_at, time=True)
         keyboard = self.create_keyboard([
             *[[{"text": label, "callback_data": f"useful_category_{key}"}]
               for key, label in UsefulContentHandler.CATEGORY_LABELS.items()],
@@ -1116,7 +1158,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         admin_text = (
             f"🧾 رسید جدید\nسفارش: {escape(order.order_number)}\n"
             f"مبلغ: {self.format_price(payment.amount, order.currency)}\n"
-            f"تاریخ ثبت: {timezone.localtime(payment.created_at).strftime('%Y/%m/%d %H:%M')}\n"
+            f"تاریخ ثبت: {jalali_date(payment.created_at, time=True)}\n"
             f"بانک/کارت مقصد: <code>{escape(payment.card_number or '')}</code>\n"
             f"متن رسید: {escape((payment.receipt_reference or 'رسید تصویری')[:100])}\n"
             f"payment_id: {payment.id}"

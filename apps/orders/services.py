@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import F, Sum
 from django.utils import timezone
 
 from apps.orders.models import (
@@ -98,6 +98,12 @@ def cancel_unpaid_order(*, order_id, user_id, brand_id):
     order.payments.filter(status=Payment.PaymentStatus.PENDING).update(
         status=Payment.PaymentStatus.CANCELLED
     )
+    for usage in CouponUsage.objects.select_related("coupon").filter(order=order):
+        Coupon.objects.filter(pk=usage.coupon_id, current_uses__gt=0).update(
+            current_uses=F("current_uses") - 1
+        )
+        # Not a wallet movement: this code was never redeemed for a paid order.
+        usage.delete()
     order.status = Order.OrderStatus.CANCELLED
     order.save(update_fields=["status", "updated_at"])
     return total

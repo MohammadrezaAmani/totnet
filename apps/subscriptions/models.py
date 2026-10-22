@@ -217,6 +217,10 @@ class Subscription(models.Model):
     qr_codes = models.JSONField(default=list, blank=True)
 
     connectix_username = models.CharField(max_length=100, null=True, blank=True)
+    display_name = models.CharField(
+        "نام دلخواه اشتراک", max_length=40, blank=True,
+        help_text="فقط نام نمایشی ربات؛ شناسه اتصال در سرویس‌دهنده تغییر نمی‌کند.",
+    )
 
     auto_renewal_enabled = models.BooleanField(default=False)
 

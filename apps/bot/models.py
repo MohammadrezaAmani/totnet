@@ -31,6 +31,7 @@ class BotState(models.Model):
     )
 
     state_data = models.JSONField(default=dict, blank=True)
+    seen_sections = models.JSONField(default=dict, blank=True)
 
     last_message_id = models.BigIntegerField(null=True, blank=True)
     welcome_shown_at = models.DateTimeField(null=True, blank=True)

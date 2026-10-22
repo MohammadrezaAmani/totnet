@@ -12,6 +12,7 @@ from apps.accounts.models import User
 from apps.referrals.selectors import reward_summary
 from apps.subscriptions.models import Subscription
 
+from utils.jalali import jalali_date
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,8 @@ class StatsHandler(BaseHandler):
         text = f"""
 📊 آمار شما
 
-👤 نام کاربری: {user.username}
 📱 تلفن: {user.phone_number or "ثبت نشده"}
-📅 تاریخ عضویت: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
+📅 تاریخ عضویت: {jalali_date(user.created_at)}
 
 اشتراک‌های فعال: {subscription_count}
 معرفی شده توسط: {referred_by}
@@ -115,10 +115,8 @@ class StatsHandler(BaseHandler):
         text = f"""
 📈 آمار جامع شما
 
-👤 نام کاربری: {user.username}
-📧 ایمیل: {user.email or "ثبت نشده"}
 📱 تلفن: {user.phone_number or "ثبت نشده"}
-📅 تاریخ عضویت: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
+📅 تاریخ عضویت: {jalali_date(user.created_at)}
 
 📊 اشتراک‌ها:
 • اشتراک‌های فعال: {len(active_subs)}
@@ -194,10 +192,10 @@ class StatsHandler(BaseHandler):
 
             try:
                 start_date = (
-                    sub.created_at.strftime("%Y/%m/%d") if sub.created_at else "نامشخص"
+                    jalali_date(sub.created_at)
                 )
                 expire_date = (
-                    sub.expires_at.strftime("%Y/%m/%d") if sub.expires_at else "نامشخص"
+                    jalali_date(sub.expires_at)
                 )
                 date_info = f"\n  شروع: {start_date}\n  انقضا: {expire_date}"
             except Exception:

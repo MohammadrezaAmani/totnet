@@ -98,7 +98,8 @@ class ReferralsHandler(BaseHandler):
             | Q(referee__owned_subscriptions__expires_at__gt=now)
         ).distinct().acount()
 
-        text = f"""
+        intro = await self.section_intro_once(user, "referrals", "لینک معرفی مخصوص شماست. فقط عضویت و خریدهای واجد شرایط، پاداش دریافت می‌کنند.")
+        text = intro + f"""
 👥 <b>معرفی دوستان</b>
 
 🔗 <b>لینک معرفی شما:</b>

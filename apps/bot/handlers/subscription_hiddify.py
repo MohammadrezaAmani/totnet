@@ -1,3 +1,4 @@
+from utils.jalali import jalali_date
 """
 Enhanced Subscription Handler with Hiddify Integration
 Full client-side features for VPN users
@@ -209,8 +210,8 @@ class SubscriptionHiddifyHandler(BaseHandler):
 🆔 شناسه: {str(sub.subscription_id)[:8]}...
 📊 وضعیت: {"🟢 فعال" if sub.status == "active" else "🔴 غیرفعال"}
 
-📅 شروع: {sub.starts_at.strftime("%Y/%m/%d") if sub.starts_at else "نامشخص"}
-📅 انقضا: {sub.expires_at.strftime("%Y/%m/%d") if sub.expires_at else "نامشخص"}
+📅 شروع: {jalali_date(sub.starts_at)}
+📅 انقضا: {jalali_date(sub.expires_at)}
             """
 
             if sub.traffic_limit_gb:

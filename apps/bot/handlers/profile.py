@@ -77,32 +77,22 @@ class ProfileHandler(BaseHandler):
         except Wallet.DoesNotExist:
             wallet_balance = 0
 
-        display_username = (
-            f"@{user.username}"
-            if user.username and user.username != f"user_{user.telegram_id}"
-            else "ثبت نشده"
-        )
-
         birth_label = (
             jdatetime.date.fromgregorian(date=user.birth_date).strftime("%Y/%m/%d")
             if user.birth_date
             else "ثبت نشده"
         )
 
+        from utils.jalali import jalali_date
+        acceptance_date = jalali_date(user.created_at)
         text = f"""👤 <b>پروفایل من</b>
-        ━━━━━━━━━━━━━━━━━━
-
-        👨‍💼 نام: {escape(user.full_name or user.first_name or "ثبت نشده")}
-        📱 تلفن: {escape(user.phone_number or "ثبت نشده")}
-        👤 نام کاربری: {escape(display_username)}
-        📅 تاریخ پذیرش در مطب: {user.created_at.strftime("%Y/%m/%d") if user.created_at else "نامشخص"}
-        """
-
+━━━━━━━━━━━━━━━━━━
+👨‍💼 نام: {escape(user.full_name or user.first_name or "ثبت نشده")}
+📱 تلفن: {escape(user.phone_number or "ثبت نشده")}
+📅 تاریخ پذیرش در مطب: {acceptance_date}
+"""
         if birth_label:
             text += f"\n🎂 تاریخ تولد: {escape(str(birth_label))}"
-
-        if profile.work_location:
-            text += f"\n📍 محل کار: {escape(profile.work_location)}"
 
         if profile.living_location:
             text += f"\n🏠 محل زندگی: {escape(profile.living_location)}"
@@ -153,25 +143,55 @@ class ProfileHandler(BaseHandler):
 کدام بخش را می‌خواهید تغییر دهید یا تکمیل کنید؟
         """
 
-        keyboard = self.create_keyboard(
+        keyboard = self.create_keyboard([
+            [{"text": "🎁 تکمیل پروفایل و دریافت اعتبار", "callback_data": "complete_profile"}],
             [
-                [
-                    {
-                        "text": "🎁 تکمیل پروفایل و دریافت امتیاز",
-                        "callback_data": "complete_profile",
-                    }
-                ],
-                [{"text": "🎂 تاریخ تولد", "callback_data": "edit_birth_date"}],
-                [{"text": "👨‍💼 نام کامل", "callback_data": "edit_full_name"}],
-                [{"text": "📱 شماره تلفن", "callback_data": "edit_phone"}],
-                [{"text": "📍 محل کار و زندگی", "callback_data": "edit_locations"}],
-                [{"text": "📧 ایمیل", "callback_data": "edit_email"}],
-                [{"text": "📱 دستگاه‌ها", "callback_data": "edit_device"}],
-                [{"text": "🔙 بازگشت", "callback_data": "my_profile"}],
-            ]
-        )
+                {"text": "🎂 تاریخ تولد", "callback_data": "edit_birth_date"},
+                {"text": "👨‍💼 نام کامل", "callback_data": "edit_full_name"},
+            ],
+            [
+                {"text": "📱 شماره تلفن", "callback_data": "edit_phone"},
+                {"text": "📍 استان محل زندگی", "callback_data": "edit_locations"},
+            ],
+            [
+                {"text": "⚪ جنسیت (اختیاری)", "callback_data": "edit_gender"},
+                {"text": "📱 دستگاه‌ها", "callback_data": "edit_device"},
+            ],
+            [{"text": "🔙 بازگشت", "callback_data": "my_profile"}],
+        ])
 
         await self._render(callback, text, keyboard)
+        await callback.answer()
+
+    GENDER_LABELS = {
+        "female": "زن", "male": "مرد", "other": "سایر",
+        "undisclosed": "ترجیح می‌دهم نگویم",
+    }
+
+    async def show_gender_options(self, callback):
+        await self._render(callback, "⚪ جنسیت (اختیاری):",
+            self.create_keyboard([
+                [{"text": label, "callback_data": f"set_gender_{key}"}]
+                for key, label in self.GENDER_LABELS.items()
+            ] + [[{"text": "🔙 بازگشت", "callback_data": "edit_profile"}]]))
+        await callback.answer()
+
+    async def set_gender(self, callback, gender):
+        if gender not in self.GENDER_LABELS:
+            await callback.answer("انتخاب نامعتبر است.", show_alert=True)
+            return
+        user, _ = await self.get_or_create_user(callback.from_user)
+        profile, _ = await UserProfile.objects.aget_or_create(user=user)
+        profile.gender = gender
+        await profile.asave(update_fields=["gender", "updated_at"])
+        from apps.referrals.services import grant_profile_completion_reward
+        granted = await sync_to_async(grant_profile_completion_reward)(user_id=user.pk, brand_id=self.brand.pk)
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        text = "✅ انتخاب شما ذخیره شد." + ("\n🎁 ۱۰٬۰۰۰ تومان اعتبار نقدی به کیف پول شما افزوده شد." if granted else "")
+        await self._render(callback, text, self.create_keyboard([
+            [{"text": "👤 پروفایل من", "callback_data": "my_profile"}],
+            [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+        ]))
         await callback.answer()
 
     async def show_device_options(self, callback):
@@ -226,10 +246,9 @@ class ProfileHandler(BaseHandler):
 
     FIELD_PROMPTS = {
         "full_name": "👨‍💼 نام کامل خود را ارسال کنید:",
-        "birth_date": "🎂 تاریخ تولد\nبرای به یاد شما بودن در این روز زیبا\n\nتاریخ تولد را به شکل سال/ماه/روز وارد کنید؛ مثال شمسی: ۱۳۷۵/۰۱/۱۵ یا میلادی: 1996/04/03",
+        "birth_date": "🎂 تاریخ تولد\nبرای یادآوری روز تولدتان\n\nتاریخ را به شکل سال/ماه/روز وارد کنید، مثلاً ۱۳۷۶/۰۹/۱۱. سال حتماً اول باشد.",
         "phone": "📱 شماره تلفن\nجهت دسترسی داشتن به شما در صورت قطعی اینترنت و اطلاع‌رسانی\n\nشماره تلفن همراه خود را ارسال کنید:",
-        "locations": "📍 محل کار و زندگی\nباخبر شدن از وضعیت اینترنت لوکیشن شما در صورت تجمیع گزارشات کاربران\n\nشهر/محله محل کار و محل زندگی را در دو خط ارسال کنید. اگر یکسان است، یک خط کافی است.",
-        "email": "📧 ایمیل خود را ارسال کنید:",
+        "locations": "📍 استان محل زندگی خود را وارد کنید تا در صورت قطعی یا اختلال اینترنت در استان شما اطلاع‌رسانی کنیم:",
     }
     COMPLETION_FIELDS = ("birth_date", "phone", "locations")
 
@@ -314,29 +333,16 @@ class ProfileHandler(BaseHandler):
             else:
                 user.phone_number = phone
         elif field == "locations":
-            parts = [part.strip() for part in value.splitlines() if part.strip()]
-            if not 1 <= len(parts) <= 2 or any(
-                not 2 <= len(part) <= 255 for part in parts
-            ):
-                error = "محل کار و محل زندگی را در یک یا دو خط، هرکدام بین ۲ تا ۲۵۵ کاراکتر بنویسید."
+            province = value.strip()
+            if "\n" in province or not 2 <= len(province) <= 100:
+                error = "فقط نام استان محل زندگی را در یک خط وارد کنید."
             else:
                 profile, _ = await UserProfile.objects.aget_or_create(user=user)
-                profile.work_location = parts[0]
-                profile.living_location = parts[-1]
-        elif field == "email":
-            from django.core.validators import validate_email
-            from django.core.exceptions import ValidationError
-
-            try:
-                validate_email(value)
-                if len(value) > 254:
-                    raise ValidationError("long")
-                user.email = value
-            except ValidationError:
-                error = "ایمیل معتبر نیست."
+                profile.living_location = province
         else:
             error = "ابتدا فیلد موردنظر را از منو انتخاب کنید."
         if error:
+            await self._remove_user_input(message)
             await self.send_profile_prompt(
                 message.chat.id,
                 user,
@@ -346,11 +352,12 @@ class ProfileHandler(BaseHandler):
             return
         if profile:
             await profile.asave(
-                update_fields=["work_location", "living_location", "updated_at"]
+                update_fields=["living_location", "updated_at"]
             )
         else:
             field_name = {"phone": "phone_number"}.get(field, field)
             await user.asave(update_fields=[field_name, "updated_at"])
+        await self._remove_user_input(message)
         if (
             state.state_data.get("completion_flow")
             and field in self.COMPLETION_FIELDS[:-1]
@@ -370,13 +377,25 @@ class ProfileHandler(BaseHandler):
             return
         from apps.referrals.services import grant_profile_completion_reward
 
+        profile = await UserProfile.objects.filter(user=user).afirst()
+        if state.state_data.get("completion_flow") and not (profile and profile.gender):
+            await self.update_user_state(user, BotState.StateType.PROFILE_EDIT, {"completion_flow": False, "step": "gender"})
+            await self.send_message_with_keyboard(
+                message.chat.id,
+                "⚪ برای پایان تکمیل پروفایل یک گزینه انتخاب کنید:",
+                self.create_keyboard([
+                    [{"text": label, "callback_data": f"set_gender_{key}"}]
+                    for key, label in self.GENDER_LABELS.items()
+                ]),
+            )
+            return
         granted = await sync_to_async(grant_profile_completion_reward)(
             user_id=user.pk, brand_id=self.brand.pk
         )
         await self.clear_previous_keyboard(message.chat.id, user)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
         text = "✅ پروفایل شما ذخیره شد." + (
-            "\n🎁 یک امتیاز تکمیل پروفایل به جعبه قرص‌های شما اضافه شد."
+            "\n🎁 ۱۰٬۰۰۰ تومان اعتبار نقدی تکمیل پروفایل به کیف پول شما اضافه شد."
             if granted
             else ""
         )

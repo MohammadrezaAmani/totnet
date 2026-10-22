@@ -24,6 +24,7 @@ from apps.support.models import (
     SupportTicket,
 )
 
+from utils.jalali import jalali_date
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -371,7 +372,7 @@ class SupportHandler(BaseHandler):
 {status_emoji} <b>وضعیت:</b> {ticket.get_status_display()}
 {priority_emoji} <b>اولویت:</b> {ticket.get_priority_display()}
 🏷 <b>دسته‌بندی:</b> {escape(ticket.category.name)}
-📅 <b>ایجاد شده:</b> {ticket.created_at.strftime("%Y/%m/%d %H:%M")}
+📅 <b>ایجاد شده:</b> {jalali_date(ticket.created_at, time=True)}
 {sla_text}
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -388,7 +389,7 @@ class SupportHandler(BaseHandler):
             text += "💬 <b>آخرین پیام‌ها:</b>\n"
             for msg in reversed(messages):  # Show in chronological order
                 sender_role = "👤 شما" if msg.message_type == SupportMessage.MessageType.CUSTOMER else "🛠 پشتیبانی"
-                date_str = msg.created_at.strftime("%m/%d %H:%M")
+                date_str = jalali_date(msg.created_at, time=True)
                 text += f"\n<b>{sender_role}</b> ({date_str}):\n{self._preview(msg.content, 300)}\n"
 
         buttons = []

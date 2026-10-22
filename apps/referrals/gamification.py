@@ -33,8 +33,9 @@ POINTS_PER_PILL = 3
 MONEY_QUANT = Decimal("0.01")
 
 
-def _money(value: Decimal) -> Decimal:
-    return Decimal(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+def _money(value: Decimal, currency: str = "USD") -> Decimal:
+    quantum = Decimal("1") if currency in {"T", "IRT", "IRR"} else MONEY_QUANT
+    return Decimal(value).quantize(quantum, rounding=ROUND_HALF_UP)
 
 
 def _wallet_for(*, user_id: int, brand_id: int) -> Wallet:
@@ -96,7 +97,7 @@ def cash_out_completed_pills(*, user_id: int, brand_id: int) -> Decimal:
     now = timezone.now()
     for offset in range(0, complete_count, POINTS_PER_PILL):
         group = rewards[offset : offset + POINTS_PER_PILL]
-        amount = _money(sum((item.cash_value for item in group), Decimal("0")))
+        amount = _money(sum((item.cash_value for item in group), Decimal("0")), wallet.currency)
         ids = "-".join(str(item.pk) for item in group)
         key = f"referral-pill:{brand_id}:{user_id}:{ids}"
         if amount > 0:
@@ -190,10 +191,10 @@ def activate_challenge_from_wallet(*, user_id: int, brand_id: int) -> UserChalle
         raise ChallengeError("تنظیمات این چالش دیگر فعال نیست.")
     if challenge.target_referrals <= 0 or challenge.reward_percent <= 0:
         raise ChallengeError("تنظیمات ثبت‌شده این چالش معتبر نیست.")
-    amount = _money(challenge.entry_amount)
+    wallet = _wallet_for(user_id=user_id, brand_id=brand_id)
+    amount = _money(challenge.entry_amount, wallet.currency)
     if amount <= 0:
         raise ChallengeError("مبلغ ورودی چالش معتبر نیست.")
-    wallet = _wallet_for(user_id=user_id, brand_id=brand_id)
     try:
         debit_wallet(
             wallet_id=wallet.pk,
@@ -221,7 +222,7 @@ def activate_challenge_from_wallet(*, user_id: int, brand_id: int) -> UserChalle
 
 
 def _release_frozen_entry(*, challenge: UserChallenge, wallet: Wallet) -> None:
-    amount = _money(challenge.entry_amount)
+    amount = _money(challenge.entry_amount, wallet.currency)
     if amount <= 0:
         return
     wallet.refresh_from_db(fields=["challenge_frozen_balance", "balance", "is_active", "is_frozen"])
@@ -326,7 +327,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
     from apps.subscriptions.policy import effective_reward_percent
     applied_percent = effective_reward_percent(order, challenge.reward_percent)
     reward_value = _money(
-        order.final_price * applied_percent / Decimal("100")
+        order.final_price * applied_percent / Decimal("100"), order.currency
     )
     reward = ReferralReward.objects.create(
         referral=referral,
@@ -381,7 +382,7 @@ def settle_challenge(*, challenge_id: int, force_success: bool = False) -> UserC
         challenge_event__challenge=challenge
     )
     reward_count = rewards.count()
-    reward_amount = _money(rewards.aggregate(total=Sum("cash_value"))["total"] or Decimal("0"))
+    reward_amount = _money(rewards.aggregate(total=Sum("cash_value"))["total"] or Decimal("0"), wallet.currency)
     if success:
         if reward_amount > 0:
             credit_wallet(

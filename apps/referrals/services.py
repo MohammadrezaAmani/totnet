@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation, ROUND_DOWN, localcontext
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP, localcontext
 
 from django.db import IntegrityError, transaction
 from django.db.models import F, Sum
@@ -927,7 +927,10 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
     percent = effective_reward_percent(order, program.purchase_reward_percent)
     if percent <= 0 or percent > 100:
         raise RewardConfigurationError("Referral purchase reward percent must be between 0 and 100")
-    cash_value = (order.final_price * percent / Decimal("100")).quantize(Decimal("0.01"))
+    cash_value = (order.final_price * percent / Decimal("100")).quantize(
+        Decimal("1") if order.currency in {"T", "IRT", "IRR"} else Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
     if cash_value <= 0:
         _record_zero_referral_reward(
             referral=referral,
@@ -1002,33 +1005,31 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
 
 @transaction.atomic
 def grant_profile_completion_reward(*, user_id: int, brand_id: int) -> bool:
-    """Grant the promised single pill once to a completed customer profile."""
+    """Once-only 10,000-toman wallet credit for a voluntarily completed profile.
+
+    Guarded by a row lock and a unique wallet ledger idempotency key. Never
+    require a notification to have been sent, and never mint reward pills.
+    """
     from apps.accounts.models import UserProfile
     profile, _ = UserProfile.objects.select_for_update().get_or_create(user_id=user_id)
     user = User.objects.get(pk=user_id, brand_id=brand_id)
-    if profile.profile_reward_granted_at or not (user.birth_date and user.phone_number and profile.work_location and profile.living_location):
+    if profile.profile_reward_granted_at or not (
+        user.full_name and user.birth_date and user.phone_number and profile.living_location and profile.gender
+    ):
         return False
-    from .models import GamificationNotification
-    if not GamificationNotification.objects.filter(
-        user_id=user_id, brand_id=brand_id,
-        notification_type=GamificationNotification.NotificationType.PROFILE_COMPLETION,
-        sent_at__isnull=False,
-    ).exists():
+    brand_currency = Brand.objects.values_list("currency", flat=True).get(pk=brand_id)
+    # 10,000 is denominated in toman; never credit 10,000 dollars/other units.
+    if brand_currency not in {"T", "IRT"}:
         return False
-    now = timezone.now()
-    account = _locked_reward_account(user_id=user_id, brand_id=brand_id)
-    ReferralReward.objects.create(
-        user_id=user_id, brand_id=brand_id, reward_type="profile_point", amount=Decimal(1),
-        cash_value=Decimal(0), currency=Brand.objects.values_list("currency", flat=True).get(pk=brand_id),
-        status=ReferralReward.RewardStatus.PROCESSED, processed_at=now,
-        notes="One-time profile completion pill; no purchase cash value.",
+    _credit_wallet_once(
+        user_id=user_id,
+        brand_id=brand_id,
+        amount=Decimal("10000"),
+        idempotency_key=f"profile-completion-cash:{brand_id}:{user_id}",
+        description="One-time profile completion bonus (10,000 toman)",
     )
-    account.lifetime_points += Decimal(1)
-    account.save(update_fields=["lifetime_points", "updated_at"])
-    profile.profile_reward_granted_at = now
+    profile.profile_reward_granted_at = timezone.now()
     profile.save(update_fields=["profile_reward_granted_at", "updated_at"])
-    from .gamification import cash_out_completed_pills
-    cash_out_completed_pills(user_id=user_id, brand_id=brand_id)
     return True
 
 
@@ -1108,7 +1109,10 @@ def award_claimed_gift(*, order_id: int) -> Decimal:
             return challenge_reward.amount
     now = timezone.now()
     account = _locked_reward_account(user_id=order.user_id, brand_id=order.brand_id)
-    value = (order.final_price * percent / 100).quantize(Decimal("0.01"))
+    value = (order.final_price * percent / 100).quantize(
+        Decimal("1") if order.currency in {"T", "IRT", "IRR"} else Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
     reward = ReferralReward.objects.create(
         referral=matching_referral, order=order, user_id=order.user_id, brand_id=order.brand_id,
         reward_type="normal_point", amount=Decimal(1), cash_value=value, currency=order.currency,

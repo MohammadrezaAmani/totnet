@@ -110,6 +110,13 @@ class UserProfile(models.Model):
     work_location = models.CharField(max_length=255, blank=True)
     living_location = models.CharField(max_length=255, blank=True)
     profile_reward_granted_at = models.DateTimeField(null=True, blank=True, editable=False)
+    channel_join_required = models.BooleanField(default=False, editable=False)
+    channel_join_verified = models.BooleanField(default=False, editable=False)
+    gender = models.CharField(
+        max_length=24, blank=True,
+        choices=[("female", "زن"), ("male", "مرد"), ("other", "سایر"),
+                 ("undisclosed", "ترجیح می‌دهم نگویم")],
+    )
     country = models.CharField(max_length=100, null=True, blank=True)
     city = models.CharField(max_length=100, null=True, blank=True)
     timezone = models.CharField(max_length=50, default="UTC")

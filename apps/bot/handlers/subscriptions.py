@@ -25,6 +25,7 @@ from apps.subscriptions.policy import temporary_duration_blocked
 from apps.subscriptions.catalog import get_cached_plans
 
 from .base import BaseHandler
+from utils.jalali import jalali_date
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +89,8 @@ class SubscriptionHandler(BaseHandler):
                     sub.plan.service_category, sub.plan.name
                 )
                 remaining_traffic, remaining_time = remaining_usage(sub)
-                label = f"{username} • {service_type}"
-                text += f"\n\n👤 <code>{escape(username)}</code> • {escape(service_type)}\n📦 حجم باقیمانده: {escape(remaining_traffic)}\n⏳ زمان باقیمانده: {escape(remaining_time)}"
+                label = f"{sub.display_name or username} • {service_type}"
+                text += f"\n\n👤 <code>{escape(sub.display_name or username)}</code> • {escape(service_type)}\n📦 حجم باقیمانده: {escape(remaining_traffic)}\n⏳ زمان باقیمانده: {escape(remaining_time)}"
                 if len(label) > 58:
                     label = label[:57] + "…"
                 rows.append(
@@ -286,7 +287,7 @@ class SubscriptionHandler(BaseHandler):
             else "نامحدود"
         )
         expiry = (
-            subscription.expires_at.strftime("%Y/%m/%d %H:%M")
+            jalali_date(subscription.expires_at, time=True)
             if subscription.expires_at
             else "نامحدود"
         )
@@ -310,7 +311,7 @@ class SubscriptionHandler(BaseHandler):
         text = f"""
 🔄 <b>تمدید / تغییر طرح</b>
 
-👤 یوزرنیم: <code>{escape(username)}</code>
+👤 اشتراک: <code>{escape(subscription.display_name or username)}</code>
 🏷 نوع فعلی: {escape(current_category)}
 📦 حجم فعلی: {current_traffic}
 📊 حجم باقیمانده: {escape(remaining_traffic)}
@@ -344,6 +345,13 @@ class SubscriptionHandler(BaseHandler):
 
         if not plans:
             text += "\n⚠️ در حال حاضر هیچ پلن فعالی برای خرید وجود ندارد."
+        if total_pages > 1:
+            nav = []
+            if page > 1:
+                nav.append({"text": "◀️ قبلی", "callback_data": f"renewal_plans_page_{subscription.pk}_{page - 1}"})
+            if page < total_pages:
+                nav.append({"text": "بعدی ▶️", "callback_data": f"renewal_plans_page_{subscription.pk}_{page + 1}"})
+            rows.append(nav)
 
         if total_pages > 1:
             navigation = []
@@ -367,6 +375,7 @@ class SubscriptionHandler(BaseHandler):
                         "callback_data": f"subscription_details_{subscription.pk}",
                     }
                 ],
+                [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
                 [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
             ]
         )
@@ -377,6 +386,50 @@ class SubscriptionHandler(BaseHandler):
             self.create_keyboard(rows),
         )
         await callback.answer()
+
+    async def start_rename_subscription(self, callback, subscription_id: int):
+        from apps.bot.models import BotState
+        user, _ = await self.get_or_create_user(callback.from_user)
+        allowed = await Subscription.objects.filter(
+            Q(user=user) | Q(owner=user), brand=self.brand, pk=subscription_id
+        ).aexists()
+        if not allowed:
+            await callback.answer("❌ اشتراک پیدا نشد.", show_alert=True)
+            return
+        await self.update_user_state(
+            user, BotState.StateType.SUBSCRIPTION_MANAGEMENT,
+            {"step": "rename_subscription", "subscription_id": subscription_id},
+        )
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id,
+            "✏️ یک نام دلخواه تا ۴۰ حرف برای این اشتراک بفرستید. نام فقط در ربات نمایش داده می‌شود.",
+            self.get_back_keyboard(f"renewal_details_{subscription_id}"),
+        )
+        await callback.answer()
+
+    async def handle_rename_message(self, message, user, state):
+        from apps.bot.models import BotState
+        name = (message.text or "").strip()
+        if not 1 <= len(name) <= 40 or any(ord(ch) < 32 for ch in name):
+            await message.reply("❌ نام اشتراک باید ۱ تا ۴۰ حرف باشد.")
+            return
+        subscription_id = (state.state_data or {}).get("subscription_id")
+        count = await Subscription.objects.filter(
+            Q(user=user) | Q(owner=user), brand=self.brand, pk=subscription_id
+        ).aupdate(display_name=name)
+        if not count:
+            await message.reply("❌ این اشتراک در دسترس نیست.")
+            return
+        await self._remove_user_input(message)
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        await self.send_message_with_keyboard(
+            message.chat.id,
+            f"✅ نام اشتراک به «{escape(name)}» تغییر کرد.",
+            self.create_keyboard([
+                [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+            ]),
+        )
 
     async def show_subscription_details(
         self, callback: types.CallbackQuery, subscription_id: int
@@ -397,18 +450,18 @@ class SubscriptionHandler(BaseHandler):
         text = f"""
 📱 جزئیات اشتراک
 
-🏷️ پلن: {subscription.plan.name}
+🏷️ پلن: {escape(subscription.display_name or subscription.plan.name)}
 🆔 شناسه: `{subscription.subscription_id}`
 📊 وضعیت: {self.get_status_text(subscription.status)}
 👤 خریدار: {subscription.user.full_name or subscription.user.username}
 🎁 دارنده: {subscription.owner.full_name or subscription.owner.username}
 
 ⏰ اطلاعات زمان:
-• شروع: {subscription.starts_at.strftime("%Y/%m/%d %H:%M")}
+• شروع: {jalali_date(subscription.starts_at, time=True)}
 """
 
         if subscription.expires_at:
-            text += f"• انقضا: {subscription.expires_at.strftime('%Y/%m/%d %H:%M')}\n"
+            text += f"• انقضا: {jalali_date(subscription.expires_at, time=True)}\n"
             days_remaining = subscription.days_remaining
             if days_remaining is not None:
                 text += f"• باقی‌مانده: {days_remaining} روز\n"
@@ -432,7 +485,7 @@ class SubscriptionHandler(BaseHandler):
 """
 
         if subscription.last_connection:
-            text += f"• آخرین اتصال: {subscription.last_connection.strftime('%Y/%m/%d %H:%M')}\n"
+            text += f"• آخرین اتصال: {jalali_date(subscription.last_connection, time=True)}\n"
 
         text += f"• تعداد اتصالات: {subscription.total_connections}\n"
 
@@ -471,6 +524,7 @@ class SubscriptionHandler(BaseHandler):
                     }
                 ]
             )
+        keyboard_buttons.append([{"text": "✏️ نام‌گذاری اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}])
         keyboard_buttons.append([{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}])
 
         keyboard = self.create_keyboard(keyboard_buttons)
@@ -711,7 +765,7 @@ class SubscriptionHandler(BaseHandler):
                 total_download += download_gb
 
                 text += f"""
-📅 {stat.date.strftime("%Y/%m/%d")}:
+📅 {jalali_date(stat.date)}:
   ⬆️ آپلود: {upload_gb:.2f} GB
   ⬇️ دانلود: {download_gb:.2f} GB
   🔢 اتصالات: {stat.connection_count}

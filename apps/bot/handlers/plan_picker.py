@@ -60,7 +60,7 @@ class PlanPickerMixin:
         if category not in {"normal", "royal"}:
             return Decimal(0)
         if duration == "m1":
-            return Decimal(10 if category == "royal" else 20)
+            return Decimal(10 if category == "royal" else 30)
         if duration == "m2":
             return Decimal(40)
         if duration == "m3":
@@ -70,19 +70,25 @@ class PlanPickerMixin:
     def _volume_ranges(self, picker, plans):
         """Disjoint, duration-aware ranges populated only by actual catalog entries."""
         minimum = self._min_volume(picker["category"], picker["duration"])
-        groups = [
-            ("a", minimum, Decimal(30), "حجم‌های کم"),
-            ("b", max(minimum, Decimal(31)), Decimal(59), "۳۱ تا ۵۹ گیگ"),
-            ("c", max(minimum, Decimal(60)), Decimal(99), "۶۰ تا ۹۹ گیگ"),
-            ("d", max(minimum, Decimal(100)), Decimal("Infinity"), "۱۰۰ گیگ و بیشتر"),
-        ]
+        if picker["category"] == "royal":
+            groups = [
+                ("a", Decimal(10), Decimal(50), "۱۰ تا ۵۰ گیگ"),
+                ("b", Decimal(51), Decimal(99), "۵۱ تا ۹۹ گیگ"),
+                ("c", Decimal(100), Decimal("Infinity"), "۱۰۰ گیگ و بیشتر"),
+            ]
+        else:
+            groups = [
+                ("a", Decimal(30), Decimal(60), "۳۰ تا ۶۰ گیگ"),
+                ("b", Decimal(61), Decimal(99), "۶۱ تا ۹۹ گیگ"),
+                ("c", Decimal(100), Decimal("Infinity"), "۱۰۰ گیگ و بیشتر"),
+            ]
         # When the minimum is 40/60, empty earlier buckets are omitted.
         result = []
         for key, low, high, label in groups:
             matching = [p for p in plans if self._volume(p)
                         and low <= Decimal(traffic_key(p)[1:]) <= high]
             if matching:
-                result.append((key, f"{low} تا {high} گیگ" if high.is_finite() else label))
+                result.append((key, label))
         return result
 
     def _filtered(self, plans, picker):
@@ -99,12 +105,18 @@ class PlanPickerMixin:
         # Filter using the actual range boundaries, not an index inferred from visible ranges.
         key = picker["range"]
         minimum = self._min_volume(picker["category"], picker["duration"])
-        boundaries = {
-            "a": (minimum, Decimal(30)),
-            "b": (max(minimum, Decimal(31)), Decimal(59)),
-            "c": (max(minimum, Decimal(60)), Decimal(99)),
-            "d": (max(minimum, Decimal(100)), Decimal("Infinity")),
-        }
+        if picker["category"] == "royal":
+            boundaries = {
+                "a": (Decimal(10), Decimal(50)),
+                "b": (Decimal(51), Decimal(99)),
+                "c": (Decimal(100), Decimal("Infinity")),
+            }
+        else:
+            boundaries = {
+                "a": (Decimal(30), Decimal(60)),
+                "b": (Decimal(61), Decimal(99)),
+                "c": (Decimal(100), Decimal("Infinity")),
+            }
         lo, hi = boundaries[key]
         return [p for p in plans if lo <= Decimal(traffic_key(p)[1:]) <= hi]
 
@@ -184,6 +196,7 @@ class PlanPickerMixin:
                                     for n in sorted({p.max_users for p in unlimited_plans if 1 < p.max_users <= 4})], 3))
             rows.append([self._picker_button(picker, "🔙 نوع اشتراک", "back")])
         elif stage in {"results", "volume_list", "time_list", "unlimited_results"}:
+            lines.append("\n💰 قیمت‌ها پس از کسر اعتبار نقد قابل‌استفاده شماست.")
             if stage == "results":
                 results = self._range_plans(self._filtered(volume_plans, picker), picker)
                 # Show the matching unlimited plan alongside high-volume subscriptions.
@@ -244,6 +257,7 @@ class PlanPickerMixin:
 
         if stage not in {"all_type", "volume_list", "time_list", "unlimited_users", "unlimited_results"}:
             rows.append([self._picker_button(picker, "📋 تمام اشتراک‌های این سرویس", "all")])
+        rows.append([{"text": "📖 راهنمای انتخاب سرویس", "callback_data": "service_guide"}])
         rows.append([{"text": "🔙 سرویس‌ها", "callback_data": "purchase_subscription"}])
         await self.update_user_state(user, BotState.StateType.PURCHASE_FLOW, {
             "step": "plan_selection" if stage in {"results", "volume_list", "time_list", "unlimited_users", "unlimited_results"} else "plan_filters",

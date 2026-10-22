@@ -80,12 +80,46 @@ class BaseHandler:
             await BotState.objects.acreate(
                 user=user, brand=self.brand, current_state=BotState.StateType.MAIN_MENU
             )
+            # Existing customers keep their access. Gate only newly created accounts
+            # when the brand has explicitly enabled the private-channel requirement.
+            from apps.accounts.models import UserProfile
+            from apps.brands.models import BrandConfiguration
+            custom_fields = await BrandConfiguration.objects.filter(brand_id=self.brand.pk).values_list("custom_fields", flat=True).afirst() or {}
+            required = bool(isinstance(custom_fields, dict) and custom_fields.get("required_channel_id"))
+            await UserProfile.objects.aupdate_or_create(
+                user=user,
+                defaults={"channel_join_required": required, "channel_join_verified": not required},
+            )
         if created:
             from apps.bot.models import BehaviorEvent
             await BehaviorEvent.objects.aget_or_create(dedupe_key=f"joined:{self.brand.pk}:{user.pk}", defaults={"user": user, "brand": self.brand, "event": "joined", "outcome": "completed"})
         if use_cache:
             await cache.aset(CACHE_KEY, user.pk, timeout=cache_ttl)
         return user, created
+
+    @sync_to_async
+    def _first_section_visit(self, user_id: int, section: str, version: int = 1) -> bool:
+        from django.db import transaction
+        with transaction.atomic():
+            state = BotState.objects.select_for_update().get(user_id=user_id, brand_id=self.brand.pk)
+            seen = dict(state.seen_sections or {})
+            if seen.get(section, 0) >= version:
+                return False
+            seen[section] = version
+            state.seen_sections = seen
+            state.save(update_fields=["seen_sections", "updated_at"])
+            return True
+
+    async def section_intro_once(self, user, section: str, default_message: str) -> str:
+        """Inject at most once per section/version, without a separate notification."""
+        if not await self._first_section_visit(user.pk, section):
+            return ""
+        from apps.brands.models import BrandConfiguration
+        from html import escape
+        custom_fields = await BrandConfiguration.objects.filter(brand_id=self.brand.pk).values_list("custom_fields", flat=True).afirst() or {}
+        notices = custom_fields.get("first_visit_messages", {}) if isinstance(custom_fields, dict) else {}
+        message = notices.get(section, default_message) if isinstance(notices, dict) else default_message
+        return f"📖 {escape(str(message)[:800])}\n\n" if message else ""
 
     async def get_user_state(self, user: User) -> BotState:
         """Get user's current bot state"""
@@ -132,18 +166,30 @@ class BaseHandler:
             return False
 
     async def clear_previous_keyboard(self, chat_id: int, user: User):
-        """Retire the previous profile prompt without deleting chat history."""
+        """Remove only the tracked bot profile prompt, without touching unrelated chat."""
         state = await self.get_user_state(user)
         if state.last_message_id is None:
             return
         try:
-            await self.bot.edit_message_reply_markup(
-                chat_id=chat_id, message_id=state.last_message_id, reply_markup=None
-            )
+            await self.bot.delete_message(chat_id=chat_id, message_id=state.last_message_id)
         except TelegramBadRequest as exc:
-            logger.warning("Could not retire profile keyboard: %s", exc.message)
+            # Telegram disallows deleting messages older than 48 hours.
+            # Retire their buttons instead of leaving actionable stale prompts.
+            try:
+                await self.bot.edit_message_reply_markup(
+                    chat_id=chat_id, message_id=state.last_message_id, reply_markup=None
+                )
+            except TelegramBadRequest:
+                logger.debug("Could not retire old profile prompt: %s", exc.message)
         state.last_message_id = None
         await state.asave(update_fields=["last_message_id"])
+
+    async def _remove_user_input(self, message):
+        """Best-effort cleanup of sensitive profile text after persistence."""
+        try:
+            await self.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        except TelegramBadRequest:
+            pass
 
     async def remember_profile_prompt(self, user: User, message_id: int):
         state = await self.get_user_state(user)

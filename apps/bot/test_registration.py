@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import EditMessageReplyMarkup, GetMe, SendMessage
+from aiogram.methods import DeleteMessage, EditMessageReplyMarkup, GetMe, SendMessage
 from asgiref.sync import async_to_sync
 from django.contrib.admin.sites import AdminSite
 from django.core.cache import cache
@@ -231,22 +231,19 @@ class RegistrationFlowTests(TestCase):
         phone_id = BotState.objects.get(user=user).last_message_id
         self.feed(callback="request_phone")
         self.feed(text="+۹۸ ۹۱۲-۳۴۵-۶۷۸۹")
-        device_id = BotState.objects.get(user=user).last_message_id
-        self.feed(callback="setup_device_linux")
         user.refresh_from_db()
         self.assertEqual(user.phone_number, "09123456789")
-        self.assertEqual(UserProfile.objects.get(user=user).device_type, "linux")
+        self.assertIsNone(UserProfile.objects.get(user=user).device_type)
         state = BotState.objects.get(user=user)
         self.assertEqual(state.current_state, "main_menu")
         self.assertIsNone(state.last_message_id)
-        retired = {
-            call.message_id
-            for call in self.session.calls
-            if isinstance(call, EditMessageReplyMarkup) and call.reply_markup is None
+        cleaned_ids = {
+            call.message_id for call in self.session.calls if isinstance(call, DeleteMessage)
         }
-        self.assertTrue({welcome_id, name_id, phone_id, device_id} <= retired)
+        self.assertTrue({welcome_id, name_id, phone_id} <= cleaned_ids)
+
         self.assertNotEqual(welcome_id, name_id)
-        self.assertNotEqual(phone_id, device_id)
+        self.assertNotEqual(name_id, phone_id)
         self.assertTrue(
             any(
                 isinstance(call, SendMessage)
@@ -254,9 +251,10 @@ class RegistrationFlowTests(TestCase):
                 for call in self.session.calls
             )
         )
+        # Legacy device callback cannot reintroduce a required onboarding step.
         self.feed(callback="setup_device_windows")
         self.feed(callback="onboarding_no_subscription")
-        self.assertEqual(UserProfile.objects.get(user=user).device_type, "linux")
+        self.assertIsNone(UserProfile.objects.get(user=user).device_type)
         self.assertEqual(BotState.objects.get(user=user).current_state, "main_menu")
 
     def test_phone_edit_persian_and_arabic_input_share_canonical_storage(self):
@@ -296,7 +294,7 @@ class RegistrationFlowTests(TestCase):
         self.feed(contact=contact)
         user.refresh_from_db()
         self.assertEqual(user.phone_number, "09123456789")
-        self.assertEqual(BotState.objects.get(user=user).state_data["step"], "device")
+        self.assertEqual(BotState.objects.get(user=user).current_state, "main_menu")
 
     def test_plan_copy_order_and_service_grid(self):
         plan = SubscriptionPlan.objects.create(

@@ -63,6 +63,8 @@ class StartHandler(BaseHandler):
         elif referral_code:
             await self.process_referral_safely(user, referral_code, created)
 
+        if await self.show_channel_gate_if_required(chat_id, user):
+            return
         if created:
             await self.show_profile_setup(chat_id, user)
         else:
@@ -89,6 +91,52 @@ class StartHandler(BaseHandler):
             user_id=user_id, brand_id=brand_id, code=referral_code
         )
 
+    async def show_channel_gate_if_required(self, chat_id: int, user: User) -> bool:
+        """Gate only opted-in new users; verify real Telegram membership."""
+        profile = await UserProfile.objects.filter(user=user).afirst()
+        if not profile or not profile.channel_join_required or profile.channel_join_verified:
+            return False
+        config = await BrandConfiguration.objects.filter(brand=self.brand).afirst()
+        custom = config.custom_fields if config and isinstance(config.custom_fields, dict) else {}
+        channel_id = custom.get("required_channel_id")
+        invite_link = custom.get("required_channel_invite_link")
+        if not channel_id or not invite_link or not str(invite_link).startswith("https://t.me/"):
+            logger.error("Brand %s channel gate misconfigured", self.brand.pk)
+            await self.send_message_with_keyboard(chat_id, "ثبت‌نام موقتاً در دسترس نیست. با پشتیبانی تماس بگیرید.", self.get_back_keyboard("main_menu"))
+            return True
+        try:
+            member = await self.bot.get_chat_member(chat_id=channel_id, user_id=user.telegram_id)
+            is_member = member.status in {"creator", "administrator", "member"} or (
+                member.status == "restricted" and getattr(member, "is_member", False)
+            )
+        except Exception as exc:
+            logger.warning("Could not verify channel membership for brand %s (%s)", self.brand.pk, type(exc).__name__)
+            is_member = False
+        if is_member:
+            profile.channel_join_verified = True
+            await profile.asave(update_fields=["channel_join_verified", "updated_at"])
+            return False
+        await self.send_message_with_keyboard(
+            chat_id,
+            "🔒 برای تکمیل ثبت‌نام، ابتدا عضو کانال خصوصی ما شوید. سپس «بررسی عضویت» را بزنید.",
+            self.create_keyboard([
+                [{"text": "📣 درخواست عضویت در کانال", "url": invite_link}],
+                [{"text": "✅ بررسی عضویت", "callback_data": "verify_channel_join"}],
+            ]),
+        )
+        return True
+
+    async def verify_channel_join(self, callback):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        if await self.show_channel_gate_if_required(callback.message.chat.id, user):
+            await callback.answer("عضویت هنوز تأیید نشده است.", show_alert=True)
+            return
+        await callback.answer("✅ عضویت تأیید شد.")
+        if not user.full_name or not user.phone_number:
+            await self.show_profile_setup(callback.message.chat.id, user)
+        else:
+            await self.show_main_menu(callback.message.chat.id, user)
+
     async def show_profile_setup(self, chat_id: int, user: User):
         """Show profile setup screen for new users"""
         await self.update_user_state(user, BotState.StateType.PROFILE_SETUP)
@@ -96,7 +144,6 @@ class StartHandler(BaseHandler):
         name_status = "✅" if user.full_name else "❌"
         phone_status = "✅" if user.phone_number else "❌"
         profile = await UserProfile.objects.filter(user=user).afirst()
-        device_status = "✅" if profile and profile.device_type else "❌"
 
         welcome_text = f"""
 🎉 خوش آمدید به {self.brand.name}!
@@ -106,7 +153,6 @@ class StartHandler(BaseHandler):
 
 👤 نام کامل: {name_status}
 📱 شماره تلفن: {phone_status}
-📱 دستگاه‌ها: {device_status}
         """
 
         keyboard = self.create_keyboard(
@@ -143,7 +189,7 @@ class StartHandler(BaseHandler):
         )
         profile = await UserProfile.objects.filter(user=user).afirst()
         profile_complete = bool(
-            user.full_name and user.phone_number and profile and profile.device_type
+            user.full_name and user.phone_number
         )
         back_callback = (
             "my_subscriptions" if profile_complete else "onboarding_no_subscription"
@@ -235,6 +281,7 @@ class StartHandler(BaseHandler):
                 "پس از تأیید، اشتراک در «اشتراک‌های من» نمایش داده می‌شود."
             )
 
+        await self._remove_user_input(message)
         await self.update_user_state(
             user,
             BotState.StateType.SUBSCRIPTION_MANAGEMENT,
@@ -242,7 +289,7 @@ class StartHandler(BaseHandler):
         )
         profile = await UserProfile.objects.filter(user=user).afirst()
         profile_complete = bool(
-            user.full_name and user.phone_number and profile and profile.device_type
+            user.full_name and user.phone_number
         )
         continue_button = (
             {"text": "🏠 منوی اصلی", "callback_data": "main_menu"}
@@ -337,6 +384,8 @@ class StartHandler(BaseHandler):
             """
 
         welcome_text = renderer.render(template, context)
+        intro = await self.section_intro_once(user, "main_menu", "از منوی اصلی می‌توانید اشتراک، کیف پول و خدمات پشتیبانی را مدیریت کنید.")
+        welcome_text = intro + welcome_text
         keyboard = await self.get_main_menu_keyboard(user)
 
         if callback:
@@ -403,9 +452,12 @@ class StartHandler(BaseHandler):
             await self.start_existing_subscription_registration(callback)
             return
         elif callback.data == "request_phone":
-            await self.request_phone_contact(callback.message.chat.id)
+            await self.request_phone_contact(callback.message.chat.id, user)
         elif callback.data == "skip_phone":
-            await self.show_device_setup(callback.message.chat.id, user)
+            # Backward compatibility for old inline keyboards: do not require a
+            # device, but leave phone setup available from the profile menu.
+            await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+            await self.show_main_menu(callback.message.chat.id, user)
         elif callback.data.startswith("setup_device_"):
             await self.set_initial_device(
                 callback.message.chat.id,
@@ -418,7 +470,7 @@ class StartHandler(BaseHandler):
 
         await callback.answer()
 
-    async def request_phone_contact(self, chat_id: int):
+    async def request_phone_contact(self, chat_id: int, user=None):
         """Ask Telegram to share the current user's own phone number."""
         keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
@@ -431,11 +483,15 @@ class StartHandler(BaseHandler):
             resize_keyboard=True,
             one_time_keyboard=True,
         )
-        await self.bot.send_message(
+        if user:
+            await self.clear_previous_keyboard(chat_id, user)
+        prompt = await self.bot.send_message(
             chat_id,
-            "برای ثبت شماره، دکمه زیر را بزنید تا شماره خودتان از تلگرام ارسال شود.",
+            "شماره شما فقط برای اطلاع‌رسانی درباره قطعی اینترنت و وضعیت اشتراک ثبت می‌شود. برای ارسال امن شماره خود دکمه زیر را بزنید.",
             reply_markup=keyboard,
         )
+        if user:
+            await self.remember_profile_prompt(user, prompt.message_id)
 
     async def handle_contact_message(self, message: types.Message, user: User):
         state = await self.get_user_state(user)
@@ -457,10 +513,20 @@ class StartHandler(BaseHandler):
             return
         await self._update_user_phone(user.id, phone)
         user.phone_number = phone
-        await message.answer(
-            "✅ شماره تلفن ثبت شد.", reply_markup=types.ReplyKeyboardRemove()
+        await self._remove_user_input(message)
+        await self.clear_previous_keyboard(message.chat.id, user)
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        # Remove the temporary reply keyboard without leaving an obsolete
+        # "phone registered" message in chat history.
+        confirmation = await self.bot.send_message(
+            message.chat.id, "✅ شماره تلفن ثبت شد.",
+            reply_markup=types.ReplyKeyboardRemove(),
         )
-        await self.show_device_setup(message.chat.id, user)
+        await self.show_main_menu(message.chat.id, user)
+        try:
+            await self.bot.delete_message(chat_id=message.chat.id, message_id=confirmation.message_id)
+        except Exception:
+            logger.debug("Could not delete temporary onboarding confirmation")
 
     async def start_profile_setup(self, chat_id: int, user: User):
         """Start profile setup process"""
@@ -499,6 +565,7 @@ class StartHandler(BaseHandler):
         await self._update_user_name(user.id, name)
         user.full_name = name
 
+        await self._remove_user_input(message)
         await self.update_user_state(
             user, BotState.StateType.PROFILE_SETUP, {"step": "phone"}
         )
@@ -510,7 +577,7 @@ class StartHandler(BaseHandler):
         await self.send_profile_prompt(
             message.chat.id,
             user,
-            "✅ نام شما ثبت شد.\n\n📱 لطفاً شماره تلفن خود را وارد کنید:",
+            "✅ نام شما ثبت شد.\n\n📱 شماره تلفن را برای اطلاع‌رسانی درباره قطعی اینترنت و وضعیت سرویس دریافت می‌کنیم.\nشماره موبایل خود را وارد کنید:",
             keyboard,
         )
 
@@ -536,10 +603,20 @@ class StartHandler(BaseHandler):
 
         await self._update_user_phone(user.id, phone)
         user.phone_number = phone
-        await message.reply(
-            "✅ شماره تلفن ثبت شد.", reply_markup=types.ReplyKeyboardRemove()
+        await self._remove_user_input(message)
+        await self.clear_previous_keyboard(message.chat.id, user)
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        # Remove the temporary reply keyboard without leaving an obsolete
+        # "phone registered" message in chat history.
+        confirmation = await self.bot.send_message(
+            message.chat.id, "✅ شماره تلفن ثبت شد.",
+            reply_markup=types.ReplyKeyboardRemove(),
         )
-        await self.show_device_setup(message.chat.id, user)
+        await self.show_main_menu(message.chat.id, user)
+        try:
+            await self.bot.delete_message(chat_id=message.chat.id, message_id=confirmation.message_id)
+        except Exception:
+            logger.debug("Could not delete temporary onboarding confirmation")
 
     async def show_device_setup(self, chat_id: int, user: User):
         """Collect the required device family during initial profile setup."""

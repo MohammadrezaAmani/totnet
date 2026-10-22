@@ -17,6 +17,7 @@ from .models import (
     ReferralLevel,
     ReferralLink,
     ReferralProgram,
+    ServiceRewardRate,
     ReferralReward,
     ReferralStats,
     RewardAccount,
@@ -742,3 +743,13 @@ class NotificationRuleAdmin(ScopedReferralAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(ServiceRewardRate)
+class ServiceRewardRateAdmin(ScopedReferralAdmin):
+    list_display = ("brand", "service_category", "plan_type", "percent", "is_active")
+    list_filter = ("brand", "service_category", "plan_type", "is_active")
+    list_editable = ("percent", "is_active")
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs if request.user.is_superuser else qs.filter(brand__in=request.user.admin_brands.all())
