@@ -202,34 +202,178 @@ def _queue_once(
         return False
 
 
+
+def _confirmed_referral_target(order):
+    """The purchaser's inviter, with legacy referred_by fallback (alerts only)."""
+    if order.order_type not in (
+        Order.OrderType.NEW_SUBSCRIPTION,
+        Order.OrderType.RENEWAL,
+        Order.OrderType.UPGRADE,
+        Order.OrderType.GIFT,
+    ):
+        return None
+    referral = Referral.objects.select_related("referrer").filter(
+        brand_id=order.brand_id,
+        referee_id=order.user_id,
+    ).first()
+    if referral:
+        if referral.status == Referral.ReferralStatus.REJECTED:
+            return None
+        user = referral.referrer
+    else:
+        # Older accounts may only have User.referred_by. Do not create points
+        # or a new referral relation as a side effect of notification.
+        from apps.accounts.models import User
+
+        inviter_id = User.objects.filter(
+            pk=order.user_id, brand_id=order.brand_id
+        ).values_list("referred_by_id", flat=True).first()
+        user = User.objects.filter(pk=inviter_id, brand_id=order.brand_id).first() if inviter_id else None
+    if not user or user.brand_id != order.brand_id or user.pk == order.user_id:
+        return None
+    return user if user.is_active and user.telegram_id else None
+
+
+def _claimed_gift_referral_target(order):
+    """The gift purchaser, only when a *new* member claims their gift link."""
+    if order.order_type != Order.OrderType.GIFT or not order.recipient_id or not order.recipient_claimed_at:
+        return None
+    from apps.orders.models import GiftVoucher
+    from apps.accounts.models import User
+
+    if not GiftVoucher.objects.filter(
+        order_id=order.pk, claimed_by_id=order.recipient_id, new_member_at_claim=True
+    ).exists():
+        return None
+    if not Referral.objects.filter(
+        brand_id=order.brand_id, referee_id=order.recipient_id,
+        referrer_id=order.user_id,
+    ).exclude(status=Referral.ReferralStatus.REJECTED).exists():
+        return None
+    buyer = User.objects.filter(pk=order.user_id, brand_id=order.brand_id).first()
+    if not buyer or not buyer.is_active or not buyer.telegram_id:
+        return None
+    return buyer
+
+
+def _already_delivered_legacy_reward(order, user_id):
+    reward_ids = list(ReferralReward.objects.filter(
+        order_id=order.pk, user_id=user_id,
+    ).values_list("pk", flat=True))
+    return bool(reward_ids) and GamificationNotification.objects.filter(
+        dedupe_key__in=[f"referral-reward:{pk}" for pk in reward_ids],
+        sent_at__isnull=False,
+    ).exists()
+
+
+def _queue_confirmed_referral_purchase(order):
+    """Notify each rightful inviter once per settled order, never on a partial payment.
+
+    Buying a gift counts as a purchase by the buyer. A *separate* notification
+    about a newly invited recipient is only sent after the gift is claimed.
+    """
+    if order.status not in (
+        Order.OrderStatus.PAID,
+        Order.OrderStatus.PROCESSING,
+        Order.OrderStatus.COMPLETED,
+    ) or order.final_price <= 0:
+        return False
+    paid = Payment.objects.filter(
+        order_id=order.pk, status=Payment.PaymentStatus.CONFIRMED,
+    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    if paid < order.final_price:
+        return False
+
+    queued = False
+    referrer = _confirmed_referral_target(order)
+    if referrer and not _already_delivered_legacy_reward(order, referrer.pk):
+        text = (
+            "✅ خرید یکی از دوستانی که با لینک شما عضو شده، تأیید شد."
+            "\n\nبرای مشاهده وضعیت امتیازات معرفی، بخش امتیازات را باز کنید."
+        )
+        queued = _queue_once(
+            user=referrer,
+            brand_id=order.brand_id,
+            notification_type=GamificationNotification.NotificationType.REFERRAL_PURCHASE,
+            dedupe_key=f"referral-purchase:{order.pk}",
+            text=text,
+            buttons_data=[[{"text": "🏅 امتیازات معرفی", "callback_data": "rewards"}]],
+            metadata={"order_id": order.pk, "referee_id": order.user_id},
+        ) or queued
+
+    gift_inviter = _claimed_gift_referral_target(order)
+    if gift_inviter and not _already_delivered_legacy_reward(order, gift_inviter.pk):
+        queued = _queue_once(
+            user=gift_inviter,
+            brand_id=order.brand_id,
+            notification_type=GamificationNotification.NotificationType.REFERRAL_PURCHASE,
+            dedupe_key=f"gift-claim-referral:{order.pk}",
+            text=(
+                "🎁 کاربری که با لینک هدیه شما عضو شد، هدیه را دریافت کرد."
+                "\n\nوضعیت امتیازات معرفی را از بخش امتیازات بررسی کنید."
+            ),
+            buttons_data=[[{"text": "🏅 امتیازات معرفی", "callback_data": "rewards"}]],
+            metadata={"order_id": order.pk, "referee_id": order.recipient_id},
+        ) or queued
+    return queued
+
+
+def _queue_referral_purchase_for_payment(payment_id: str):
+    payment = Payment.objects.select_related("order").filter(payment_id=payment_id).first()
+    if not payment or payment.status != Payment.PaymentStatus.CONFIRMED or not payment.order_id:
+        return False
+    return _queue_confirmed_referral_purchase(payment.order)
+
+
 @shared_task(bind=True, max_retries=5, default_retry_delay=60)
 def process_referral_reward(self, payment_id: str):
     """Process one confirmed purchase and notify its direct referrer once."""
+    # Notification is a separate obligation from earning an actual reward.
+    # Queue it first so a broken reward configuration cannot suppress the alert.
+    try:
+        _queue_referral_purchase_for_payment(payment_id)
+    except Exception:
+        logger.exception("Unable to queue referred purchase notification for payment %s", payment_id)
     try:
         result = award_level_one_referral_for_payment(payment_id=payment_id)
     except (RewardConfigurationError, ChallengeError, WalletOperationError) as exc:
         logger.warning("Referral reward deferred for payment %s: %s", payment_id, exc)
         raise self.retry(exc=exc)
-
-    reward = (
-        ReferralReward.objects.select_related("user", "order")
-        .filter(order__payments__payment_id=payment_id)
-        .first()
-    )
-    if reward and reward.status in {
-        ReferralReward.RewardStatus.PROCESSED,
-        ReferralReward.RewardStatus.PENDING,
-    }:
-        _queue_once(
-            user=reward.user,
-            brand_id=reward.brand_id,
-            notification_type=GamificationNotification.NotificationType.REFERRAL_REWARD,
-            dedupe_key=f"referral-reward:{reward.pk}",
-            text="💊 یک قرص جدید از سیستم معرفی دوستان دریافت کردید.",
-            buttons_data=[[{"text": "🏅 مشاهده امتیازات", "callback_data": "rewards"}]],
-            metadata={"reward_id": reward.pk, "order_id": reward.order_id},
-        )
     return str(result)
+
+
+@shared_task
+def recover_missing_referrer_purchase_notifications(limit: int = 200):
+    """Catch missed queues, including orders whose reward already exists.
+
+    Recovery only examines recently confirmed purchases to avoid retroactively
+    messaging users about months-old sales after a deployment.
+    """
+    since = timezone.now() - timedelta(days=7)
+    orders = (
+        Order.objects.filter(
+            status__in=[
+                Order.OrderStatus.PAID,
+                Order.OrderStatus.PROCESSING,
+                Order.OrderStatus.COMPLETED,
+            ],
+            final_price__gt=0,
+            payments__status=Payment.PaymentStatus.CONFIRMED,
+        )
+        .filter(
+            Q(payments__verified_at__gte=since)
+            | Q(payments__created_at__gte=since)
+            | Q(recipient_claimed_at__gte=since)
+        )
+        .distinct().order_by("-pk")[:limit * 4]
+    )
+    queued = 0
+    for order in orders:
+        if _queue_confirmed_referral_purchase(order):
+            queued += 1
+            if queued >= limit:
+                break
+    return queued
 
 
 @shared_task
