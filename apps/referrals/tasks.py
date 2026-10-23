@@ -270,6 +270,54 @@ def _already_delivered_legacy_reward(order, user_id):
     ).exists()
 
 
+def _earned_pill_purchase_message(*, order, referrer):
+    """Render the pill alert only for an actually processed point for this order.
+
+    Rank the awarded point in the original reward ledger, not the current open
+    pill box: after the third point is cashed out, its historical position must
+    still yield zero remaining, even when the notification is recovered later.
+    """
+    reward = (
+        ReferralReward.objects.filter(
+            order_id=order.pk,
+            user_id=referrer.pk,
+            brand_id=order.brand_id,
+            reward_type="normal_point",
+            status=ReferralReward.RewardStatus.PROCESSED,
+            amount=Decimal("1"),
+        )
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if reward is None:
+        return None
+
+    awarded_count = (
+        ReferralReward.objects.filter(
+            user_id=referrer.pk,
+            brand_id=order.brand_id,
+            reward_type__in=["normal_point", "profile_point"],
+            status=ReferralReward.RewardStatus.PROCESSED,
+        )
+        .filter(
+            Q(created_at__lt=reward.created_at)
+            | Q(created_at=reward.created_at, pk__lte=reward.pk)
+        )
+        .count()
+    )
+    from .gamification import POINTS_PER_PILL
+
+    remaining = (-awarded_count) % POINTS_PER_PILL
+    persian_remaining = str(remaining).translate(
+        str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+    )
+    return (
+        "<b>شما یک 💊دریافت کردید</b>"
+        "\n\n🦠به واسطه خرید کاربری که با لینک شما عضو شده یک قرص دریافت کردید"
+        f"\n\n📦تنها {persian_remaining}قرص دیگر مانده تا نقد شدن کامل یک امتیاز"
+    )
+
+
 def _queue_confirmed_referral_purchase(order):
     """Notify each rightful inviter once per settled order, never on a partial payment.
 
@@ -291,19 +339,17 @@ def _queue_confirmed_referral_purchase(order):
     queued = False
     referrer = _confirmed_referral_target(order)
     if referrer and not _already_delivered_legacy_reward(order, referrer.pk):
-        text = (
-            "✅ خرید یکی از دوستانی که با لینک شما عضو شده، تأیید شد."
-            "\n\nبرای مشاهده وضعیت امتیازات معرفی، بخش امتیازات را باز کنید."
-        )
-        queued = _queue_once(
-            user=referrer,
-            brand_id=order.brand_id,
-            notification_type=GamificationNotification.NotificationType.REFERRAL_PURCHASE,
-            dedupe_key=f"referral-purchase:{order.pk}",
-            text=text,
-            buttons_data=[[{"text": "🏅 امتیازات معرفی", "callback_data": "rewards"}]],
-            metadata={"order_id": order.pk, "referee_id": order.user_id},
-        ) or queued
+        text = _earned_pill_purchase_message(order=order, referrer=referrer)
+        if text is not None:
+            queued = _queue_once(
+                user=referrer,
+                brand_id=order.brand_id,
+                notification_type=GamificationNotification.NotificationType.REFERRAL_PURCHASE,
+                dedupe_key=f"referral-purchase:{order.pk}",
+                text=text,
+                buttons_data=[[{"text": "🏅 امتیازات معرفی", "callback_data": "rewards"}]],
+                metadata={"order_id": order.pk, "referee_id": order.user_id},
+            ) or queued
 
     gift_inviter = _claimed_gift_referral_target(order)
     if gift_inviter and not _already_delivered_legacy_reward(order, gift_inviter.pk):
@@ -332,17 +378,17 @@ def _queue_referral_purchase_for_payment(payment_id: str):
 @shared_task(bind=True, max_retries=5, default_retry_delay=60)
 def process_referral_reward(self, payment_id: str):
     """Process one confirmed purchase and notify its direct referrer once."""
-    # Notification is a separate obligation from earning an actual reward.
-    # Queue it first so a broken reward configuration cannot suppress the alert.
-    try:
-        _queue_referral_purchase_for_payment(payment_id)
-    except Exception:
-        logger.exception("Unable to queue referred purchase notification for payment %s", payment_id)
+    # Notify after the reward commits. A purchase must not be described as
+    # earning a pill if the ledger has no processed pill for that order.
     try:
         result = award_level_one_referral_for_payment(payment_id=payment_id)
     except (RewardConfigurationError, ChallengeError, WalletOperationError) as exc:
         logger.warning("Referral reward deferred for payment %s: %s", payment_id, exc)
         raise self.retry(exc=exc)
+    try:
+        _queue_referral_purchase_for_payment(payment_id)
+    except Exception:
+        logger.exception("Unable to queue referred purchase notification for payment %s", payment_id)
     return str(result)
 
 

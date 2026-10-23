@@ -1,4 +1,4 @@
-"""Direct-referrer purchase alerts must not depend on the pill reward system."""
+"""Direct-referrer pill notifications reflect credited points and box progress."""
 
 import uuid
 from datetime import timedelta
@@ -63,14 +63,29 @@ class ReferrerPurchaseNotificationTests(TestCase):
         order.refresh_from_db()
         return order, payment
 
+    def award_pill(self, order=None, *, reward_type="normal_point"):
+        return ReferralReward.objects.create(
+            order=order, user=self.inviter, brand=self.brand,
+            reward_type=reward_type,
+            status=ReferralReward.RewardStatus.PROCESSED,
+            amount=Decimal("1"), cash_value=Decimal("8000"), currency="T",
+        )
+
     def queue(self, payment):
         with patch("apps.referrals.tasks._publish_notification") as publish:
             with self.captureOnCommitCallbacks(execute=True):
                 result = _queue_referral_purchase_for_payment(str(payment.payment_id))
         return result, publish
 
-    def test_notifies_inviter_even_when_no_reward_program_configured(self):
+    def test_only_notifies_after_a_real_pill_is_awarded(self):
         order, payment = self.purchase()
+        result, publish = self.queue(payment)
+        self.assertFalse(result)
+        publish.assert_not_called()
+        self.assertFalse(GamificationNotification.objects.filter(
+            dedupe_key=f"referral-purchase:{order.pk}"
+        ).exists())
+        self.award_pill(order)
         result, publish = self.queue(payment)
         self.assertTrue(result)
         notification = GamificationNotification.objects.get(
@@ -78,13 +93,45 @@ class ReferrerPurchaseNotificationTests(TestCase):
         )
         self.assertEqual(notification.user_id, self.inviter.pk)
         self.assertEqual(notification.notification_type, "referral_purchase")
-        self.assertIn("خرید", notification.metadata["delivery_payload"]["text"])
-        self.assertNotIn("یک قرص", notification.metadata["delivery_payload"]["text"])
+        self.assertEqual(notification.metadata["delivery_payload"]["text"], (
+            "<b>شما یک 💊دریافت کردید</b>"
+            "\n\n🦠به واسطه خرید کاربری که با لینک شما عضو شده یک قرص دریافت کردید"
+            "\n\n📦تنها ۲قرص دیگر مانده تا نقد شدن کامل یک امتیاز"
+        ))
         publish.assert_called_once_with(notification.pk)
         self.assertFalse(self.queue(payment)[0])
 
+    def test_remaining_pills_after_previous_one_or_two_and_full_box(self):
+        for prior_pills, expected in ((0, "۲"), (1, "۱"), (2, "۰")):
+            with self.subTest(prior_pills=prior_pills):
+                ReferralReward.objects.filter(user=self.inviter).delete()
+                for _ in range(prior_pills):
+                    self.award_pill(reward_type="profile_point")
+                order, payment = self.purchase()
+                self.award_pill(order)
+                self.assertTrue(self.queue(payment)[0])
+                notification = GamificationNotification.objects.get(
+                    dedupe_key=f"referral-purchase:{order.pk}"
+                )
+                self.assertIn(
+                    f"📦تنها {expected}قرص دیگر مانده تا نقد شدن کامل یک امتیاز",
+                    notification.metadata["delivery_payload"]["text"],
+                )
+
+    def test_delayed_notification_preserves_historical_pill_count(self):
+        first_order, first_payment = self.purchase()
+        self.award_pill(first_order)
+        for _ in range(2):
+            self.award_pill(reward_type="normal_point")
+        self.assertTrue(self.queue(first_payment)[0])
+        notice = GamificationNotification.objects.get(
+            dedupe_key=f"referral-purchase:{first_order.pk}"
+        )
+        self.assertIn("تنها ۲قرص", notice.metadata["delivery_payload"]["text"])
+
     def test_telegram_delivery_marks_sent_only_after_success(self):
         order, payment = self.purchase()
+        self.award_pill(order)
         self.assertTrue(self.queue(payment)[0])
         notice = GamificationNotification.objects.get(dedupe_key=f"referral-purchase:{order.pk}")
         bot = MagicMock()
@@ -99,16 +146,32 @@ class ReferrerPurchaseNotificationTests(TestCase):
         bot.send_message.assert_awaited_once()
         self.assertEqual(bot.send_message.call_args.kwargs["chat_id"], self.inviter.telegram_id)
 
-    def test_processing_reward_zero_still_notifies(self):
+    def test_processing_reward_zero_does_not_claim_a_pill(self):
         order, payment = self.purchase()
         with patch("apps.referrals.tasks._publish_notification") as publish:
             with self.captureOnCommitCallbacks(execute=True):
                 self.assertEqual(process_referral_reward.run(str(payment.payment_id)), "0")
         self.assertFalse(ReferralReward.objects.filter(order=order).exists())
-        self.assertEqual(GamificationNotification.objects.filter(
+        self.assertFalse(GamificationNotification.objects.filter(
             dedupe_key=f"referral-purchase:{order.pk}"
-        ).count(), 1)
-        publish.assert_called_once()
+        ).exists())
+        publish.assert_not_called()
+
+    def test_processes_reward_before_queueing_pill_message(self):
+        order, payment = self.purchase()
+        def award(*, payment_id):
+            self.assertEqual(payment_id, str(payment.payment_id))
+            self.award_pill(order)
+            return Decimal("1")
+        with patch("apps.referrals.tasks.award_level_one_referral_for_payment", side_effect=award):
+            with patch("apps.referrals.tasks._publish_notification") as publish:
+                with self.captureOnCommitCallbacks(execute=True):
+                    self.assertEqual(process_referral_reward.run(str(payment.payment_id)), "1")
+        notice = GamificationNotification.objects.get(
+            dedupe_key=f"referral-purchase:{order.pk}"
+        )
+        self.assertIn("۲قرص", notice.metadata["delivery_payload"]["text"])
+        publish.assert_called_once_with(notice.pk)
 
     def test_partial_payment_is_not_a_confirmed_purchase(self):
         order = Order.objects.create(
@@ -122,6 +185,7 @@ class ReferrerPurchaseNotificationTests(TestCase):
             status=Payment.PaymentStatus.CONFIRMED,
             amount=Decimal("40000"), currency="T",
         )
+        self.award_pill(order)
         self.assertFalse(self.queue(first)[0])
         second = Payment.objects.create(
             brand=self.brand, user=self.buyer, order=order,
@@ -152,11 +216,12 @@ class ReferrerPurchaseNotificationTests(TestCase):
             dedupe_key=f"referral-purchase:{order.pk}"
         ).exists())
 
-    def test_legacy_user_referred_by_without_referral_ledger_gets_alert(self):
+    def test_legacy_user_referred_by_with_credited_pill_gets_alert(self):
         Referral.objects.filter(brand=self.brand, referee=self.buyer).delete()
         self.buyer.refresh_from_db()
         self.assertEqual(self.buyer.referred_by_id, self.inviter.pk)
         order, payment = self.purchase()
+        self.award_pill(order)
         self.assertTrue(self.queue(payment)[0])
         self.assertEqual(GamificationNotification.objects.get(
             dedupe_key=f"referral-purchase:{order.pk}"
@@ -167,8 +232,9 @@ class ReferrerPurchaseNotificationTests(TestCase):
         order, payment = self.purchase()
         self.assertFalse(self.queue(payment)[0])
 
-    def test_gift_purchase_notifies_buyer_inviter_but_not_unclaimed_recipient(self):
+    def test_gift_purchase_with_credited_pill_notifies_inviter_not_unclaimed_recipient(self):
         order, payment = self.purchase(order_type=Order.OrderType.GIFT)
+        self.award_pill(order)
         self.assertTrue(self.queue(payment)[0])
         self.assertEqual(GamificationNotification.objects.get(
             dedupe_key=f"referral-purchase:{order.pk}"
@@ -217,7 +283,7 @@ class ReferrerPurchaseNotificationTests(TestCase):
             expires_at=now + timedelta(days=3),
             claimed_by=self.inviter, claimed_at=now, new_member_at_claim=False,
         )
-        self.assertTrue(self.queue(payment)[0])  # Buyer did make a purchase.
+        self.assertFalse(self.queue(payment)[0])  # No pill was awarded for this gift purchase.
         self.assertFalse(GamificationNotification.objects.filter(
             dedupe_key=f"gift-claim-referral:{order.pk}"
         ).exists())
