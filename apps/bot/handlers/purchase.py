@@ -34,6 +34,15 @@ from .useful_content import UsefulContentHandler
 logger = logging.getLogger(__name__)
 
 
+def _telegram_profile_link(telegram_id, label) -> str:
+    """Link to a Telegram profile from an admin receipt, if the ID is valid."""
+    display = escape(str(label))
+    user_id = str(telegram_id or "")
+    if not user_id.isascii() or not user_id.isdecimal() or int(user_id) <= 0:
+        return display
+    return f'<a href="tg://user?id={user_id}">{display}</a>'
+
+
 class PurchaseStep:
     PLAN_SELECTION = "plan_selection"
     PLAN_DETAILS = "plan_details"
@@ -1222,9 +1231,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             f"تاریخ ثبت: {jalali_date(payment.created_at, time=True)}\n"
             f"بانک/کارت مقصد: <code>{escape(payment.card_number or '')}</code>"
             f" — {escape(payment.cardholder_name or '—')}\n"
-            f"خریدار: {escape(payer_name)}\n"
-            f"آیدی عددی خریدار: <code>{purchaser.telegram_id or '—'}</code>\n"
-            f"آیدی عددی معرف: <code>{referrer.telegram_id if referrer and referrer.telegram_id else '—'}</code>\n"
+            f"خریدار: {_telegram_profile_link(purchaser.telegram_id, payer_name)}\n"
+            f"آیدی عددی خریدار: {_telegram_profile_link(purchaser.telegram_id, purchaser.telegram_id or '—')}\n"
+            f"آیدی عددی معرف: {_telegram_profile_link(referrer.telegram_id if referrer else None, referrer.telegram_id if referrer and referrer.telegram_id else '—')}\n"
             f"پلن: {escape(order.plan.name)}\n"
             f"متن رسید: {escape((payment.receipt_reference or 'رسید تصویری')[:100])}\n"
             f"payment_id: {payment.id}"

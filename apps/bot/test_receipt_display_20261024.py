@@ -52,10 +52,22 @@ class ReceiptAndFormattingTests(SimpleTestCase):
             self.assertTrue(async_to_sync(handler._notify_admin_receipt)(order, payment, "photo-file"))
         caption = bot.send_photo.await_args.kwargs["caption"]
         self.assertIn("Card &amp; Owner", caption)
-        self.assertIn("Ali &lt;buyer&gt;", caption)
-        self.assertIn("123456", caption)
-        self.assertIn("98765", caption)
+        self.assertIn('خریدار: <a href="tg://user?id=123456">Ali &lt;buyer&gt;</a>', caption)
+        self.assertIn('آیدی عددی خریدار: <a href="tg://user?id=123456">123456</a>', caption)
+        self.assertIn('آیدی عددی معرف: <a href="tg://user?id=98765">98765</a>', caption)
+        self.assertEqual(bot.send_photo.await_args.kwargs["parse_mode"], "HTML")
         self.assertIn("Royal &lt;monthly&gt;", caption)
+
+    def test_missing_referrer_id_has_no_invalid_profile_link(self):
+        from apps.bot.handlers.purchase import _telegram_profile_link
+
+        self.assertEqual(_telegram_profile_link(None, "—"), "—")
+        self.assertEqual(_telegram_profile_link("not-a-number", "Ali & Co"), "Ali &amp; Co")
+        self.assertEqual(_telegram_profile_link(0, "—"), "—")
+        self.assertEqual(
+            _telegram_profile_link(123456, "Ali <buyer>"),
+            '<a href="tg://user?id=123456">Ali &lt;buyer&gt;</a>',
+        )
 
     def test_registration_prompt_does_not_show_status_checklist(self):
         handler = StartHandler(MagicMock(), SimpleNamespace(name="Test", pk=1))
