@@ -216,17 +216,8 @@ class StartHandler(BaseHandler):
         """Show profile setup screen for new users"""
         await self.update_user_state(user, BotState.StateType.PROFILE_SETUP)
 
-        name_status = "✅" if user.full_name else "❌"
-        phone_status = "✅" if user.phone_number else "❌"
-        profile = await UserProfile.objects.filter(user=user).afirst()
-        device_status = "✅" if profile and profile.device_type else "❌"
-
         welcome_text = f"""
 🎉 خوش آمدید به {self.brand.name}!
-
-👤 نام کامل: {name_status}
-📱 شماره تلفن: {phone_status}
-💻 دستگاه اصلی: {device_status}
         """
 
         keyboard = self.create_keyboard(

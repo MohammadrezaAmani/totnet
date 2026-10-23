@@ -33,6 +33,8 @@ from apps.orders.services import (
     confirm_stars_payment,
 )
 
+from utils.display_numbers import format_amount
+
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -238,9 +240,9 @@ class WalletHandler(BaseHandler):
 
 📊 <b>خلاصه حساب:</b>
 ├ 💰 موجودی: <code>{self.format_price(wallet.balance, wallet.currency)}</code>
-├ 📥 واریزها: <code>{total_deposits:,.2f}</code>
-├ 📤 خریدها: <code>{total_spent:,.2f}</code>
-└ 🎁 جوایز: <code>{total_bonuses:,.2f}</code>
+├ 📥 واریزها: <code>{format_amount(total_deposits)}</code>
+├ 📤 خریدها: <code>{format_amount(total_spent)}</code>
+└ 🎁 جوایز: <code>{format_amount(total_bonuses)}</code>
 
 ━━━━━━━━━━━━━━━━━━━━━━
 📄 صفحه <code>{page}</code> از <code>{total_pages}</code> | مجموع: <code>{total_count}</code> تراکنش
@@ -326,7 +328,7 @@ class WalletHandler(BaseHandler):
 🔄 <b>شارژ کیف پول</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 موجودی فعلی: <code>{wallet.balance:,.2f}</code> {symbol}
+💰 موجودی فعلی: <code>{format_amount(wallet.balance)}</code> {symbol}
 
 💡 مبلغ شارژ مورد نظر را انتخاب کنید:
         """
@@ -522,7 +524,7 @@ class WalletHandler(BaseHandler):
 💳 <b>انتخاب روش پرداخت</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 مبلغ شارژ: <code>{amount:,.2f}</code> {symbol}
+💰 مبلغ شارژ: <code>{format_amount(amount)}</code> {symbol}
 💵 ارز: {wallet.currency}
 
 💡 لطفاً روش پرداخت را انتخاب کنید:
@@ -622,7 +624,7 @@ class WalletHandler(BaseHandler):
 💳 <b>پرداخت کارت به کارت</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 مبلغ شارژ: <code>{amount:,.2f}</code> {symbol}
+💰 مبلغ شارژ: <code>{format_amount(amount)}</code> {symbol}
 
 📋 <b>اطلاعات کارت‌های بانکی:</b>
 """
@@ -638,7 +640,7 @@ class WalletHandler(BaseHandler):
 ━━━━━━━━━━━━━━━━━━━━━━
 
 ⚠️ <b>راهنمای پرداخت:</b>
-1️⃣ مبلغ دقیق <b>{amount:,.2f}</b> را به یکی از کارت‌های بالا واریز کنید
+1️⃣ مبلغ دقیق <b>{format_amount(amount)}</b> را به یکی از کارت‌های بالا واریز کنید
 2️⃣ از رسید پرداخت عکس بگیرید
 3️⃣ روی دکمه "📸 ارسال رسید" کلیک کنید
 4️⃣ عکس رسید را ارسال کنید
@@ -741,7 +743,7 @@ class WalletHandler(BaseHandler):
 ✅ <b>رسید دریافت شد</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 مبلغ: <code>{amount:,.2f}</code> {symbol}
+💰 مبلغ: <code>{format_amount(amount)}</code> {symbol}
 📋 شناسه پرداخت: <code>{str(payment.payment_id)[:8]}...</code>
 📅 زمان ثبت: <code>{self._format_persian_date(timezone.now())}</code>
 
@@ -947,7 +949,7 @@ class WalletHandler(BaseHandler):
 ₿ <b>پرداخت با رمزارز</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 مبلغ: <code>{amount:,.2f}</code> {symbol}
+💰 مبلغ: <code>{format_amount(amount)}</code> {symbol}
 
 💡 لطفاً رمزارز مورد نظر را انتخاب کنید:
         """
@@ -1050,12 +1052,12 @@ class WalletHandler(BaseHandler):
 ₿ <b>پرداخت با {crypto.name} ({crypto.symbol})</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 مبلغ: <code>{amount:,.2f}</code> {symbol}
+💰 مبلغ: <code>{format_amount(amount)}</code> {symbol}
 📊 شبکه: <code>{crypto.get_network_display()}</code>
 
 💵 <b>مبلغ واریز:</b>
-<code>{crypto_amount:.8f}</code> {crypto.symbol}
-⚠️ حداقل قابل قبول: <code>{crypto_amount_min:.8f}</code> {crypto.symbol}
+<code>{format_amount(crypto_amount)}</code> {crypto.symbol}
+⚠️ حداقل قابل قبول: <code>{format_amount(crypto_amount_min)}</code> {crypto.symbol}
 
 📋 <b>آدرس واریز:</b>
 <code>{crypto.wallet_address}</code>
@@ -1212,7 +1214,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 ━━━━━━━━━━━━━━━━━━━━━━
 
 🆔 TXID: <code>{txid[:30]}...</code>
-💰 مبلغ: <code>{payment.amount:,.2f}</code> {symbol}
+💰 مبلغ: <code>{format_amount(payment.amount)}</code> {symbol}
 ₿ رمزارز: {payment.crypto_currency}
 
 ⏳ <b>وضعیت:</b> {status_text}
@@ -1280,7 +1282,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 ⭐ <b>پرداخت با ستاره‌های تلگرام</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 مبلغ شارژ: <code>{amount:,.2f}</code> {symbol}
+💰 مبلغ شارژ: <code>{format_amount(amount)}</code> {symbol}
 ⭐ معادل: <code>{stars_amount:,}</code> ستاره
 
 نرخ شارژ این برند: ۱ ستاره = ۰٫۰۱ دلار.
@@ -1333,10 +1335,10 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         await self.bot.send_invoice(
             chat_id=callback.message.chat.id,
             title=f"شارژ کیف پول - {self.brand.name}",
-            description=f"شارژ {amount:,.2f} {symbol} به کیف پول شما",
+            description=f"شارژ {format_amount(amount)} {symbol} به کیف پول شما",
             payload=f"wallet_charge_{payment.payment_id.hex}",
             currency="XTR",
-            prices=[LabeledPrice(label=f"شارژ {amount:,.2f} {symbol}", amount=stars_amount)],
+            prices=[LabeledPrice(label=f"شارژ {format_amount(amount)} {symbol}", amount=stars_amount)],
             provider_token="",
         )
         await callback.answer()
@@ -1398,8 +1400,8 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 ✅ <b>پرداخت موفق!</b>
 
 ⭐ ستاره‌های پرداخت شده: <code>{successful_payment.total_amount:,}</code>
-💰 مبلغ شارژ: <code>{payment.amount:,.2f}</code> {symbol}
-💵 موجودی جدید کیف پول: <code>{wallet.balance:,.2f}</code> {symbol}
+💰 مبلغ شارژ: <code>{format_amount(payment.amount)}</code> {symbol}
+💵 موجودی جدید کیف پول: <code>{format_amount(wallet.balance)}</code> {symbol}
         """
         keyboard = self.create_keyboard(
             [
@@ -1485,10 +1487,10 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 
 🎁 کد تخفیف: <code>{code}</code>
 📝 نام: {coupon.name}
-💰 مبلغ جایزه: <code>{_transaction.amount:,.2f}</code> {symbol}
+💰 مبلغ جایزه: <code>{format_amount(_transaction.amount)}</code> {symbol}
 
 💵 <b>موجودی جدید کیف پول:</b>
-<code>{wallet.balance:,.2f}</code> {symbol}
+<code>{format_amount(wallet.balance)}</code> {symbol}
 
 🎊 ممنون از استفاده از کد تخفیف!
         """
@@ -1684,7 +1686,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
         """Format amount based on currency"""
         if currency in ["T", "IRR", "IRT"]:
             return f"{int(amount):,}"
-        return f"{amount:,.2f}"
+        return format_amount(amount)
 
     def _format_persian_date(self, dt) -> str:
         from utils.jalali import jalali_date
@@ -1728,7 +1730,7 @@ TXID یک رشته طولانی از حروف و اعداد است که پس ا�
 🔄 <b>شارژ کیف پول</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💰 موجودی فعلی: <code>{wallet.balance:,.2f}</code> {symbol}
+💰 موجودی فعلی: <code>{format_amount(wallet.balance)}</code> {symbol}
 
 💡 مبلغ شارژ مورد نظر را انتخاب کنید:
         """

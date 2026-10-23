@@ -28,6 +28,8 @@ from apps.vpn_providers.services.hiddify import (
     PlatformType,
 )
 
+from utils.display_numbers import format_amount
+
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -220,7 +222,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
                 percent = min(100, (used_gb / total_gb) * 100) if total_gb else 0
                 text += f"""
 📊 ترافیک:
-• استفاده شده: {used_gb:.2f} GB
+• استفاده شده: {format_amount(used_gb, places=2)} GB
 • کل: {total_gb} GB
 • درصد: {percent:.1f}%
                 """
@@ -771,7 +773,7 @@ UUID کاربر در پنل یافت نشد.
 📋 پلن: {sub.plan.name if sub.plan else "نامشخص"}
 📊 وضعیت: {"🟢 فعال" if sub.status == "active" else "🔴 غیرفعال"}
 
-📈 ترافیک استفاده شده: {float(sub.traffic_used_gb or 0):.2f} GB
+📈 ترافیک استفاده شده: {format_amount(float(sub.traffic_used_gb or 0), places=2)} GB
 📊 سقف ترافیک: {sub.traffic_limit_gb or "نامحدود"} GB
 
 📅 روزهای باقیمانده: {sub.days_remaining or "نامحدود"}
@@ -795,7 +797,7 @@ UUID کاربر در پنل یافت نشد.
 📱 پروفایل: {profile.profile_title}
 🌐 لینک: {profile.profile_url}
 
-📈 مصرف: {used:.2f} / {total:.2f} GB
+📈 مصرف: {format_amount(used, places=2)} / {format_amount(total, places=2)} GB
 {progress_bar} {percent:.1f}%
 
 📅 روزهای باقیمانده: {days}

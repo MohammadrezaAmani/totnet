@@ -23,6 +23,8 @@ from apps.referrals.services import (
     refresh_user_achievements,
 )
 
+from utils.display_numbers import format_point_count
+
 from .base import BaseHandler
 
 logger = logging.getLogger(__name__)
@@ -81,11 +83,11 @@ class RewardsHandler(BaseHandler):
 🩺 <b>درجه پزشکی:</b> {level_name}
 با فعالیت بیشتر در این سیستم اعتبار و جایگاه شما در این جامعه پزشکی ارتقا میابد.
 
-🧾 <b>تمام امتیازات خرج شده توسط شما تا الان:</b> {spent_points:g}
+🧾 <b>تمام امتیازات خرج شده توسط شما تا الان:</b> {format_point_count(spent_points)}
 
 📦 <b>جعبه قرص‌ها</b>
-• قرص‌های موجود در جعبه فعلی: {box_points:g}
-• قرص‌های نقدشده: {int(completed_normal_points["total"] or 0)}
+• قرص‌های موجود در جعبه فعلی: {format_point_count(box_points)}
+• قرص‌های نقدشده: {format_point_count(completed_normal_points["total"])}
 
 جمع ارزش هر ۳ قرص به موجودی نقد کیف پول منتقل می‌شود.
         """
@@ -171,10 +173,10 @@ class RewardsHandler(BaseHandler):
                 ) or "بدون شرط تعریف‌شده"
                 reward = []
                 if achievement.reward_points:
-                    reward.append(f"{achievement.reward_points} امتیاز")
+                    reward.append(f"{format_point_count(achievement.reward_points)} امتیاز")
                 if achievement.reward_amount:
                     reward.append(
-                        f"{achievement.reward_amount:g} {self.brand.currency} کیف پول"
+                        f"{format_point_count(achievement.reward_amount)} {self.brand.currency} کیف پول"
                     )
                 reward_text = " + ".join(reward) or "نشان افتخاری"
                 if item.is_completed and not item.reward_claimed and reward:
@@ -185,7 +187,7 @@ class RewardsHandler(BaseHandler):
                 elif item.is_completed:
                     status = "✅ دریافت شده" if item.reward_claimed else "✅ تکمیل شده"
                 else:
-                    status = f"📈 پیشرفت {item.progress:g}%"
+                    status = f"📈 پیشرفت {format_point_count(item.progress)}%"
                 claim_text = f"؛ دفعات دریافت {item.claim_count}" if achievement.is_repeatable and item.claim_count else ""
                 lines.append(
                     f"\n<b>{achievement.name}</b> — {status}{claim_text}\n"
@@ -279,7 +281,7 @@ class RewardsHandler(BaseHandler):
             ).acount() + 1
             rank_medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}️⃣")
             text += f"\n{rank_medal} {top_account.user.username}{is_you}\n"
-            text += f"   📊 {top_account.lifetime_points:g} امتیاز\n"
+            text += f"   📊 {format_point_count(top_account.lifetime_points)} امتیاز\n"
 
         user_position = await RewardAccount.objects.filter(
             brand=self.brand, lifetime_points__gt=user_points
@@ -290,7 +292,7 @@ class RewardsHandler(BaseHandler):
 
 👤 <b>شما:</b>
 📍 رتبه: {user_position}
-📊 تمام امتیازات کسب‌شده: {user_points:g}
+📊 تمام امتیازات کسب‌شده: {format_point_count(user_points)}
 
 💡 رتبه بر اساس مجموع امتیازات ثبت‌شده محاسبه می‌شود.
         """

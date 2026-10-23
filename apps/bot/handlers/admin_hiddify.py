@@ -29,6 +29,8 @@ import asyncio
 
 
 from apps.orders.models import PaymentCard
+from utils.display_numbers import format_amount
+
 from .base import BaseHandler
 from .admin_control import AdminControlMixin, change_order_safely
 
@@ -155,9 +157,9 @@ class HiddifyAdminHandler(AdminControlMixin, BaseHandler):
             limit = u.usage_limit_GB
             if limit:
                 bar = self._usage_bar(used, limit)
-                text += f"   💾 {used:.2f} / {limit:.1f} GB  {bar}\n"
+                text += f"   💾 {format_amount(used, places=2)} / {format_amount(limit, places=1)} GB  {bar}\n"
             else:
-                text += f"   💾 {used:.2f} GB  ♾️ نامحدود\n"
+                text += f"   💾 {format_amount(used, places=2)} GB  ♾️ نامحدود\n"
 
             text += f"   📅 {self._days_status(u.package_days)}"
             text += f"  |  🔄 {self._mode_persian(u.mode)}\n"
@@ -243,9 +245,9 @@ class HiddifyAdminHandler(AdminControlMixin, BaseHandler):
             limit = u.usage_limit_GB
             if limit:
                 bar = self._usage_bar(used, limit)
-                text += f"   💾 {used:.2f} / {limit:.1f} GB  {bar}\n"
+                text += f"   💾 {format_amount(used, places=2)} / {format_amount(limit, places=1)} GB  {bar}\n"
             else:
-                text += f"   💾 {used:.2f} GB  ♾️ نامحدود\n"
+                text += f"   💾 {format_amount(used, places=2)} GB  ♾️ نامحدود\n"
 
             text += f"   📅 {self._days_status(u.package_days)}"
             text += f"  |  🔄 {self._mode_persian(u.mode)}\n"
@@ -487,10 +489,10 @@ class HiddifyAdminHandler(AdminControlMixin, BaseHandler):
                     filled = int((pct / 100) * w)
                     empty = w - filled
                     bar = "█" * filled + "░" * empty
-                    text += f"   {used:.3f} / {limit:.1f} GB\n"
-                    text += f"   [{bar}]  {pct:.1f}%\n"
+                    text += f"   {format_amount(used, places=3)} / {format_amount(limit, places=1)} GB\n"
+                    text += f"   [{bar}]  {format_amount(pct, places=1)}%\n"
                 else:
-                    text += f"   {used:.3f} GB  ♾️ نامحدود\n"
+                    text += f"   {format_amount(used, places=3)} GB  ♾️ نامحدود\n"
 
                 text += "━━━━━━━━━━━━━━━━━━\n"
                 text += f"📅 روزهای باقی‌مانده:  {self._days_status(u.package_days)}\n"
@@ -987,7 +989,7 @@ class HiddifyAdminHandler(AdminControlMixin, BaseHandler):
                 text = f"""⚠️  <b>حذف کاربر</b>
 
 نام:  <code>{u.name}</code>
-مصرف:  {used:.3f} GB
+مصرف:  {format_amount(used, places=3)} GB
 UUID:  <code>{u.uuid}</code>
 
 ❗ این عمل <b>غیرقابل بازگشت</b> است!
@@ -1063,7 +1065,7 @@ UUID:  <code>{u.uuid}</code>
                 text = f"""📤  <b>ریست مصرف کاربر</b>
 
 نام:  <code>{u.name}</code>
-مصرف فعلی:  <b>{used:.3f} GB</b>
+مصرف فعلی:  <b>{format_amount(used, places=3)} GB</b>
 حد مجاز:  {f"{u.usage_limit_GB:.1f} GB" if u.usage_limit_GB else "نامحدود"}
 
 مصرف این کاربر صفر شود؟"""

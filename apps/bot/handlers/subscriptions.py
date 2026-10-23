@@ -26,6 +26,7 @@ from apps.subscriptions.catalog import get_cached_plans
 
 from .base import BaseHandler
 from utils.jalali import jalali_date
+from utils.display_numbers import format_amount
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +257,7 @@ class SubscriptionHandler(BaseHandler):
         }
         current_category = category_labels.get(plan.service_category, plan.name)
         current_traffic = (
-            f"{subscription.traffic_limit_gb:g} گیگ"
+            f"{format_amount(subscription.traffic_limit_gb)} گیگ"
             if subscription.traffic_limit_gb is not None
             else "نامحدود"
         )

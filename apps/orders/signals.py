@@ -270,6 +270,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                                         }
                                     ],
                                 ],
+                                delete_after_seconds=60,
                             )
                         )
                     )
@@ -298,6 +299,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                         buttons_data=[
                             [{"text": "کیف پول من", "callback_data": "wallet"}]
                         ],
+                        delete_after_seconds=60,
                     )
                 )
             )

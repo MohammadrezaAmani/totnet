@@ -19,6 +19,7 @@ async def abroadcast_message(
     file_id: str = None,
     buttons_data: list = None,
     parse_mode: str = "HTML",
+    delete_after_seconds: int | None = None,
 ):
     """Async Publish a broadcast message to Redis channel for async processing"""
 
@@ -31,6 +32,8 @@ async def abroadcast_message(
         "buttons_data": buttons_data,
         "parse_mode": parse_mode,
     }
+    if delete_after_seconds is not None:
+        payload["delete_after_seconds"] = delete_after_seconds
 
     try:
         await redis_client_async.publish(
@@ -53,6 +56,7 @@ def broadcast_message(
     file_id: str = None,
     buttons_data: list = None,
     parse_mode: str = "HTML",
+    delete_after_seconds: int | None = None,
 ):
     """Sync Publish a broadcast message to Redis channel for async processing"""
 
@@ -65,6 +69,8 @@ def broadcast_message(
         "buttons_data": buttons_data,
         "parse_mode": parse_mode,
     }
+    if delete_after_seconds is not None:
+        payload["delete_after_seconds"] = delete_after_seconds
 
     try:
         redis_client.publish(f"broadcast_channel:{brand_id}", json.dumps(payload))

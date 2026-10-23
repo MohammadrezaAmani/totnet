@@ -11,6 +11,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from django.conf import settings
+from asgiref.sync import sync_to_async
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,32 @@ class BroadcastSubscriber:
 
         try:
             if msg_type == "text":
-                await self.bot.send_message(
+                sent_message = await self.bot.send_message(
                     chat_id=user_id,
                     text=text,
                     reply_markup=keyboard,
                     parse_mode=parse_mode,
                 )
+                delete_after = payload.get("delete_after_seconds")
+                if delete_after is not None and sent_message is not None:
+                    try:
+                        delay_seconds = int(delete_after)
+                        if not (1 <= delay_seconds <= 86400):
+                            raise ValueError("Invalid message deletion interval")
+                        from apps.orders.tasks import delete_transient_payment_message
+                        await sync_to_async(
+                            delete_transient_payment_message.apply_async,
+                            thread_sensitive=False,
+                        )(
+                            kwargs={
+                                "brand_id": int(self.brand_id),
+                                "chat_id": int(user_id),
+                                "message_id": int(sent_message.message_id),
+                            },
+                            countdown=delay_seconds,
+                        )
+                    except Exception:
+                        logger.exception("Could not enqueue payment message deletion for brand %s", self.brand_id)
             elif msg_type == "photo":
                 await self.bot.send_photo(
                     chat_id=user_id,

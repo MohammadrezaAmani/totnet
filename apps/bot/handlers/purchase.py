@@ -1170,7 +1170,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             "payment_id": str(payment.pk),
         })
         at = jalali_date(payment.created_at, time=True)
-        order = await Order.objects.select_related("plan").aget(pk=payment.order_id)
+        order = await Order.objects.select_related("plan", "user", "user__referred_by").aget(pk=payment.order_id)
         if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
             # Buying for somebody else must not show a normal subscription
             # activation/tutorial screen. The shareable link is issued only
@@ -1213,11 +1213,19 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         self, order: Order, payment: Payment, file_id: str
     ) -> bool:
         """ارسال رسید به ادمین برای تأیید/رد"""
+        purchaser = order.user
+        referrer = purchaser.referred_by
+        payer_name = purchaser.full_name or purchaser.get_full_name() or purchaser.username
         admin_text = (
             f"🧾 رسید جدید\nسفارش: {escape(order.order_number)}\n"
             f"مبلغ: {self.format_price(payment.amount, order.currency)}\n"
             f"تاریخ ثبت: {jalali_date(payment.created_at, time=True)}\n"
-            f"بانک/کارت مقصد: <code>{escape(payment.card_number or '')}</code>\n"
+            f"بانک/کارت مقصد: <code>{escape(payment.card_number or '')}</code>"
+            f" — {escape(payment.cardholder_name or '—')}\n"
+            f"خریدار: {escape(payer_name)}\n"
+            f"آیدی عددی خریدار: <code>{purchaser.telegram_id or '—'}</code>\n"
+            f"آیدی عددی معرف: <code>{referrer.telegram_id if referrer and referrer.telegram_id else '—'}</code>\n"
+            f"پلن: {escape(order.plan.name)}\n"
             f"متن رسید: {escape((payment.receipt_reference or 'رسید تصویری')[:100])}\n"
             f"payment_id: {payment.id}"
         )
