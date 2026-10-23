@@ -156,6 +156,13 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
             user.save(update_fields=['referred_by', 'updated_at'])
             User.objects.filter(pk=order.user_id).update(referral_count=F('referral_count') + 1)
             ReferralLink.objects.filter(pk=link.pk).update(conversion_count=F('conversion_count') + 1)
+            from apps.referrals.services import _queue_referrer_join_safely
+            transaction.on_commit(
+                lambda referrer_id=order.user_id, referee_id=user.pk, b=brand_id:
+                    _queue_referrer_join_safely(
+                        referrer_id=referrer_id, referee_id=referee_id, brand_id=b
+                    )
+            )
 
     # Provision only after a real recipient exists. Delayed side effects are
     # idempotent and never executed on an uncommitted claim.

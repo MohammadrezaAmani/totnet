@@ -7,6 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 from django.db.models import F, Sum
+from datetime import timedelta
 from django.utils import timezone
 
 from apps.orders.models import Coupon, CouponUsage, Order, Payment
@@ -44,6 +45,23 @@ def apply_purchase_coupon(*, brand_id: int, user_id: int, order_id: str, code: s
     except Coupon.DoesNotExist as exc:
         raise PurchaseCouponError("کد تخفیف پیدا نشد یا غیرفعال است.") from exc
     now = timezone.now()
+    from apps.referrals.models import ReferralClick, ReferralLink
+    # Codes linked to a referral campaign are private first-purchase gifts;
+    # typing somebody else's code must not bypass the entry and expiry checks.
+    campaign_links = ReferralLink.objects.filter(
+        welcome_coupon=coupon, brand_id=brand_id
+    )
+    if campaign_links.exists():
+        matched_visit = ReferralClick.objects.select_related("link").filter(
+            brand_id=brand_id, visitor_id=user_id, is_registration=True,
+            link__in=campaign_links, link__is_active=True,
+        ).order_by("created_at", "pk").first()
+        if not matched_visit or now >= matched_visit.created_at + timedelta(
+            hours=matched_visit.link.welcome_coupon_valid_hours
+        ):
+            raise PurchaseCouponError("هدیه خرید اول فقط برای اعضای جدید آن لینک و در مهلت تعیین‌شده معتبر است.")
+        if not coupon.new_users_only:
+            raise PurchaseCouponError("کد معرفی باید در پنل فقط برای کاربران جدید تعریف شده باشد.")
     if coupon.valid_from > now or coupon.valid_until < now:
         raise PurchaseCouponError("مهلت استفاده از این کد تمام شده است.")
     if coupon.coupon_type not in {Coupon.CouponType.FIXED_AMOUNT, Coupon.CouponType.PERCENTAGE}:
@@ -88,3 +106,26 @@ def apply_purchase_coupon(*, brand_id: int, user_id: int, order_id: str, code: s
     coupon.current_uses = F("current_uses") + 1
     coupon.save(update_fields=["current_uses", "updated_at"])
     return order, discount
+
+
+def apply_first_purchase_referral_coupon(*, brand_id: int, user_id: int, order_id: str):
+    """Apply the referred user's preconfigured first-order coupon if eligible.
+
+    Every constraint (quota, registration provenance, age, price, brand, order)
+    is enforced by apply_purchase_coupon under its database row locks.
+    """
+    from apps.referrals.models import ReferralClick
+    visit = ReferralClick.objects.select_related("link", "link__welcome_coupon").filter(
+        brand_id=brand_id, visitor_id=user_id, is_registration=True,
+        link__is_active=True, link__welcome_coupon__isnull=False,
+    ).order_by("created_at", "pk").first()
+    if not visit:
+        return None
+    try:
+        return apply_purchase_coupon(
+            brand_id=brand_id, user_id=user_id, order_id=order_id,
+            code=visit.link.welcome_coupon.code,
+        )
+    except PurchaseCouponError:
+        # When expired/disabled/exhausted, checkout proceeds at normal price.
+        return None

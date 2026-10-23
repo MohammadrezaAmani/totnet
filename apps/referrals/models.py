@@ -17,6 +17,8 @@ class NotificationTrigger(models.TextChoices):
     JOINED = "joined", "عضویت در ربات"
     FIRST_PURCHASE = "first_purchase", "اولین خرید کاملاً پرداخت‌شده"
     LAST_PURCHASE = "last_purchase", "هر خرید کاملاً پرداخت‌شده"
+    FIRST_ACTIVE_SUBSCRIPTION = "first_active_subscription", "اولین اشتراک فعال"
+    REFERRAL_LINK_JOIN = "referral_link_join", "عضویت با لینک معرفی مشخص"
 
 
 class ServiceRewardRate(models.Model):
@@ -232,6 +234,14 @@ class ReferralLink(models.Model):
 
     campaign_name = models.CharField(max_length=100, null=True, blank=True)
     source = models.CharField(max_length=100, null=True, blank=True)
+    welcome_coupon = models.ForeignKey(
+        "orders.Coupon", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="welcome_referral_links",
+        help_text="کد تخفیف خودکار خرید اول، فقط برای عضو جدیدی که با این لینک وارد شده.",
+    )
+    welcome_coupon_valid_hours = models.PositiveSmallIntegerField(
+        default=48, help_text="مهلت تخفیف از اولین ورود با این لینک (ساعت)."
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -267,6 +277,12 @@ class ReferralLink(models.Model):
             raise ValidationError({"user": "صاحب لینک باید عضو همین برند باشد."})
         if self.is_default and not self.user_id:
             raise ValidationError({"is_default": "لینک پیش‌فرض به صاحب لینک نیاز دارد."})
+        if self.welcome_coupon_id and self.welcome_coupon.brand_id != self.brand_id:
+            raise ValidationError({"welcome_coupon": "کد تخفیف باید متعلق به همین برند باشد."})
+        if self.welcome_coupon_id and not self.user_id:
+            raise ValidationError({"welcome_coupon": "لینک تخفیف معرفی باید صاحب معرف معتبر داشته باشد."})
+        if not 1 <= self.welcome_coupon_valid_hours <= 720:
+            raise ValidationError({"welcome_coupon_valid_hours": "مهلت باید بین ۱ تا ۷۲۰ ساعت باشد."})
 
 
 class ReferralClick(models.Model):
@@ -811,7 +827,7 @@ class ChallengeProgram(models.Model):
     is_active = models.BooleanField(default=True)
     offer_delay_days = models.PositiveSmallIntegerField(default=5)
     offer_trigger = models.CharField(
-        max_length=20,
+        max_length=32,
         choices=NotificationTrigger.choices,
         default=NotificationTrigger.FIRST_PURCHASE,
     )
@@ -1090,10 +1106,15 @@ class NotificationRule(models.Model):
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="notification_rules"
     )
+    referral_link = models.ForeignKey(
+        "ReferralLink", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="notification_rules",
+        help_text="برای نوتیف ورود با لینک مشخص؛ خالی یعنی همه لینک‌های معرفی این برند.",
+    )
     name = models.CharField(max_length=100)
     kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.CUSTOM)
     trigger = models.CharField(
-        max_length=20,
+        max_length=32,
         choices=NotificationTrigger.choices,
         default=NotificationTrigger.JOINED,
     )
@@ -1144,3 +1165,7 @@ class NotificationRule(models.Model):
             raise ValidationError({"message": "متن باید بین ۱ و ۳۵۰۰ کاراکتر باشد."})
         if bool(self.button_text) != bool(self.button_action):
             raise ValidationError("عنوان و مقصد دکمه باید با هم تنظیم شوند.")
+        if self.referral_link_id and self.referral_link.brand_id != self.brand_id:
+            raise ValidationError({"referral_link": "لینک انتخابی باید متعلق به همین برند باشد."})
+        if self.referral_link_id and self.trigger != NotificationTrigger.REFERRAL_LINK_JOIN:
+            raise ValidationError({"referral_link": "محدودکردن به لینک فقط برای محرک ورود با لینک معرفی مجاز است."})

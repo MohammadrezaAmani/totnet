@@ -16,7 +16,7 @@ from apps.bot.handlers.purchase import PurchaseHandler
 from apps.bot.handlers.start import StartHandler
 from apps.bot.models import BotState
 from apps.brands.admin import BrandAdmin
-from apps.brands.models import Brand
+from apps.brands.models import Brand, BrandConfiguration
 from apps.referrals.models import Referral, ReferralLink
 from apps.subscriptions.models import SubscriptionPlan
 
@@ -166,6 +166,66 @@ class RegistrationFlowTests(TestCase):
         self.link.refresh_from_db()
         self.assertEqual(self.link.click_count, 1)
         self.assertEqual(Referral.objects.filter(referee=user).count(), 1)
+
+    def test_referral_start_does_not_send_acknowledgement_to_invited_user(self):
+        self.feed(text="/start VALID")
+        sent_texts = [
+            method.text for method in self.session.calls
+            if isinstance(method, SendMessage)
+        ]
+        self.assertEqual(len(sent_texts), 1)
+        self.assertIn("خوش آمدید", sent_texts[0])
+        self.assertNotIn("دعوت شما ثبت شد", sent_texts[0])
+        self.assertNotIn("📖", sent_texts[0])
+        self.assertEqual(
+            User.objects.get(telegram_id=2, brand=self.brand).referred_by_id,
+            self.owner.pk,
+        )
+
+    def test_main_menu_has_no_auto_explanation(self):
+        self.feed(text="/start", user_id=1)
+        sent_texts = [
+            method.text for method in self.session.calls
+            if isinstance(method, SendMessage)
+        ]
+        self.assertEqual(len(sent_texts), 1)
+        self.assertIn("🏠 منوی اصلی", sent_texts[0])
+        self.assertNotIn("📖", sent_texts[0])
+        self.assertNotIn("از منوی اصلی می‌توانید", sent_texts[0])
+        self.assertEqual(
+            BotState.objects.get(user=self.owner).seen_sections, {}
+        )
+
+    def test_only_explicit_first_visit_text_is_displayed_once(self):
+        # Default copy is suppressed without marking the section as already seen.
+        BotState.objects.create(user=self.owner, brand=self.brand)
+        for section in ("main_menu", "wallet", "purchase", "referrals", "academy"):
+            self.assertEqual(
+                async_to_sync(self.handlers["start"].section_intro_once)(
+                    self.owner, section, "Unrequested explanation"
+                ),
+                "",
+            )
+        self.assertEqual(BotState.objects.get(user=self.owner).seen_sections, {})
+
+        # An admin's explicitly configured copy is the only thing sent.
+        BrandConfiguration.objects.create(
+            brand=self.brand,
+            custom_fields={"first_visit_messages": {"main_menu": "متن تاییدشده مدیر"}},
+        )
+        actual = async_to_sync(self.handlers["start"].section_intro_once)(
+            self.owner, "main_menu", "Unrequested explanation"
+        )
+        self.assertEqual(actual, "متن تاییدشده مدیر\n\n")
+        self.assertEqual(
+            async_to_sync(self.handlers["start"].section_intro_once)(
+                self.owner, "main_menu", "Unrequested explanation"
+            ),
+            "",
+        )
+        self.assertEqual(
+            BotState.objects.get(user=self.owner).seen_sections.get("main_menu"), 1
+        )
 
     def test_invalid_links_include_inactive_cross_brand_and_wrong_bot(self):
         self.link.is_active = False

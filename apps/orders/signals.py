@@ -168,16 +168,46 @@ def payment_post_save(sender, instance, created, **kwargs):
                     voucher = issue_paid_gift(order_id=order.pk)
                     if voucher:
                         link = paid_gift_link(voucher)
-                        message = (
-                            '🎁 هدیه شما آماده است!\n\n'
-                            + (f'لینک دریافت هدیه:\n{link}\n\n' if link else 'نام کاربری ربات در پنل ثبت نشده؛ با پشتیبانی تماس بگیرید.\n')
-                            + f'مهلت دریافت: {jalali_date(voucher.expires_at, time=True)}\n'
-                            + 'کد یک‌بارمصرف است و اولین دریافت‌کننده آن، صاحب اشتراک خواهد شد.'
-                        )
-                        transaction.on_commit(
-                            lambda brand_id=order.brand_id, telegram_id=order.user.telegram_id, msg=message:
-                                broadcast_message(brand_id=brand_id, user_ids=[telegram_id], text=msg)
-                        )
+                        from apps.referrals.tasks import _queue_once
+                        if link:
+                            gift_text = (
+                                '🎁 <b>اشتراک هدیه شما آماده ارسال است.</b>\n\n'
+                                f'لینک یک‌بارمصرف دریافت اشتراک:\n{link}\n\n'
+                                'این لینک را برای دریافت‌کننده بفرستید. '
+                                'تا زمانی که لینک دریافت نشده، اکانت برای کسی ساخته نمی‌شود.\n'
+                                f'⏳ پایان مهلت: {jalali_date(voucher.expires_at, time=True)}'
+                            )
+                            referral_text = (
+                                '🔗 <b>لینک اختصاصی هدیه و معرفی مرتبط با این خرید</b>\n'
+                                f'{link}\n\n'
+                                'دریافت‌کننده این اشتراک باید تا پایان مهلت بالا از همین لینک وارد ربات شود. '
+                                'لینک یک‌بارمصرف است و معمولاً ۷۲ ساعت اعتبار دارد '
+                                '(مهلت دقیق همان تاریخ درج‌شده بالاست).\n'
+                                'پس از ورود، از «اشتراک‌های من» اشتراکش را نام‌گذاری کند؛ '
+                                'مثلاً: <b>آیفون خودم</b>.\n'
+                                'اگر دریافت‌کننده کاربر جدید ربات باشد، معرفی او به شما متصل می‌شود '
+                                'و امتیاز خرید غیرمستقیم طبق قوانین در نظر گرفته می‌شود. '
+                                'ورود کاربر قدیمی، معرفی جدید ایجاد نمی‌کند.'
+                            )
+                        else:
+                            gift_text = '⚠️ اشتراک هدیه پرداخت شد، اما نام کاربری ربات تنظیم نشده است؛ با پشتیبانی تماس بگیرید.'
+                            referral_text = None
+                        buyer = order.user
+                        brand_id = order.brand_id
+                        gift_id = voucher.pk
+                        def queue_gift_messages():
+                            _queue_once(
+                                user=buyer, brand_id=brand_id, notification_type='custom',
+                                dedupe_key=f'gift-handover:{gift_id}', text=gift_text,
+                                metadata={'gift_voucher_id': gift_id, 'event': 'gift_handover'},
+                            )
+                            if referral_text:
+                                _queue_once(
+                                    user=buyer, brand_id=brand_id, notification_type='custom',
+                                    dedupe_key=f'gift-referral-link:{gift_id}', text=referral_text,
+                                    metadata={'gift_voucher_id': gift_id, 'event': 'gift_referral_handover'},
+                                )
+                        transaction.on_commit(queue_gift_messages)
                     from apps.referrals.services import snapshot_gift_reward
                     snapshot_gift_reward(order_id=order.pk)
                     transaction.on_commit(

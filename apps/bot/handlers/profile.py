@@ -116,7 +116,8 @@ class ProfileHandler(BaseHandler):
 
         keyboard = self.create_keyboard(
             [
-                [{"text": "✏️ ویرایش و تکمیل پروفایل", "callback_data": "edit_profile"}],
+                [{"text": "🎁 تکمیل امتیازی پروفایل", "callback_data": "complete_profile"}],
+                [{"text": "✏️ ویرایش پروفایل", "callback_data": "edit_profile"}],
                 [
                     {"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"},
                     {"text": "👥 معرفی دوستان", "callback_data": "referral_system"},

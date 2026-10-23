@@ -112,6 +112,27 @@ def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = N
     return bool(updated)
 
 
+def _queue_referrer_join_safely(*, referrer_id: int, referee_id: int, brand_id: int) -> bool:
+    """Notify only the inviter, idempotently, with independently retried delivery."""
+    import logging
+    from .tasks import _queue_once
+    try:
+        inviter = User.objects.filter(pk=referrer_id, brand_id=brand_id, is_active=True).first()
+        return bool(inviter and _queue_once(
+            user=inviter, brand_id=brand_id, notification_type="custom",
+            dedupe_key=f"referral-joined:{brand_id}:{referee_id}",
+            text=("👥 یک نفر با لینک معرفی شما وارد ربات شد.\n"
+                  "در صورت خرید معتبر، امتیاز معرفی طبق قوانین محاسبه می‌شود."),
+            metadata={"event": "referral_joined", "referee_id": referee_id},
+        ))
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Could not queue referral join notice for brand=%s referee=%s",
+            brand_id, referee_id,
+        )
+        return False
+
+
 @transaction.atomic
 def attribute_referral(*, user_id: int, brand_id: int, code: str) -> bool:
     """Set a user's first valid referral attribution for a brand once."""
@@ -167,6 +188,13 @@ def attribute_referral(*, user_id: int, brand_id: int, code: str) -> bool:
     )
     ReferralLink.objects.filter(pk=referral_link.pk).update(
         conversion_count=F("conversion_count") + 1
+    )
+    # Dispatch only *after* a durable referral relationship is committed.
+    # Notification errors must never roll back attribution. Beat recovers
+    # missed announcements using the immutable Referral row.
+    transaction.on_commit(
+        lambda ref_id=referral_link.user_id, referee_id=user.pk, b=brand_id:
+            _queue_referrer_join_safely(referrer_id=ref_id, referee_id=referee_id, brand_id=b)
     )
     return True
 

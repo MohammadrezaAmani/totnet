@@ -110,16 +110,28 @@ class BaseHandler:
             state.save(update_fields=["seen_sections", "updated_at"])
             return True
 
-    async def section_intro_once(self, user, section: str, default_message: str) -> str:
-        """Inject at most once per section/version, without a separate notification."""
-        if not await self._first_section_visit(user.pk, section):
-            return ""
+    async def section_intro_once(self, user, section: str, default_message: str = "") -> str:
+        """Show only the first-visit text explicitly configured for this section.
+
+        Caller-provided defaults must not turn into unsolicited onboarding copy.
+        Do not consume the first-visit marker until there is actual configured text.
+        """
         from apps.brands.models import BrandConfiguration
         from html import escape
-        custom_fields = await BrandConfiguration.objects.filter(brand_id=self.brand.pk).values_list("custom_fields", flat=True).afirst() or {}
+
+        custom_fields = (
+            await BrandConfiguration.objects.filter(brand_id=self.brand.pk)
+            .values_list("custom_fields", flat=True)
+            .afirst()
+            or {}
+        )
         notices = custom_fields.get("first_visit_messages", {}) if isinstance(custom_fields, dict) else {}
-        message = notices.get(section, default_message) if isinstance(notices, dict) else default_message
-        return f"📖 {escape(str(message)[:800])}\n\n" if message else ""
+        message = notices.get(section) if isinstance(notices, dict) else None
+        if not isinstance(message, str) or not message.strip():
+            return ""
+        if not await self._first_section_visit(user.pk, section):
+            return ""
+        return f"{escape(message.strip()[:800])}\n\n"
 
     async def get_user_state(self, user: User) -> BotState:
         """Get user's current bot state"""

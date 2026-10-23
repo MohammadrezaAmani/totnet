@@ -147,11 +147,13 @@ class ReferralLinkAdmin(ScopedReferralAdmin):
         "brand",
         "click_count",
         "conversion_count",
+        "welcome_coupon",
+        "welcome_coupon_valid_hours",
         "is_active",
         "created_at",
     )
     list_filter = ("is_active", "brand")
-    search_fields = ("code", "campaign_name", "source", "user__username", "brand__name")
+    search_fields = ("code", "campaign_name", "source", "user__username", "brand__name", "welcome_coupon__code")
     readonly_fields = (
         "click_count",
         "conversion_count",
@@ -720,11 +722,13 @@ class NotificationRuleAdmin(ScopedReferralAdmin):
         "kind",
         "trigger",
         "delay_minutes",
+        "referral_link",
         "audience",
         "is_active",
         "delivered",
     )
     list_filter = ("brand", "kind", "trigger", "audience", "is_active")
+    autocomplete_fields = ("referral_link",)
     search_fields = ("name", "message")
     list_editable = ("is_active",)
     readonly_fields = ("created_at", "updated_at", "delivered")

@@ -385,13 +385,29 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             status=Order.OrderStatus.PENDING,
         )
 
+        # First-purchase gifts are applied on the server before any payment
+        # quote is issued. A failed or expired campaign never blocks checkout.
+        from apps.orders.coupons import apply_first_purchase_referral_coupon
+        await sync_to_async(apply_first_purchase_referral_coupon)(
+            brand_id=self.brand.pk, user_id=user.pk, order_id=str(order.order_id),
+        )
+        await order.arefresh_from_db()
+
         if order.final_price <= 0 and order.order_type == Order.OrderType.GIFT:
             from apps.orders.checkout_links import issue_paid_gift, paid_gift_link
             order.status = Order.OrderStatus.PAID
             await order.asave(update_fields=['status', 'updated_at'])
             voucher = await sync_to_async(issue_paid_gift)(order_id=order.pk)
             link = paid_gift_link(voucher) if voucher else None
-            msg = ('🎁 هدیه آماده شد.\n' + link) if link else '🎁 هدیه ثبت شد؛ نام کاربری ربات باید در پنل تکمیل شود.'
+            msg = (
+                '🎁 اشتراک هدیه آماده است.\n'
+                'لینک اختصاصی هدیه و معرفی مرتبط با این خرید:\n'
+                f'{link}\n\n'
+                'لینک را برای دریافت‌کننده بفرستید. نخستین دریافت‌کننده تا مهلت درج‌شده در سیستم '
+                'می‌تواند اشتراک را تحویل بگیرد و بعد از بخش «اشتراک‌های من» نام‌گذاری کند.\n'
+                'مثال نام: آیفون خودم\n'
+                'معرفی فقط برای دریافت‌کننده‌ای که تازه عضو ربات شده ثبت می‌شود.'
+            ) if link else '🎁 هدیه ثبت شد؛ نام کاربری ربات باید در پنل تکمیل شود.'
             await self.edit_message_with_keyboard(
                 callback.message.chat.id, callback.message.message_id, msg,
                 self.get_back_keyboard('purchase_subscription'),
@@ -506,6 +522,14 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 f"selected plan {plan.pk}."
             ),
         )
+
+        # The first paid checkout can start from a previously claimed/received
+        # subscription as well as the regular product catalog.
+        from apps.orders.coupons import apply_first_purchase_referral_coupon
+        await sync_to_async(apply_first_purchase_referral_coupon)(
+            brand_id=self.brand.pk, user_id=user.pk, order_id=str(order.order_id),
+        )
+        await order.arefresh_from_db()
 
         if order.final_price <= 0:
             queued, message = await self._queue_free_order(order)
@@ -1136,20 +1160,37 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             "payment_id": str(payment.pk),
         })
         at = jalali_date(payment.created_at, time=True)
-        keyboard = self.create_keyboard([
-            *[[{"text": label, "callback_data": f"useful_category_{key}",
-                "style": "success" if key in {
-                    "downloads", "install", "app_usage",
-                } else None}]
-              for key, label in UsefulContentHandler.CATEGORY_LABELS.items()],
-            [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
-        ])
-        await self.send_message_with_keyboard(message.chat.id,
-            f"✅ رسید دریافت شد.\n🕐 تاریخ و ساعت ثبت: <code>{at}</code>\n"
-            "⏳ در انتظار بررسی تراکنش توسط ادمین.\n\n"
-            "تا زمان تأیید تراکنش و ارسال/تمدید اشتراک شما، "
-            "عالی می‌شود اگر از منوی آکادمی محتواهای کاربردی را مطالعه کنید.", keyboard)
         order = await Order.objects.select_related("plan").aget(pk=payment.order_id)
+        if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
+            # Buying for somebody else must not show a normal subscription
+            # activation/tutorial screen. The shareable link is issued only
+            # after a real payment confirmation, never on receipt upload.
+            text = (
+                f"🎁 رسید خرید هدیه ثبت شد.\n🕐 تاریخ و ساعت ثبت: <code>{at}</code>\n"
+                "⏳ منتظر تأیید تراکنش هستیم. پس از تأیید پرداخت، "
+                "لینک اختصاصیِ یک‌بارمصرف هدیه برای شما ارسال می‌شود "
+                "تا آن را به دریافت‌کننده هدیه بفرستید."
+            )
+            keyboard = self.create_keyboard([
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+                [{"text": "🛟 پشتیبانی", "callback_data": "support"}],
+            ])
+        else:
+            text = (
+                f"✅ رسید دریافت شد.\n🕐 تاریخ و ساعت ثبت: <code>{at}</code>\n"
+                "⏳ در انتظار بررسی تراکنش توسط ادمین.\n\n"
+                "تا زمان تأیید تراکنش و ارسال/تمدید اشتراک شما، "
+                "می‌توانید محتواهای آکادمی را مطالعه کنید."
+            )
+            keyboard = self.create_keyboard([
+                *[[{"text": label, "callback_data": f"useful_category_{key}",
+                    "style": "success" if key in {
+                        "downloads", "install", "app_usage",
+                    } else None}]
+                  for key, label in UsefulContentHandler.CATEGORY_LABELS.items()],
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+            ])
+        await self.send_message_with_keyboard(message.chat.id, text, keyboard)
         notified = await self._notify_admin_receipt(order, payment, file_id)
         if not notified:
             logger.error(

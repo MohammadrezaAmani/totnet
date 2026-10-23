@@ -47,6 +47,10 @@ app.conf.beat_schedule = {
         "task": "apps.referrals.tasks.recover_pending_referral_rewards",
         "schedule": 300.0,
     },
+    "recover-referrer-join-notifications": {
+        "task": "apps.referrals.tasks.recover_missing_referrer_join_notifications",
+        "schedule": 300.0,
+    },
     "recover-referrer-purchase-notifications": {
         "task": "apps.referrals.tasks.recover_missing_referrer_purchase_notifications",
         "schedule": 300.0,

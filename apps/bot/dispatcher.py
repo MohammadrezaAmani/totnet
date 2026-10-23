@@ -436,6 +436,22 @@ class MultiBrandDispatcher:
             if admin_handler is not None and await admin_handler.handle_control_callback(callback, user):
                 return
             data = callback.data
+            # Initial profile steps must not be bypassed via a stale menu
+            # callback, while onboarding buttons remain usable.
+            from apps.accounts.models import UserProfile
+            if not administrative:
+                profile = await UserProfile.objects.filter(user=user).afirst()
+                state = await handlers["start"].get_user_state(user)
+                onboarding = (
+                    data in {"setup_profile", "skip_profile", "skip_phone", "request_phone"}
+                    or data.startswith(("onboarding_", "setup_device_"))
+                )
+                if (state.current_state == BotState.StateType.PROFILE_SETUP and
+                    not onboarding and data != "verify_channel_join" and
+                    (not user.full_name or not user.phone_number or
+                     not profile or not profile.device_type)):
+                    await callback.answer("ابتدا مشخصات اولیه و دستگاه را کامل کنید.", show_alert=True)
+                    return
             if data == "verify_channel_join":
                 await handlers["start"].verify_channel_join(callback)
                 return

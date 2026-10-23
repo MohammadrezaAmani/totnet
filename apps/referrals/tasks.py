@@ -88,7 +88,11 @@ def deliver_gamification_notification(self, notification_id):
             payload = metadata.get("delivery_payload")
             from apps.accounts.models import UserProfile
             opted_out = UserProfile.objects.filter(user_id=notification.user_id, notification_enabled=False).exists()
-            if opted_out or not notification.user.is_active:
+            # A purchased gift handover is a transactional fulfillment notice,
+            # not opt-in marketing. The buyer must still receive the unique
+            # voucher even when promotional notifications are disabled.
+            transactional = metadata.get("event") in {"gift_handover", "gift_referral_handover"}
+            if (opted_out and not transactional) or not notification.user.is_active:
                 return False
             if notification.rule_id:
                 if not notification.rule.is_active:
@@ -340,6 +344,27 @@ def process_referral_reward(self, payment_id: str):
         logger.warning("Referral reward deferred for payment %s: %s", payment_id, exc)
         raise self.retry(exc=exc)
     return str(result)
+
+
+@shared_task
+def recover_missing_referrer_join_notifications(limit: int = 200):
+    """Backfill recent *real* first-touch referrals; no rewards are created."""
+    from .services import _queue_referrer_join_safely
+    since = timezone.now() - timedelta(days=7)
+    refs = Referral.objects.filter(
+        created_at__gte=since, brand__status="active",
+        status__in=[Referral.ReferralStatus.PENDING, Referral.ReferralStatus.CONVERTED,
+                    Referral.ReferralStatus.REWARDED],
+        referrer__is_active=True, referrer__telegram_id__isnull=False,
+    ).select_related("referee").order_by("created_at", "pk")[:limit]
+    queued = 0
+    for ref in refs:
+        if _queue_referrer_join_safely(
+            referrer_id=ref.referrer_id, referee_id=ref.referee_id,
+            brand_id=ref.brand_id,
+        ):
+            queued += 1
+    return queued
 
 
 @shared_task

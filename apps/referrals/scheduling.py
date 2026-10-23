@@ -48,6 +48,38 @@ def lifecycle_candidates(
     """Yield user, stable occurrence key and timestamp; never start a clock on partial payment."""
     cutoff = timezone.now() - timedelta(minutes=delay_minutes)
     users = audience_users(brand_id, audience)
+    if trigger == NotificationTrigger.REFERRAL_LINK_JOIN:
+        from .models import ReferralClick
+        visits = (
+            ReferralClick.objects.filter(
+                brand_id=brand_id, visitor__in=users,
+                is_registration=True, created_at__lte=cutoff,
+                link__is_active=True,
+            )
+            .select_related("visitor", "link", "link__welcome_coupon")
+            .order_by("created_at", "pk")
+        )
+        for visit in visits.iterator(chunk_size=200):
+            yield visit.visitor, f"referral-link:{visit.pk}", visit.created_at
+        return
+    if trigger == NotificationTrigger.FIRST_ACTIVE_SUBSCRIPTION:
+        active_subscriptions = (
+            Subscription.objects.filter(
+                brand_id=brand_id, owner__in=users,
+                status=Subscription.SubscriptionStatus.ACTIVE,
+            )
+            .select_related("owner")
+            .order_by("owner_id", "starts_at", "pk")
+        )
+        seen_users = set()
+        for subscription in active_subscriptions.iterator(chunk_size=200):
+            if subscription.owner_id in seen_users:
+                continue
+            seen_users.add(subscription.owner_id)
+            anchor = subscription.starts_at or subscription.created_at
+            if anchor and anchor <= cutoff:
+                yield subscription.owner, f"first-active:{subscription.pk}", anchor
+        return
     if trigger == NotificationTrigger.JOINED:
         states = (
             BotState.objects.filter(
@@ -93,6 +125,25 @@ def lifecycle_candidates(
             yield order.user, f"purchase:{order.pk}", order.paid_at
 
 
+def _render_rule_message(message, referral_visit=None):
+    """Escape admin copy and inject scoped, safe referral-promo variables."""
+    from html import escape
+    safe = escape(message)
+    if referral_visit and referral_visit.link.welcome_coupon_id:
+        link = referral_visit.link
+        expires_at = referral_visit.created_at + timedelta(hours=link.welcome_coupon_valid_hours)
+        from utils.jalali import jalali_date
+        replacements = {
+            "{coupon_code}": escape(link.welcome_coupon.code),
+            "{coupon_expiry}": escape(str(jalali_date(expires_at, time=True))),
+        }
+    else:
+        replacements = {"{coupon_code}": "", "{coupon_expiry}": ""}
+    for placeholder, value in replacements.items():
+        safe = safe.replace(placeholder, value)
+    return safe
+
+
 def run_notification_rules(limit=500):
     from .tasks import _queue_once
 
@@ -108,6 +159,19 @@ def run_notification_rules(limit=500):
             audience=rule.audience,
             limit=limit,
         ):
+            # The first registration visit is immutable, so link-specific
+            # campaigns cannot be triggered by clicking a different link later.
+            referral_visit = None
+            if rule.trigger == NotificationTrigger.REFERRAL_LINK_JOIN:
+                from .models import ReferralClick
+                visit_id = int(occurrence.rsplit(":", 1)[-1])
+                referral_visit = ReferralClick.objects.select_related(
+                    "link", "link__welcome_coupon"
+                ).filter(pk=visit_id, brand_id=rule.brand_id, visitor=user).first()
+                if not referral_visit or (
+                    rule.referral_link_id and referral_visit.link_id != rule.referral_link_id
+                ):
+                    continue
             if (
                 rule.kind != "custom"
                 and GamificationNotification.objects.filter(
@@ -162,7 +226,7 @@ def run_notification_rules(limit=500):
                 brand_id=rule.brand_id,
                 notification_type=rule.kind,
                 dedupe_key=key,
-                text=escape(rule.message),
+                text=_render_rule_message(rule.message, referral_visit),
                 buttons_data=buttons,
                 metadata={
                     "rule_id": rule.pk,

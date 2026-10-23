@@ -583,6 +583,8 @@ class SubscriptionHandler(BaseHandler):
 <code>{escape(subscription_url)}</code>
 
 لینک اشتراک یا QR را در برنامه VPN مورد نظرتان وارد کنید.
+✏️ اگر هنوز نامی انتخاب نکردید، از بخش «اشتراک‌های من» نام اشتراک خود را تعیین کنید.
+مثال: آیفون خودم
         """
 
         qr_image = self.generate_qr_code(subscription_url)
