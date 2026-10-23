@@ -175,6 +175,11 @@ def sync_connectix_status(provider):
         )
 
         subscription = remote_account.subscription
+        # Backfill credentials of subscriptions provisioned before this field
+        # existed; do not log them and never replace a stored value with blank.
+        if record.password and subscription.connectix_password != record.password:
+            subscription.connectix_password = record.password
+            subscription.save(update_fields=("connectix_password", "updated_at"))
         if subscription.status in (
             Subscription.SubscriptionStatus.CANCELLED,
             Subscription.SubscriptionStatus.PENDING,

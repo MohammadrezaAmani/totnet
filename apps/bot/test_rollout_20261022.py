@@ -153,3 +153,74 @@ class RenewalKeyboardRegressionTests(TestCase):
             async_to_sync(handler.show_renewal_details)(callback, sub.pk, page=18)
             kwargs = bot.edit_message_text.call_args.kwargs
             self.assertIn("صفحه 18 از 18", kwargs["text"])
+
+class SubscriptionDetailAndAccountTests(TestCase):
+    def setUp(self):
+        from unittest.mock import MagicMock
+        self.brand = Brand.objects.create(name="Detail Tests", slug="detail-tests-20261023", currency="T")
+        self.user = User.objects.create_user(username="details-user", brand=self.brand, telegram_id=120042)
+        self.provider = VPNProvider.objects.create(
+            brand=self.brand, name="Connectix", provider_type="connectix", base_url="https://example.invalid"
+        )
+        self.plan = SubscriptionPlan.objects.create(
+            brand=self.brand, vpn_provider=self.provider, name="30g_1m_normal", price=Decimal("40000"),
+            currency="T", plan_type="hybrid", service_category="normal",
+            duration_value=1, duration_unit="months", traffic_limit_gb=Decimal("30")
+        )
+        order = Order.objects.create(
+            brand=self.brand, user=self.user, plan=self.plan, currency="T",
+            original_price=Decimal("40000"), final_price=Decimal("40000")
+        )
+        self.sub = Subscription.objects.create(
+            brand=self.brand, user=self.user, owner=self.user, plan=self.plan,
+            order=order, vpn_provider=self.provider, starts_at=timezone.now(),
+            connectix_username="client-123", connectix_password="safe-for-test",
+            subscription_url="https://example.invalid/sub", status="active"
+        )
+        from apps.subscriptions.models import ProviderRemoteSubscription
+        ProviderRemoteSubscription.objects.create(
+            subscription=self.sub, provider=self.provider, remote_id="r-12",
+            metadata={"used_traffic_raw": "30 GB", "remains_days": "15"}
+        )
+        self.bot = MagicMock()
+        self.bot.edit_message_text = AsyncMock()
+        self.bot.send_message = AsyncMock()
+        self.bot.send_photo = AsyncMock()
+        self.handler = SubscriptionHandler(self.bot, self.brand)
+        self.handler.get_or_create_user = AsyncMock(return_value=(self.user, False))
+        self.callback = MagicMock()
+        self.callback.message.chat.id = self.user.telegram_id
+        self.callback.message.message_id = 999
+        self.callback.answer = AsyncMock()
+
+    def test_subscription_selection_opens_details_not_renewal_grid(self):
+        async_to_sync(self.handler.show_my_subscriptions)(self.callback)
+        kb = self.bot.edit_message_text.call_args.kwargs["reply_markup"]
+        actions = [button.callback_data for row in kb.inline_keyboard for button in row]
+        self.assertIn(f"subscription_details_{self.sub.pk}", actions)
+        self.assertNotIn(f"renewal_details_{self.sub.pk}", actions)
+        self.assertNotIn("safe-for-test", self.bot.edit_message_text.call_args.kwargs["text"])
+
+    def test_details_contain_only_requested_fields(self):
+        async_to_sync(self.handler.show_subscription_details)(self.callback, self.sub.pk)
+        text = self.bot.edit_message_text.call_args.kwargs["text"]
+        for part in ("نام اشتراک:", "نوع سرویس:", "نوع اشتراک:", "حجم باقی‌مانده:", "زمان باقی‌مانده:"):
+            self.assertIn(part, text)
+        for part in ("اطلاعات سرور", "تعداد اتصالات", "خریدار", "رمز عبور", "شناسه:"):
+            self.assertNotIn(part, text)
+
+    def test_only_total_usage_shown_without_scientific_notation(self):
+        async_to_sync(self.handler.show_usage_statistics)(self.callback, self.sub.pk)
+        text = self.bot.edit_message_text.call_args.kwargs["text"]
+        self.assertIn("30 گیگابایت", text)
+        self.assertNotIn("3 گیگابایت", text)
+        self.assertNotIn("آپلود", text)
+        self.assertNotIn("دانلود", text)
+
+    def test_connectix_account_link_includes_username_and_password(self):
+        with patch.object(self.handler, "generate_qr_code", return_value=b""):
+            async_to_sync(self.handler.get_subscription_config)(self.callback, self.sub.pk)
+        text = self.bot.send_message.call_args.args[1]
+        self.assertIn("client-123", text)
+        self.assertIn("safe-for-test", text)
+        self.assertIn("example.invalid/sub", text)

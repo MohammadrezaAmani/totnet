@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 import string
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from django.conf import settings
@@ -39,6 +39,7 @@ class ConnectixProvisioningRequest:
 class ConnectixProvisioningResult:
     remote_id: str
     username: str
+    password: str = field(repr=False)
     client: ConnectixClientRecord | None = None
 
 
@@ -90,6 +91,7 @@ class ConnectixProvider:
         return ConnectixProvisioningResult(
             remote_id=remote_id,
             username=username,
+            password=password,
         )
 
     @staticmethod

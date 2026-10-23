@@ -34,7 +34,7 @@ class SubscriptionHandler(BaseHandler):
     """Handle subscription management and delivery"""
 
     async def show_my_subscriptions(self, callback: types.CallbackQuery, page: int = 1):
-        """List subscriptions directly; selecting one opens its renewal choices."""
+        """List subscriptions; selecting one opens its details (not all renewal plans)."""
         user, _ = await self.get_or_create_user(callback.from_user)
         queryset = Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand).exclude(status=Subscription.SubscriptionStatus.CANCELLED)
         total = await queryset.acount()
@@ -64,7 +64,7 @@ class SubscriptionHandler(BaseHandler):
         ):
             claims.append(claim)
 
-        text = "📱 <b>اشتراک‌های من</b>\n\nاشتراک موردنظر را برای تمدید یا تغییر طرح انتخاب کنید."
+        text = "📱 <b>اشتراک‌های من</b>\n\nبرای مشاهده اطلاعات، اشتراک موردنظر را انتخاب کنید."
         if not subscriptions and not claims:
             text += "\n\nهنوز اشتراکی برای شما ثبت نشده است."
             rows = [
@@ -97,7 +97,7 @@ class SubscriptionHandler(BaseHandler):
                     [
                         {
                             "text": label,
-                            "callback_data": f"renewal_details_{sub.pk}",
+                            "callback_data": f"subscription_details_{sub.pk}",
                         }
                     ]
                 )
@@ -346,14 +346,6 @@ class SubscriptionHandler(BaseHandler):
         if not plans:
             text += "\n⚠️ در حال حاضر هیچ پلن فعالی برای خرید وجود ندارد."
         if total_pages > 1:
-            nav = []
-            if page > 1:
-                nav.append({"text": "◀️ قبلی", "callback_data": f"renewal_plans_page_{subscription.pk}_{page - 1}"})
-            if page < total_pages:
-                nav.append({"text": "بعدی ▶️", "callback_data": f"renewal_plans_page_{subscription.pk}_{page + 1}"})
-            rows.append(nav)
-
-        if total_pages > 1:
             navigation = []
             if page > 1:
                 navigation.append({
@@ -402,7 +394,9 @@ class SubscriptionHandler(BaseHandler):
         )
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id,
-            "✏️ یک نام دلخواه تا ۴۰ حرف برای این اشتراک بفرستید. نام فقط در ربات نمایش داده می‌شود.",
+            "✏️ نام دلخواه اشتراک را ارسال کنید (۱ تا ۴۰ نویسه).\n"
+            "این نام در ربات ذخیره می‌شود؛ تغییر نام اکانت موجود در پنل "
+            "پس از پشتیبانی API ویرایش Connectix امکان‌پذیر است.",
             self.get_back_keyboard(f"renewal_details_{subscription_id}"),
         )
         await callback.answer()
@@ -424,7 +418,7 @@ class SubscriptionHandler(BaseHandler):
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
         await self.send_message_with_keyboard(
             message.chat.id,
-            f"✅ نام اشتراک به «{escape(name)}» تغییر کرد.",
+            f"✅ نام اشتراک در ربات به «{escape(name)}» تغییر کرد.",
             self.create_keyboard([
                 [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
                 [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
@@ -439,7 +433,7 @@ class SubscriptionHandler(BaseHandler):
 
         try:
             subscription = (
-                await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user")
+                await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user", "remote_account")
                 .filter(Q(user=user) | Q(owner=user))
                 .aget(id=subscription_id, brand=self.brand)
             )
@@ -447,47 +441,24 @@ class SubscriptionHandler(BaseHandler):
             await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
 
-        text = f"""
-📱 جزئیات اشتراک
-
-🏷️ پلن: {escape(subscription.display_name or subscription.plan.name)}
-🆔 شناسه: `{subscription.subscription_id}`
-📊 وضعیت: {self.get_status_text(subscription.status)}
-👤 خریدار: {subscription.user.full_name or subscription.user.username}
-🎁 دارنده: {subscription.owner.full_name or subscription.owner.username}
-
-⏰ اطلاعات زمان:
-• شروع: {jalali_date(subscription.starts_at, time=True)}
-"""
-
-        if subscription.expires_at:
-            text += f"• انقضا: {jalali_date(subscription.expires_at, time=True)}\n"
-            days_remaining = subscription.days_remaining
-            if days_remaining is not None:
-                text += f"• باقی‌مانده: {days_remaining} روز\n"
-        else:
-            text += "• انقضا: نامحدود\n"
-
-        if subscription.traffic_limit_gb:
-            usage_percent = subscription.traffic_percentage_used
-            text += f"""
-📊 اطلاعات ترافیک:
-• حجم کل: {self.format_traffic(subscription.traffic_limit_gb)}
-• مصرف شده: {self.format_traffic(float(subscription.traffic_used_gb))}
-• باقی‌مانده: {self.format_traffic(float(subscription.traffic_limit_gb) - float(subscription.traffic_used_gb))}
-• درصد مصرف: {usage_percent:.1f}%
-"""
-
-        text += f"""
-🖥️ اطلاعات سرور:
-• ارائه‌دهنده: {subscription.vpn_provider.name}
-• نوع: {subscription.vpn_provider.get_provider_type_display()}
-"""
-
-        if subscription.last_connection:
-            text += f"• آخرین اتصال: {jalali_date(subscription.last_connection, time=True)}\n"
-
-        text += f"• تعداد اتصالات: {subscription.total_connections}\n"
+        category_names = {
+            SubscriptionPlan.ServiceCategory.NORMAL: "نرمال",
+            SubscriptionPlan.ServiceCategory.ROYAL: "رویال",
+            SubscriptionPlan.ServiceCategory.IRAN_IP: "آی‌پی ایران",
+        }
+        service = category_names.get(subscription.plan.service_category, "سایر")
+        traffic, days = remaining_usage(subscription)
+        name = (subscription.display_name or "").strip()
+        shown_name = escape(name) if name else "هنوز نام‌گذاری نشده؛ از دکمه «نام‌گذاری اشتراک» استفاده کنید."
+        specs = compact_plan_specs(subscription.plan)
+        text = (
+            "📱 <b>جزئیات اشتراک</b>\n\n"
+            f"🏷️ نام اشتراک: {shown_name}\n"
+            f"🩺 نوع سرویس: {escape(service)}\n"
+            f"📋 نوع اشتراک: {escape(service)} {escape(specs)}\n"
+            f"📦 حجم باقی‌مانده: {escape(traffic)}\n"
+            f"⏳ زمان باقی‌مانده: {escape(days)}"
+        )
 
         keyboard_buttons = []
 
@@ -603,9 +574,10 @@ class SubscriptionHandler(BaseHandler):
             return
 
         text = f"""
-📱 اطلاعات اتصال - {subscription.plan.name}
+📱 اطلاعات اتصال - {escape(subscription.display_name or subscription.plan.name)}
 
 👤 نام کاربری: <code>{escape(subscription.connectix_username or '—')}</code>
+🔑 رمز عبور: <code>{escape(subscription.connectix_password or 'هنوز از پنل دریافت نشده')}</code>
 
 🔗 لینک اشتراک:
 <code>{escape(subscription_url)}</code>
@@ -731,7 +703,7 @@ class SubscriptionHandler(BaseHandler):
 
         try:
             subscription = (
-                await Subscription.objects.select_related("plan")
+                await Subscription.objects.select_related("plan", "vpn_provider", "remote_account")
                 .filter(Q(user=user) | Q(owner=user))
                 .aget(id=subscription_id, brand=self.brand)
             )
@@ -739,52 +711,17 @@ class SubscriptionHandler(BaseHandler):
             await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
 
-        end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=7)
+        from apps.subscriptions.usage import consumed_traffic_gb
 
-        usage_stats = []
-        async for stat in subscription.usage_stats.filter(
-            date__gte=start_date, date__lte=end_date
-        ).order_by("-date"):
-            usage_stats.append(stat)
-
-        text = f"""
-📊 آمار مصرف - {subscription.plan.name}
-
-📈 آمار 7 روز اخیر:
-"""
-
-        total_upload = 0
-        total_download = 0
-
-        if usage_stats:
-            for stat in usage_stats:
-                upload_gb = stat.upload_bytes / (1024**3)
-                download_gb = stat.download_bytes / (1024**3)
-                total_upload += upload_gb
-                total_download += download_gb
-
-                text += f"""
-📅 {jalali_date(stat.date)}:
-  ⬆️ آپلود: {upload_gb:.2f} GB
-  ⬇️ دانلود: {download_gb:.2f} GB
-  🔢 اتصالات: {stat.connection_count}
-"""
-        else:
-            text += "❌ آمار مصرفی موجود نیست.\n"
-
-        text += f"""
-📊 جمع کل هفته:
-• ⬆️ کل آپلود: {total_upload:.2f} GB
-• ⬇️ کل دانلود: {total_download:.2f} GB
-• 📈 کل ترافیک: {(total_upload + total_download):.2f} GB
-"""
-
-        if subscription.traffic_limit_gb:
-            remaining = float(subscription.traffic_limit_gb) - float(
-                subscription.traffic_used_gb
-            )
-            text += f"• 📊 باقی‌مانده: {remaining:.2f} GB\n"
+        used = consumed_traffic_gb(subscription)
+        label = (
+            f"{format(used.normalize(), 'f')} گیگابایت"
+            if used is not None else "در انتظار اطلاعات مصرف از سرویس‌دهنده"
+        )
+        text = (
+            "📊 <b>آمار مصرف اشتراک</b>\n\n"
+            f"📈 ترافیک مصرف‌شده: {escape(label)}"
+        )
 
         keyboard = self.create_keyboard(
             [

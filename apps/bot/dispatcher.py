@@ -738,8 +738,8 @@ class MultiBrandDispatcher:
                 await handlers["subscriptions"].get_subscription_config(
                     callback, sub_id
                 )
-            elif data.startswith("usage_stats_"):
-                sub_id = int(data.split("_")[2])
+            elif data.startswith(("usage_stats_", "refresh_stats_")):
+                sub_id = int(data.rsplit("_", 1)[1])
                 await handlers["subscriptions"].show_usage_statistics(
                     callback, sub_id
                 )

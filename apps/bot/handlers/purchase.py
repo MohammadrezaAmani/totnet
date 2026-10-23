@@ -1137,7 +1137,10 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         })
         at = jalali_date(payment.created_at, time=True)
         keyboard = self.create_keyboard([
-            *[[{"text": label, "callback_data": f"useful_category_{key}"}]
+            *[[{"text": label, "callback_data": f"useful_category_{key}",
+                "style": "success" if key in {
+                    "downloads", "install", "app_usage",
+                } else None}]
               for key, label in UsefulContentHandler.CATEGORY_LABELS.items()],
             [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
         ])
@@ -1149,7 +1152,11 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         order = await Order.objects.select_related("plan").aget(pk=payment.order_id)
         notified = await self._notify_admin_receipt(order, payment, file_id)
         if not notified:
-            await message.answer("⚠️ رسید ذخیره شد، اما اعلان ادمین ارسال نشد. لطفاً با پشتیبانی تماس بگیرید.")
+            logger.error(
+                "Payment receipt %s persisted without successful Telegram admin notification; "
+                "requires review in Django Admin",
+                payment.pk,
+            )
 
     async def _notify_admin_receipt(
         self, order: Order, payment: Payment, file_id: str

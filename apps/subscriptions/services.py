@@ -321,7 +321,8 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
             request = ConnectixProvisioningRequest(
                 subscription_id=str(subscription.subscription_id),
                 display_name=(
-                    subscription.owner.full_name
+                    subscription.display_name
+                    or subscription.owner.full_name
                     or subscription.owner.get_full_name()
                     or subscription.owner.username
                 ),
@@ -353,8 +354,13 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
                     },
                 },
             )
+            # Persist generated credentials before the follow-up remote lookup:
+            # a temporary API failure must not lose the account password.
             subscription.connectix_username = created.username
-            await subscription.asave(update_fields=["connectix_username", "updated_at"])
+            subscription.connectix_password = created.password
+            await subscription.asave(
+                update_fields=["connectix_username", "connectix_password", "updated_at"]
+            )
 
         record = await client.get_client(remote_id)
         remote_account.remote_id = remote_id
@@ -390,7 +396,11 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
         remote_account.last_error = ""
         await remote_account.asave()
         subscription.subscription_url = record.subscription_link
-        subscription.connectix_username = record.username
+        subscription.connectix_username = record.username or username
+        # The upstream account is authoritative when it returns a password.
+        # Blank responses must not erase the generated (or previously saved) one.
+        if record.password:
+            subscription.connectix_password = record.password
         subscription.status = Subscription.SubscriptionStatus.ACTIVE
         subscription.provisioning_state = "active"
         subscription.provisioning_error_code = ""
@@ -400,6 +410,7 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
             update_fields=[
                 "subscription_url",
                 "connectix_username",
+                "connectix_password",
                 "status",
                 "provisioning_state",
                 "provisioning_error_code",

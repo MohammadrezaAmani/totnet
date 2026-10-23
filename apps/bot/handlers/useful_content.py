@@ -45,7 +45,12 @@ class UsefulContentHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         intro = await self.section_intro_once(user, "academy", "آموزش‌ها و راهنماهای این بخش برای استفاده بهتر از سرویس هستند.")
         rows = [
-            [{"text": label, "callback_data": f"useful_category_{key}"}]
+            [{"text": label, "callback_data": f"useful_category_{key}",
+              "style": "success" if key in {
+                  UsefulContent.Category.DOWNLOADS,
+                  UsefulContent.Category.INSTALL,
+                  UsefulContent.Category.APP_USAGE,
+              } else None}]
             for key, label in self.CATEGORY_LABELS.items()
         ]
         rows.append([{"text": "🔙 بازگشت", "callback_data": "main_menu"}])

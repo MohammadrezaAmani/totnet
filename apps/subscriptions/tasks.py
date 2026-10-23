@@ -164,6 +164,10 @@ def provision_paid_order(order_pk: int):
                 activation_lines.append(
                     f"👤 نام کاربری: <code>{escape(subscription.connectix_username)}</code>"
                 )
+            if subscription.connectix_password:
+                activation_lines.append(
+                    f"🔑 رمز عبور: <code>{escape(subscription.connectix_password)}</code>"
+                )
             if subscription.subscription_url:
                 activation_lines.extend(
                     [

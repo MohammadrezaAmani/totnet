@@ -217,6 +217,9 @@ class Subscription(models.Model):
     qr_codes = models.JSONField(default=list, blank=True)
 
     connectix_username = models.CharField(max_length=100, null=True, blank=True)
+    # Account password is intentionally stored as plain text as requested by the
+    # operator. Do not expose it through admin list pages, reprs or application logs.
+    connectix_password = models.CharField(max_length=255, blank=True, default="", editable=False)
     display_name = models.CharField(
         "نام دلخواه اشتراک", max_length=40, blank=True,
         help_text="فقط نام نمایشی ربات؛ شناسه اتصال در سرویس‌دهنده تغییر نمی‌کند.",

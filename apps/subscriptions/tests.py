@@ -161,7 +161,7 @@ class ConnectixOrderProvisioningTests(TestCase):
         record = ConnectixClientRecord(
             remote_id="remote-123",
             username="client-name",
-            password="",
+            password="legacy-panel-secret",
             is_active=False,
             is_expired=True,
             used_traffic="12.4 GB",
@@ -190,6 +190,7 @@ class ConnectixOrderProvisioningTests(TestCase):
         self.assertEqual(remote.remote_status, "expired")
         self.assertEqual(remote.metadata["used_traffic_raw"], "12.4 GB")
         self.assertEqual(subscription.status, Subscription.SubscriptionStatus.EXPIRED)
+        self.assertEqual(subscription.connectix_password, "legacy-panel-secret")
 
 
 class SubscriptionPlanPricingTests(TestCase):
@@ -304,3 +305,63 @@ class ProvisioningDeliveryTests(TestCase):
             kwargs["buttons_data"][0][0]["callback_data"],
             f"get_config_{subscription.pk}",
         )
+
+class ConnectixCredentialPersistenceTests(TestCase):
+    setUp = ConnectixOrderProvisioningTests.setUp
+    """Regression: generated credentials survive lookup failures and refreshes."""
+
+    def test_generated_password_saved_then_upstream_password_takes_precedence(self):
+        from unittest.mock import MagicMock
+        from apps.subscriptions.services import provision_connectix_subscription
+        from apps.vpn_providers.services.connectix import ConnectixProvisioningResult
+
+        self.plan.upstream_group_name = "Test group"
+        self.plan.upstream_plan_name = "Test plan"
+        self.plan.save(update_fields=("upstream_group_name", "upstream_plan_name"))
+        sub = Subscription.objects.create(
+            brand=self.brand, user=self.user, owner=self.user,
+            plan=self.plan, vpn_provider=self.provider, order=self.order,
+            starts_at=self.order.created_at,
+            display_name="اشتراک محل کار",
+        )
+        remote_client = MagicMock()
+        remote_client.create_account = AsyncMock(return_value=ConnectixProvisioningResult(
+            remote_id="r-10", username="remote-user", password="generated-secret"
+        ))
+        remote_client.get_client = AsyncMock(return_value=ConnectixClientRecord(
+            remote_id="r-10", username="remote-user", password="panel-secret",
+            subscription_link="https://subscription.example.invalid/account", is_active=True,
+        ))
+        remote_client.close = AsyncMock()
+        with patch("apps.subscriptions.services.ConnectixProvider", return_value=remote_client):
+            self.assertTrue(async_to_sync(provision_connectix_subscription)(sub))
+        sub.refresh_from_db()
+        self.assertEqual(sub.connectix_username, "remote-user")
+        self.assertEqual(sub.connectix_password, "panel-secret")
+        self.assertEqual(sub.display_name, "اشتراک محل کار")
+        self.assertEqual(remote_client.create_account.call_args.args[0].display_name, "اشتراک محل کار")
+        self.assertNotIn("panel-secret", repr(remote_client.create_account.call_args))
+
+    def test_blank_panel_password_keeps_generated_password(self):
+        from unittest.mock import MagicMock
+        from apps.subscriptions.services import provision_connectix_subscription
+        from apps.vpn_providers.services.connectix import ConnectixProvisioningResult
+
+        sub = Subscription.objects.create(
+            brand=self.brand, user=self.user, owner=self.user,
+            plan=self.plan, vpn_provider=self.provider, order=self.order,
+            starts_at=self.order.created_at,
+        )
+        remote_client = MagicMock()
+        remote_client.create_account = AsyncMock(return_value=ConnectixProvisioningResult(
+            remote_id="r-11", username="remote-user", password="generated-secret"
+        ))
+        remote_client.get_client = AsyncMock(return_value=ConnectixClientRecord(
+            remote_id="r-11", username="remote-user", password="",
+            subscription_link="https://subscription.example.invalid/account", is_active=True,
+        ))
+        remote_client.close = AsyncMock()
+        with patch("apps.subscriptions.services.ConnectixProvider", return_value=remote_client):
+            self.assertTrue(async_to_sync(provision_connectix_subscription)(sub))
+        sub.refresh_from_db()
+        self.assertEqual(sub.connectix_password, "generated-secret")

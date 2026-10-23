@@ -40,22 +40,25 @@ def labelled_traffic_gb(value):
     return max(Decimal(0), number * factors[unit])
 
 
+def consumed_traffic_gb(subscription):
+    """Total consumption in GB or None if Connectix returns an unknown unit."""
+    remote = getattr(subscription, "remote_account", None)
+    metadata = (remote.metadata or {}) if remote else {}
+    if subscription.vpn_provider.provider_type != "connectix":
+        return subscription.traffic_used_gb
+    parsed = labelled_traffic_gb(metadata.get("used_traffic_raw"))
+    if parsed is not None:
+        return parsed
+    if remote is not None and str(metadata.get("used_traffic_raw", "")).strip() in {"0", "0.0", "0.00"}:
+        return Decimal(0)
+    return None
+
+
 def remaining_usage(subscription):
     remote = getattr(subscription, "remote_account", None)
     metadata = (remote.metadata or {}) if remote else {}
-    used = subscription.traffic_used_gb
+    used = consumed_traffic_gb(subscription)
     connectix = subscription.vpn_provider.provider_type == "connectix"
-    if connectix:
-        parsed = labelled_traffic_gb(metadata.get("used_traffic_raw"))
-        if parsed is not None:
-            used = parsed
-        elif (
-            remote is None
-            or "used_traffic_raw" not in metadata
-            or str(metadata.get("used_traffic_raw") or "").strip()
-            not in {"0", "0.0", "0.00"}
-        ):
-            used = None
     if subscription.traffic_limit_gb is None:
         traffic = "نامحدود"
     elif used is None:
