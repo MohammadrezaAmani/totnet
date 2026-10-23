@@ -38,32 +38,33 @@ def temporary_duration_blocked(plan):
 
     Controlled with an env-backed feature flag for re-enabling after catalog QA.
     """
+    unit, value = plan.duration_unit, plan.duration_value
+    months = value if unit == SubscriptionPlan.DurationUnit.MONTHS else (
+        value // 30 if unit == SubscriptionPlan.DurationUnit.DAYS and value in (60, 90)
+        else value // 4 if unit == SubscriptionPlan.DurationUnit.WEEKS and value in (8, 12)
+        else 0
+    )
+    if plan.service_category == SubscriptionPlan.ServiceCategory.NORMAL:
+        # Normal three-month offers are disabled regardless of the legacy
+        # feature flag. Normal two-month offers remain available.
+        return months == 3
+    return getattr(settings, "TEMP_DISABLE_2_3_MONTH_PLANS", True) and months in (2, 3)
+
+
+def blocked_duration_key(key, category=None):
+    if category == SubscriptionPlan.ServiceCategory.NORMAL:
+        return key in {"m3", "d90", "w12"}
     if not getattr(settings, "TEMP_DISABLE_2_3_MONTH_PLANS", True):
         return False
-    unit, value = plan.duration_unit, plan.duration_value
-    return (
-        (unit == SubscriptionPlan.DurationUnit.MONTHS and value in (2, 3))
-        or (unit == SubscriptionPlan.DurationUnit.DAYS and value in (60, 90))
-        or (unit == SubscriptionPlan.DurationUnit.WEEKS and value in (8, 12))
-    )
-
-
-def blocked_duration_key(key):
-    return getattr(settings, "TEMP_DISABLE_2_3_MONTH_PLANS", True) and key in {"m2", "m3", "d60", "d90", "w8", "w12"}
+    return key in {"m2", "m3", "d60", "d90", "w8", "w12"}
 
 
 def effective_reward_percent(order, configured_percent):
-    """Royal unlimited overrides ALL normal/challenge/gift referral rates.
+    """Apply the brand and service-specific purchase-referral commission.
 
-    Use persisted order.plan instead of buttons, plan names or amount; the same
-    policy therefore applies to all durations, user counts and payment methods.
+    Use the persisted order plan and never derive rates from display labels.
     """
     plan = order.plan
-    if (
-        plan.service_category == SubscriptionPlan.ServiceCategory.ROYAL
-        and plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED
-    ):
-        return Decimal("4")
     from apps.referrals.models import ServiceRewardRate
     override = (ServiceRewardRate.objects.filter(
         brand_id=order.brand_id,
@@ -74,4 +75,9 @@ def effective_reward_percent(order, configured_percent):
     # Prefer an exact type override over a category-wide default.
     if override:
         return Decimal(override.percent)
+    if plan.service_category in {
+        SubscriptionPlan.ServiceCategory.NORMAL,
+        SubscriptionPlan.ServiceCategory.ROYAL,
+    }:
+        return Decimal("8")
     return Decimal(configured_percent)

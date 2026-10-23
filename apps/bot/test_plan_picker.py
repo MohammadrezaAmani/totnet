@@ -202,17 +202,22 @@ class PlanPickerTests(TestCase):
                          [f"select_plan_{second.pk}", f"select_plan_{first.pk}"])
 
     @override_settings(TEMP_DISABLE_2_3_MONTH_PLANS=True)
-    def test_blocked_month_is_red_and_unavailable_even_on_old_selection_callback(self):
-        one = self.plan(volume=20, months=1)
-        disabled = self.plan(volume=40, months=2)
+    def test_royal_two_month_blocked_but_normal_two_month_visible(self):
+        normal_two = self.plan(volume=30, months=2, category="normal")
+        normal_three = self.plan(volume=30, months=3, category="normal")
+        royal_two = self.plan(volume=40, months=2, category="royal")
         self.open_service()
-        self.assertTrue(any("🔴" in b.text and "۲" in b.text for b in self.buttons()))
+        self.assertTrue(any("۲" in b.text and "🔴" not in b.text for b in self.buttons()))
+        self.assertFalse(any("۳ ماه" in b.text for b in self.buttons()))
         self.click("duration", "m2")
-        self.assertEqual(self.picker()["stage"], "bundle")
-        self.assertEqual(self.picker()["duration"], "")
-        self.feed(callback=f"select_plan_{disabled.pk}", user_id=1)
+        self.click("users", "1")
+        self.assertEqual(self.picker()["stage"], "ranges")
+        self.feed(callback="purchase_subscription", user_id=1)
+        self.feed(callback="purchase_category_royal", user_id=1)
+        self.assertTrue(any("🔴" in b.text and "۲" in b.text for b in self.buttons()))
+        self.feed(callback=f"select_plan_{royal_two.pk}", user_id=1)
         self.assertEqual(Order.objects.count(), 0)
-        self.feed(callback=f"purchase_plan_{disabled.pk}", user_id=1)
+        self.feed(callback=f"purchase_plan_{normal_three.pk}", user_id=1)
         self.assertEqual(Order.objects.count(), 0)
 
     def test_gift_days_appear_in_volume_and_unlimited_buttons(self):

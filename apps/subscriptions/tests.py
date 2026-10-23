@@ -261,7 +261,7 @@ class ProvisioningDeliveryTests(TestCase):
             status=Order.OrderStatus.PAID,
         )
 
-    def test_success_notification_exposes_link_and_direct_config_qr_action(self):
+    def test_success_notification_omits_link_and_provides_config_and_naming_actions(self):
         subscription = Subscription.objects.create(
             brand=self.brand,
             user=self.user,
@@ -300,10 +300,14 @@ class ProvisioningDeliveryTests(TestCase):
         broadcast_mock.assert_called_once()
         kwargs = broadcast_mock.call_args.kwargs
         self.assertIn("client-123", kwargs["text"])
-        self.assertIn("subscription.example.invalid/direct", kwargs["text"])
+        self.assertNotIn("subscription.example.invalid/direct", kwargs["text"])
         self.assertEqual(
             kwargs["buttons_data"][0][0]["callback_data"],
             f"get_config_{subscription.pk}",
+        )
+        self.assertEqual(
+            kwargs["buttons_data"][1][0]["callback_data"],
+            f"rename_subscription_{subscription.pk}",
         )
 
 class ConnectixCredentialPersistenceTests(TestCase):

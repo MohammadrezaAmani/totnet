@@ -50,25 +50,10 @@ class SubscriptionHandler(BaseHandler):
         ):
             subscriptions.append(sub)
 
-        claims = []
-        async for claim in (
-            SubscriptionClaim.objects.filter(
-                user=user,
-                brand=self.brand,
-                status__in=[
-                    SubscriptionClaim.Status.PENDING,
-                    SubscriptionClaim.Status.REJECTED,
-                ],
-            )
-            .order_by("-created_at")[:20]
-        ):
-            claims.append(claim)
-
         text = "📱 <b>اشتراک‌های من</b>\n\nبرای مشاهده اطلاعات، اشتراک موردنظر را انتخاب کنید."
-        if not subscriptions and not claims:
+        if not subscriptions:
             text += "\n\nهنوز اشتراکی برای شما ثبت نشده است."
             rows = [
-                [{"text": "📎 ثبت اشتراک فعال", "callback_data": "onboarding_existing_subscription"}],
                 [{"text": "🛒 خرید اشتراک", "callback_data": "purchase_subscription"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
             ]
@@ -101,15 +86,6 @@ class SubscriptionHandler(BaseHandler):
                         }
                     ]
                 )
-            for claim in claims:
-                icon = "⏳" if claim.status == SubscriptionClaim.Status.PENDING else "❌"
-                status = "در انتظار بررسی" if claim.status == SubscriptionClaim.Status.PENDING else "رد شده"
-                label = f"{icon} {claim.username} • {status}"
-                if len(label) > 58:
-                    label = label[:57] + "…"
-                rows.append(
-                    [{"text": label, "callback_data": f"subscription_claim_{claim.pk}"}]
-                )
             if last_page > 1:
                 text += f"\n\nصفحه {page} از {last_page} · {total} اشتراک"
                 rows.append([
@@ -119,7 +95,6 @@ class SubscriptionHandler(BaseHandler):
                 ])
             rows.extend(
                 [
-                    [{"text": "📎 ثبت اشتراک فعال", "callback_data": "onboarding_existing_subscription"}],
                     [{"text": "🛒 خرید اشتراک جدید", "callback_data": "purchase_subscription"}],
                     [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
                 ]
@@ -167,7 +142,6 @@ class SubscriptionHandler(BaseHandler):
             text,
             self.create_keyboard(
                 [
-                    [{"text": "📎 ثبت/ارسال مجدد یوزرنیم", "callback_data": "onboarding_existing_subscription"}],
                     [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
                 ]
             ),
@@ -394,10 +368,8 @@ class SubscriptionHandler(BaseHandler):
         )
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id,
-            "✏️ نام دلخواه اشتراک را ارسال کنید (۱ تا ۴۰ نویسه).\n"
-            "این نام در ربات ذخیره می‌شود؛ تغییر نام اکانت موجود در پنل "
-            "پس از پشتیبانی API ویرایش Connectix امکان‌پذیر است.",
-            self.get_back_keyboard(f"renewal_details_{subscription_id}"),
+            "✏️ نام دلخواه اشتراک را ارسال کنید (۱ تا ۴۰ نویسه).",
+            self.get_back_keyboard(f"subscription_details_{subscription_id}"),
         )
         await callback.answer()
 
@@ -573,32 +545,37 @@ class SubscriptionHandler(BaseHandler):
             )
             return
 
-        text = f"""
-📱 اطلاعات اتصال - {escape(subscription.display_name or subscription.plan.name)}
-
-👤 نام کاربری: <code>{escape(subscription.connectix_username or '—')}</code>
-🔑 رمز عبور: <code>{escape(subscription.connectix_password or 'هنوز از پنل دریافت نشده')}</code>
-
-🔗 لینک اشتراک:
-<code>{escape(subscription_url)}</code>
-
-لینک اشتراک یا QR را در برنامه VPN مورد نظرتان وارد کنید.
-✏️ اگر هنوز نامی انتخاب نکردید، از بخش «اشتراک‌های من» نام اشتراک خود را تعیین کنید.
-مثال: آیفون خودم
-        """
-
+        name = escape(subscription.display_name or "نام‌گذاری نشده")
+        username = escape(subscription.connectix_username or "—")
+        password = escape(subscription.connectix_password or "—")
+        text = (
+            "📱 <b>اطلاعات اشتراک</b>\n\n"
+            f"🏷 نام اشتراک: {name}\n"
+            f"👤 نام کاربری: <code>{username}</code>\n"
+            f"🔑 رمز عبور: <code>{password}</code>\n"
+            "(جهت ورود به برنامه ما، کانکتیکس)\n\n"
+            f"🔗 لینک اشتراک V2Ray:\n<code>{escape(subscription_url)}</code>"
+        )
+        keyboard = self.create_keyboard([
+            [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
+            [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+            [{"text": "🧩 نحوه وارد کردن اشتراک", "callback_data": "useful_category_install"}],
+            [{"text": "📥 دانلود و نصب برنامه", "callback_data": "useful_category_downloads"}],
+        ])
         qr_image = self.generate_qr_code(subscription_url)
-
-        await self.bot.send_message(callback.message.chat.id, text, parse_mode="HTML")
-
         if qr_image:
-            await self.bot.send_photo(
-                callback.message.chat.id,
-                photo=BufferedInputFile(qr_image, filename="qr_code.png"),
-                caption="📱 QR Code اتصال",
-            )
-
-        await callback.answer("✅ اطلاعات اتصال ارسال شد")
+            try:
+                await self.bot.send_photo(
+                    callback.message.chat.id,
+                    photo=BufferedInputFile(qr_image, filename="qr_code.png"),
+                    caption="📱 QR Code اتصال",
+                )
+            except Exception:
+                logger.exception("QR delivery failed for subscription %s", subscription.pk)
+        await self.bot.send_message(
+            callback.message.chat.id, text, parse_mode="HTML", reply_markup=keyboard
+        )
+        await callback.answer()
 
     async def send_standard_config(
         self,
@@ -612,11 +589,6 @@ class SubscriptionHandler(BaseHandler):
 
 🔗 لینک اشتراک:
 `{config.subscription_url}`
-
-📱 نحوه اتصال:
-1️⃣ اپلیکیشن v2ray یا مشابه را نصب کنید
-2️⃣ لینک بالا را کپی کنید
-3️⃣ در اپلیکیشن Add Config کنید
 
 📋 کانفیگ‌های موجود:
         """
@@ -671,31 +643,31 @@ class SubscriptionHandler(BaseHandler):
                         "callback_data": f"config_file_{subscription.id}",
                     }
                 ],
-                [
-                    {
-                        "text": "🔙 بازگشت",
-                        "callback_data": f"subscription_details_{subscription.id}",
-                    }
-                ],
+                [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+                [{"text": "🧩 نحوه وارد کردن اشتراک", "callback_data": "useful_category_install"}],
+                [{"text": "📥 دانلود و نصب برنامه", "callback_data": "useful_category_downloads"}],
             ]
         )
 
         keyboard = self.create_keyboard(keyboards)
 
-        await self.bot.send_message(
-            callback.message.chat.id, text, parse_mode="HTML", reply_markup=keyboard
-        )
-
         if config.subscription_url:
             qr_image = self.generate_qr_code(config.subscription_url)
             if qr_image:
-                await self.bot.send_photo(
-                    callback.message.chat.id,
-                    photo=BufferedInputFile(qr_image, filename="subscription_qr.png"),
-                    caption="📱 QR Code لینک اشتراک",
-                )
+                try:
+                    await self.bot.send_photo(
+                        callback.message.chat.id,
+                        photo=BufferedInputFile(qr_image, filename="subscription_qr.png"),
+                        caption="📱 QR Code لینک اشتراک",
+                    )
+                except Exception:
+                    logger.exception("QR delivery failed for subscription %s", subscription.pk)
 
-        await callback.answer("✅ کانفیگ ارسال شد")
+        await self.bot.send_message(
+            callback.message.chat.id, text, parse_mode="HTML", reply_markup=keyboard
+        )
+        await callback.answer()
 
     async def show_usage_statistics(
         self, callback: types.CallbackQuery, subscription_id: int

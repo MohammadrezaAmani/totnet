@@ -62,7 +62,7 @@ class PlanPickerMixin:
         if duration == "m1":
             return Decimal(10 if category == "royal" else 30)
         if duration == "m2":
-            return Decimal(40)
+            return Decimal(30 if category == "normal" else 40)
         if duration == "m3":
             return Decimal(60)
         return Decimal(0)
@@ -151,7 +151,7 @@ class PlanPickerMixin:
             ])
             durations = sorted({duration_key(p) for p in volume_plans}, key=self._duration_sort, reverse=True)
             rows.extend(self._grid([
-                self._picker_button(picker, ("🔴 " if blocked_duration_key(d) else "✅ " if picker["duration"] == d else "") + duration_label(d), "duration", d)
+                self._picker_button(picker, ("🔴 " if blocked_duration_key(d, picker["category"]) else "✅ " if picker["duration"] == d else "") + duration_label(d), "duration", d)
                 for d in durations if d in self.STANDARD_MONTHS
             ]))
             lines.append("<b>تعداد کاربر:</b>")
@@ -160,8 +160,8 @@ class PlanPickerMixin:
                 self._picker_button(picker, ("✅ " if picker["users"] == n else "") + f"{n} کاربر", "users", str(n))
                 for n in sorted({p.max_users for p in available if 1 <= p.max_users <= 4})
             ], columns=4))
-            if blocked_duration_key(picker["duration"]):
-                lines.append("🔴 اشتراک‌های ۲ و ۳ ماهه موقتاً غیرفعال هستند.")
+            if blocked_duration_key(picker["duration"], picker["category"]):
+                lines.append("🔴 مدت انتخاب‌شده غیرفعال است.")
             if not volume_plans:
                 lines.append("برای دیدن سایر اشتراک‌ها، «تمام اشتراک‌ها» را انتخاب کنید.")
         elif stage == "ranges":
@@ -284,7 +284,7 @@ class PlanPickerMixin:
         volume = [p for p in catalog if self._volume(p)
                   and Decimal(traffic_key(p)[1:]) >= self._min_volume(picker["category"], duration_key(p))]
         stage = picker["stage"]
-        if action == "duration" and stage == "bundle" and blocked_duration_key(value):
+        if action == "duration" and stage == "bundle" and blocked_duration_key(value, picker["category"]):
             await callback.answer("زمان درخواستی موقتاً غیرفعال است", show_alert=True)
             return
         if action == "duration" and stage == "bundle":

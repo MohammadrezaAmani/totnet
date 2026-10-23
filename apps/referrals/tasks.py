@@ -9,7 +9,7 @@ from html import escape
 from asgiref.sync import async_to_sync
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from celery import shared_task
 from django.conf import settings
@@ -365,6 +365,92 @@ def recover_missing_referrer_join_notifications(limit: int = 200):
         ):
             queued += 1
     return queued
+
+
+@shared_task
+def delete_expired_referrer_join_messages(limit: int = 100):
+    """Delete inviter-only join notices ten hours after Telegram delivery.
+
+    Scans from the durable notification ledger rather than using a ten-hour
+    Celery countdown, so broker restarts cannot permanently lose deletions.
+    The claim lease prevents concurrent beat/workers from double-deleting.
+    """
+    now = timezone.now()
+    candidates = (
+        GamificationNotification.objects.filter(
+            metadata__event="referral_joined",
+            sent_at__isnull=False,
+            sent_at__lte=now - timedelta(hours=10),
+        )
+        .exclude(metadata__has_key="auto_deleted_at")
+        .exclude(metadata__has_key="auto_delete_terminal_at")
+        .order_by("sent_at", "pk")[:limit * 3]
+    )
+    deleted = 0
+    attempted = 0
+    for candidate in candidates:
+        if attempted >= limit:
+            break
+
+        with transaction.atomic():
+            notice = (
+                GamificationNotification.objects.select_for_update(of=("self",))
+                .select_related("brand", "user")
+                .get(pk=candidate.pk)
+            )
+            metadata = dict(notice.metadata or {})
+            if metadata.get("auto_deleted_at") or metadata.get("auto_delete_terminal_at"):
+                continue
+            lease_started = parse_datetime(str(metadata.get("auto_delete_claimed_at", "")))
+            if lease_started and timezone.is_aware(lease_started) and lease_started > now - timedelta(minutes=5):
+                continue
+            metadata["auto_delete_claimed_at"] = now.isoformat()
+            notice.metadata = metadata
+            notice.save(update_fields=["metadata"])
+            try:
+                message_id = int(metadata.get("telegram_message_id"))
+            except (TypeError, ValueError):
+                message_id = None
+            chat_id = notice.user.telegram_id
+            token = notice.brand.bot_token
+
+        attempted += 1
+        terminal = not (message_id and chat_id)
+        success = False
+        if not terminal and token:
+            async def delete_telegram_message():
+                bot = Bot(token, session=AiohttpSession(proxy=settings.SOCKS5_PROXY))
+                try:
+                    return await bot.delete_message(
+                        chat_id=chat_id, message_id=message_id,
+                    )
+                finally:
+                    await bot.session.close()
+
+            try:
+                success = bool(async_to_sync(delete_telegram_message)())
+            except (TelegramBadRequest, TelegramForbiddenError):
+                # Message removed by the user, older than Telegram's limit,
+                # or inaccessible: further attempts cannot succeed.
+                terminal = True
+            except Exception:
+                logger.exception("Could not delete referral join notification %s", notice.pk)
+
+        with transaction.atomic():
+            current = GamificationNotification.objects.select_for_update().get(pk=notice.pk)
+            updated = dict(current.metadata or {})
+            updated.pop("auto_delete_claimed_at", None)
+            if success:
+                updated["auto_deleted_at"] = timezone.now().isoformat()
+                deleted += 1
+            elif terminal:
+                updated["auto_delete_terminal_at"] = timezone.now().isoformat()
+            else:
+                updated["auto_delete_last_failed_at"] = timezone.now().isoformat()
+            current.metadata = updated
+            current.save(update_fields=["metadata"])
+
+    return deleted
 
 
 @shared_task

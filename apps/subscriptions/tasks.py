@@ -168,17 +168,8 @@ def provision_paid_order(order_pk: int):
                 activation_lines.append(
                     f"🔑 رمز عبور: <code>{escape(subscription.connectix_password)}</code>"
                 )
-            if subscription.subscription_url:
-                activation_lines.extend(
-                    [
-                        "",
-                        "🔗 لینک اشتراک:",
-                        f"<code>{escape(subscription.subscription_url)}</code>",
-                    ]
-                )
-            activation_lines.append(
-                "\nبرای دریافت اطلاعات اتصال و QR از دکمه زیر استفاده کنید."
-            )
+            # Subscription URLs and QR codes are delivered only on explicit
+            # account retrieval, never in unsolicited activation notices.
             broadcast_message(
                 brand_id=order.brand_id,
                 user_ids=list(telegram_ids),
@@ -190,6 +181,7 @@ def provision_paid_order(order_pk: int):
                             "callback_data": f"get_config_{subscription.pk}",
                         }
                     ],
+                    [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
                     [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
                 ],
             )

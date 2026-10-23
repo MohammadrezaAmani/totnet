@@ -117,8 +117,8 @@ class WalletCheckoutTests(TestCase):
         reward_delay.assert_called_once()
 
     @override_settings(TEMP_DISABLE_2_3_MONTH_PLANS=True)
-    def test_old_two_month_order_cannot_debit_wallet_while_temporarily_disabled(self):
-        self.plan.duration_value = 2
+    def test_old_three_month_normal_order_cannot_debit_wallet_while_temporarily_disabled(self):
+        self.plan.duration_value = 3
         self.plan.duration_unit = SubscriptionPlan.DurationUnit.MONTHS
         self.plan.save(update_fields=("duration_value", "duration_unit"))
         with self.assertRaisesRegex(WalletCheckoutError, "temporarily unavailable"):

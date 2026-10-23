@@ -271,13 +271,6 @@ class MultiBrandDispatcher:
                 and (state.state_data or {}).get("step") == "rename_subscription"
             ):
                 await handlers["subscriptions"].handle_rename_message(message, user, state)
-            elif (
-                state.current_state == BotState.StateType.SUBSCRIPTION_MANAGEMENT
-                and (state.state_data or {}).get("step") == "claim_existing_subscription"
-            ):
-                await handlers["start"].handle_existing_subscription_message(
-                    message, user, state
-                )
 
             # elif state.current_state == BotState.StateType.SUPPORT_TICKET:
             #     step = (state.state_data or {}).get("step")

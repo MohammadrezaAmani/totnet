@@ -224,9 +224,6 @@ class StartHandler(BaseHandler):
         welcome_text = f"""
 🎉 خوش آمدید به {self.brand.name}!
 
-اگر از قبل اشتراک فعال دارید، ابتدا یوزرنیم آن را ثبت کنید.
-اگر اشتراک فعال ندارید، تکمیل اولیه پروفایل را ادامه دهید.
-
 👤 نام کامل: {name_status}
 📱 شماره تلفن: {phone_status}
 💻 دستگاه اصلی: {device_status}
@@ -236,13 +233,7 @@ class StartHandler(BaseHandler):
             [
                 [
                     {
-                        "text": "✅ اشتراک فعال دارم / ثبت اشتراک",
-                        "callback_data": "onboarding_existing_subscription",
-                    }
-                ],
-                [
-                    {
-                        "text": "🆕 اشتراک فعال ندارم",
+                        "text": "➡️ تکمیل پروفایل",
                         "callback_data": "onboarding_no_subscription",
                     }
                 ],
@@ -532,7 +523,7 @@ class StartHandler(BaseHandler):
             "onboarding_existing_subscription",
             "onboarding_add_subscription",
         }:
-            await self.start_existing_subscription_registration(callback)
+            await callback.answer()
             return
         elif callback.data == "request_phone":
             await self.request_phone_contact(callback.message.chat.id, user)

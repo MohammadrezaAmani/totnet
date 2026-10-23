@@ -51,6 +51,10 @@ app.conf.beat_schedule = {
         "task": "apps.referrals.tasks.recover_missing_referrer_join_notifications",
         "schedule": 300.0,
     },
+    "delete-expired-referrer-join-messages": {
+        "task": "apps.referrals.tasks.delete_expired_referrer_join_messages",
+        "schedule": 60.0,
+    },
     "recover-referrer-purchase-notifications": {
         "task": "apps.referrals.tasks.recover_missing_referrer_purchase_notifications",
         "schedule": 300.0,

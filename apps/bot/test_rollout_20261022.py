@@ -38,16 +38,20 @@ class CheckoutAndProfileRegressionTests(TestCase):
             original_price=self.plan.price, final_price=self.plan.price
         )
 
-    def test_royal_unlimited_reward_is_always_four_percent(self):
-        ServiceRewardRate.objects.create(
-            brand=self.brand, service_category="royal", plan_type="unlimited", percent=Decimal("9")
-        )
+    def test_service_rates_default_eight_percent_and_allow_per_service_overrides(self):
         order = self._order()
-        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("4"))
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("8"))
+        royal = ServiceRewardRate.objects.create(
+            brand=self.brand, service_category="royal", plan_type="all", percent=Decimal("8")
+        )
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("8"))
+        royal.percent = Decimal("7")
+        royal.save(update_fields=["percent"])
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("7"))
         self.plan.service_category = "normal"
         self.plan.save(update_fields=["service_category"])
         order.plan = self.plan
-        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("13"))
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("8"))
         ServiceRewardRate.objects.create(
             brand=self.brand, service_category="normal", plan_type="unlimited", percent=Decimal("6")
         )

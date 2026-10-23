@@ -13,6 +13,7 @@ from apps.brands.models import Brand
 
 from .models import SubscriptionPlan
 from .presentation import connectix_service_category
+from .policy import temporary_duration_blocked
 
 logger = logging.getLogger(__name__)
 FIELDS = (
@@ -134,6 +135,9 @@ async def get_cached_plans(brand_id, *, refresh=False):
         # Detached instances contain scalar fields only; never cache ORM objects.
         plan = SubscriptionPlan(**values)
         plan.purchase_count = purchase_count
+        if (plan.service_category == SubscriptionPlan.ServiceCategory.NORMAL
+                and temporary_duration_blocked(plan)):
+            continue
         if show_free_plans or plan.discounted_price > 0:
             plans.append(plan)
     return plans
