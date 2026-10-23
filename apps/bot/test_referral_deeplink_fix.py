@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
 from django.core.management import call_command
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.test import TestCase, override_settings
 from io import StringIO
 from aiogram import types
@@ -51,6 +53,36 @@ class ReferralStartFixTests(TestCase):
         self.assertTrue(self.link.visits.get().is_registration)
         self.assertEqual(async_to_sync(self.handler.process_referral_safely)(user, self.link.code, False), "already_registered")
         self.assertEqual(Referral.objects.filter(referee=user).count(), 1)
+
+    def test_postgresql_locks_link_without_locking_nullable_owner(self):
+        # The link owner FK is nullable; select_related("user") produces a
+        # LEFT OUTER JOIN. PostgreSQL only supports FOR UPDATE OF the link.
+        referee, created = self._new_user()
+        self.assertTrue(created)
+        with CaptureQueriesContext(connection) as queries:
+            self.assertTrue(attribute_referral(
+                user_id=referee.pk, brand_id=self.brand.pk, code=self.link.code,
+            ))
+        referee.refresh_from_db()
+        self.assertEqual(referee.referred_by_id, self.inviter.pk)
+        self.assertEqual(Referral.objects.filter(referee=referee).count(), 1)
+        if connection.vendor == "postgresql":
+            link_queries = [
+                q["sql"] for q in queries.captured_queries
+                if 'FROM "referral_links"' in q["sql"] and 'FOR UPDATE' in q["sql"]
+            ]
+            self.assertEqual(len(link_queries), 1)
+            self.assertIn('FOR UPDATE OF "referral_links"', link_queries[0])
+
+    def test_nullable_unowned_link_fails_without_db_error(self):
+        referee, created = self._new_user()
+        self.assertTrue(created)
+        ReferralLink.objects.create(user=None, brand=self.brand, code="NOOWNER")
+        self.assertFalse(attribute_referral(
+            user_id=referee.pk, brand_id=self.brand.pk, code="NOOWNER",
+        ))
+        self.assertIsNone(User.objects.get(pk=referee.pk).referred_by_id)
+        self.assertFalse(Referral.objects.filter(referee=referee).exists())
 
     def test_second_user_is_recorded_even_when_daily_reward_cap_is_one(self):
         ReferralProgram.objects.create(brand=self.brand, name="Capped", max_referrals_per_day=1)

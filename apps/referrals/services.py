@@ -123,7 +123,10 @@ def attribute_referral(*, user_id: int, brand_id: int, code: str) -> bool:
         return False
 
     referral_link = (
-        ReferralLink.objects.select_for_update()
+        # ReferralLink.user is nullable. PostgreSQL rejects FOR UPDATE on the
+        # nullable side of the LEFT OUTER JOIN added by select_related("user").
+        # Lock only the link row; the referred user is already locked above.
+        ReferralLink.objects.select_for_update(of=("self",))
         .select_related("user")
         .filter(code=code, brand_id=brand_id, is_active=True)
         .first()
