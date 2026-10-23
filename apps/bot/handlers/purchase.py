@@ -391,7 +391,12 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         await sync_to_async(apply_first_purchase_referral_coupon)(
             brand_id=self.brand.pk, user_id=user.pk, order_id=str(order.order_id),
         )
-        await order.arefresh_from_db()
+        # Reload the updated totals and relations together. arefresh_from_db()
+        # invalidates foreign-key caches, and touching order.plan later from an
+        # aiogram callback otherwise runs a synchronous query in the async loop.
+        order = await Order.objects.select_related(
+            "brand", "user", "plan", "recipient"
+        ).aget(pk=order.pk)
 
         if order.final_price <= 0 and order.order_type == Order.OrderType.GIFT:
             from apps.orders.checkout_links import issue_paid_gift, paid_gift_link
@@ -529,7 +534,12 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         await sync_to_async(apply_first_purchase_referral_coupon)(
             brand_id=self.brand.pk, user_id=user.pk, order_id=str(order.order_id),
         )
-        await order.arefresh_from_db()
+        # Reload the updated totals and relations together. arefresh_from_db()
+        # invalidates foreign-key caches, and touching order.plan later from an
+        # aiogram callback otherwise runs a synchronous query in the async loop.
+        order = await Order.objects.select_related(
+            "brand", "user", "plan", "recipient"
+        ).aget(pk=order.pk)
 
         if order.final_price <= 0:
             queued, message = await self._queue_free_order(order)
