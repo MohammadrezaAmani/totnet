@@ -7,7 +7,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP, localcontext
 
 from django.db import IntegrityError, transaction
-from django.db.models import F, Sum
+from django.db.models import F, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -65,6 +65,30 @@ def _record_zero_referral_reward(
     )
 
 
+def resolve_referral_link(*, code: str, brand_id: int) -> ReferralLink | None:
+    """Find a scoped invitation, adopting legacy User.referral_code links.
+
+    Old installations sometimes published users' referral_code before creating
+    their ReferralLink row. An inactive/existing code is NEVER reactivated or
+    rebound to a different owner.
+    """
+    link = ReferralLink.objects.filter(code=code).first()
+    if link is not None:
+        return link if link.brand_id == brand_id and link.is_active else None
+    owner = User.objects.filter(brand_id=brand_id, referral_code=code, is_active=True).first()
+    if owner is None:
+        return None
+    try:
+        with transaction.atomic():
+            link, _ = ReferralLink.objects.get_or_create(
+                code=code,
+                defaults={"brand_id": brand_id, "user": owner, "is_default": False},
+            )
+    except IntegrityError:
+        link = ReferralLink.objects.filter(code=code).first()
+    return link if link is not None and link.brand_id == brand_id and link.is_active else None
+
+
 @transaction.atomic
 def track_referral_click(*, code: str, brand_id: int, visitor_id: int | None = None, is_registration: bool = False) -> bool:
     """Count one branded bot start per visitor without granting attribution."""
@@ -112,29 +136,10 @@ def attribute_referral(*, user_id: int, brand_id: int, code: str) -> bool:
     ):
         return False
 
-    program = ReferralProgram.objects.select_for_update().filter(
-        brand_id=brand_id, is_active=True
-    ).first()
-    if program:
-        if program.require_phone_verification and (
-            not user.phone_number or not user.is_verified
-        ):
-            return False
-        now = timezone.now()
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        month_start = day_start.replace(day=1)
-        if program.max_referrals_per_day and Referral.objects.filter(
-            referrer_id=referral_link.user_id,
-            brand_id=brand_id,
-            created_at__gte=day_start,
-        ).count() >= program.max_referrals_per_day:
-            return False
-        if program.max_referrals_per_month and Referral.objects.filter(
-            referrer_id=referral_link.user_id,
-            brand_id=brand_id,
-            created_at__gte=month_start,
-        ).count() >= program.max_referrals_per_month:
-            return False
+    # A first-touch invitation is an identity relation, not a reward.  Phone
+    # verification and daily/monthly reward limits must not discard the link
+    # before onboarding has had a chance to collect the user's phone number.
+    # Eligibility for monetary rewards is evaluated at purchase settlement.
 
     if Referral.objects.filter(referee_id=user.pk, brand_id=brand_id).exists():
         return False
@@ -912,6 +917,38 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
             reason="Order did not meet the configured minimum purchase amount.",
         )
         return Decimal("0")
+
+    # Reward eligibility is separate from registering the invitation.  A
+    # configured phone-verification requirement can defer rewards without
+    # losing the inviter/referee relation or showing invented cash points.
+    if program.require_phone_verification and (
+        not order.user.phone_number or not order.user.is_verified
+    ):
+        return Decimal("0")
+
+    # Historic program caps apply to rewarded referrals, never to the link
+    # between an invited account and its original inviter.
+    for start, limit in (
+        (referral.created_at.replace(hour=0, minute=0, second=0, microsecond=0), program.max_referrals_per_day),
+        (referral.created_at.replace(day=1, hour=0, minute=0, second=0, microsecond=0), program.max_referrals_per_month),
+    ):
+        if not limit:
+            continue
+        prior = Referral.objects.filter(
+            referrer_id=referral.referrer_id,
+            brand_id=referral.brand_id,
+            created_at__gte=start,
+            created_at__lte=referral.created_at,
+        ).filter(
+            Q(created_at__lt=referral.created_at)
+            | Q(created_at=referral.created_at, pk__lte=referral.pk)
+        ).count()
+        if prior > limit:
+            _record_zero_referral_reward(
+                referral=referral, order=order, currency=order.currency,
+                reason="Referral exceeded configured daily/monthly reward cap.",
+            )
+            return Decimal("0")
 
     # Challenge referrals take precedence only until the selected target is full.
     from .gamification import cash_out_completed_pills, maybe_record_challenge_referral

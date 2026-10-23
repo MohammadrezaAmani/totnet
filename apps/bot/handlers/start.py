@@ -61,7 +61,17 @@ class StartHandler(BaseHandler):
             except GiftClaimError as exc:
                 gift_feedback = f'❌ {escape(str(exc))}'
         elif referral_code:
-            await self.process_referral_safely(user, referral_code, created)
+            referral_result = await self.process_referral_safely(user, referral_code, created)
+            if referral_result == "registered":
+                await message.answer("✅ دعوت شما ثبت شد. پس از خرید معتبر، امتیاز معرفی طبق قوانین محاسبه می‌شود.")
+            elif referral_result == "existing_account":
+                await message.answer("ℹ️ این حساب از قبل در ربات وجود داشته؛ لینک جدید معرف قبلی را تغییر نمی‌دهد.")
+            elif referral_result == "invalid_link":
+                await message.answer("❌ کد دعوت معتبر یا فعال نیست؛ ارتباط معرفی ثبت نشد.")
+            elif referral_result == "unowned_link":
+                await message.answer("⚠️ این لینک صاحب معرف ندارد؛ عضویت ثبت شد اما معرفی شخصی ثبت نشد. با پشتیبانی تماس بگیرید.")
+            elif referral_result == "failed":
+                await message.answer("⚠️ ثبت معرفی با خطا مواجه شد. پیش از خرید با پشتیبانی تماس بگیرید.")
 
         if await self.show_channel_gate_if_required(chat_id, user):
             return
@@ -72,24 +82,64 @@ class StartHandler(BaseHandler):
         if gift_feedback:
             await message.answer(gift_feedback)
 
-    async def process_referral_safely(self, user: User, referral_code: str, created=False):
-        """Process referral registration safely using sync_to_async for all DB ops"""
+    async def process_referral_safely(self, user: User, referral_code: str, created=False) -> str:
+        """Register the first eligible inviter, returning an observable outcome."""
         try:
-            await self._process_referral_sync(user.id, referral_code, self.brand.id, created)
-        except Exception as exc:
-            logger.error("Referral attribution failed (%s)", type(exc).__name__)
+            return await self._process_referral_sync(
+                user.pk, referral_code, self.brand.pk, created
+            )
+        except Exception:
+            logger.exception(
+                "Referral attribution failed for brand=%s user_pk=%s",
+                self.brand.pk, user.pk,
+            )
+            return "failed"
 
     @sync_to_async
-    def _process_referral_sync(self, user_id: int, referral_code: str, brand_id: int, created=False):
-        """Execute the ORM transaction outside the asynchronous bot loop."""
-        from apps.referrals.services import attribute_referral
+    def _process_referral_sync(self, user_id: int, referral_code: str, brand_id: int, created=False) -> str:
+        """Persist a first-touch signup and the inviter link in one transaction.
 
-        from apps.referrals.services import track_referral_click
-
-        track_referral_click(code=referral_code, brand_id=brand_id, visitor_id=user_id, is_registration=created)
-        return attribute_referral(
-            user_id=user_id, brand_id=brand_id, code=referral_code
+        Only a newly created account or a previously recorded *registration*
+        click can obtain attribution. Existing users clicking a new link cannot
+        rewrite their referral ownership. The recorded first touch is immutable.
+        """
+        from django.db import transaction
+        from apps.referrals.models import ReferralClick
+        from apps.referrals.services import (
+            attribute_referral, resolve_referral_link, track_referral_click,
         )
+
+        with transaction.atomic():
+            link = resolve_referral_link(code=referral_code, brand_id=brand_id)
+            if not link:
+                return "invalid_link"
+            if not link.user_id:
+                track_referral_click(
+                    code=referral_code, brand_id=brand_id,
+                    visitor_id=user_id, is_registration=created,
+                )
+                return "unowned_link"
+            if link.user_id == user_id:
+                return "existing_account"
+
+            # Keep visit statistics, including existing-user clicks, but never
+            # use those visits to create a new referral for an existing account.
+            track_referral_click(
+                code=referral_code, brand_id=brand_id,
+                visitor_id=user_id, is_registration=created,
+            )
+            first_click = ReferralClick.objects.filter(
+                visitor_id=user_id, brand_id=brand_id,
+            ).order_by("created_at", "pk").first()
+            if not first_click or first_click.link_id != link.pk or not first_click.is_registration:
+                return "existing_account"
+
+            if attribute_referral(user_id=user_id, brand_id=brand_id, code=link.code):
+                return "registered"
+            # Idempotent retries should never overwrite an existing attribution.
+            if User.objects.filter(pk=user_id, brand_id=brand_id, referred_by_id=link.user_id).exists():
+                return "already_registered"
+            return "failed"
 
     async def show_channel_gate_if_required(self, chat_id: int, user: User) -> bool:
         """Gate only opted-in new users; verify real Telegram membership."""

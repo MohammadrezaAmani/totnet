@@ -37,11 +37,19 @@ async def registration_allowed(brand_id: int, referral_code: str | None = None) 
             claimed_by__isnull=True, expires_at__gt=timezone.now(),
             order__status__in=[Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED],
         ).aexists()
-    return await ReferralLink.objects.filter(
-        brand_id=brand_id,
-        is_active=True,
-        code=referral_code,
+    registered = await ReferralLink.objects.filter(
+        brand_id=brand_id, is_active=True, code=referral_code,
     ).filter(Q(user__isnull=True) | Q(user__brand_id=brand_id)).aexists()
+    if registered:
+        return True
+    # Legacy links sometimes contain User.referral_code even if no
+    # ReferralLink was generated. Admit only if no link with this code exists
+    # in any brand (in particular never bypass a disabled/foreign link).
+    if await ReferralLink.objects.filter(code=referral_code).aexists():
+        return False
+    return await User.objects.filter(
+        brand_id=brand_id, referral_code=referral_code, is_active=True,
+    ).aexists()
 
 
 class BrandAdmissionMiddleware(BaseMiddleware):

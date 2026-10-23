@@ -89,6 +89,9 @@ class ReferralsHandler(BaseHandler):
 
         successful_qs = self._successful_referrals_queryset(user)
         successful_referrals = await successful_qs.acount()
+        joined_referrals = await Referral.objects.filter(
+            referrer=user, brand=self.brand
+        ).exclude(status=Referral.ReferralStatus.REJECTED).acount()
         now = timezone.now()
         active_referrals = await successful_qs.filter(
             referee__owned_subscriptions__brand=self.brand,
@@ -106,8 +109,9 @@ class ReferralsHandler(BaseHandler):
 {referral_url}
 
 📊 <b>آمار معرفی:</b>
-• کل معرفی‌های موفق: {successful_referrals}
-• معرفی‌های جاری(دارای اشتراک فعال): {active_referrals}
+• عضوشده با لینک شما: {joined_referrals}
+• معرفی‌های دارای خرید تأییدشده: {successful_referrals}
+• معرفی‌های دارای اشتراک فعال: {active_referrals}
 
 👨🏽‍⚕ این سیستم راه اندازی شده تا افراد به بهترین کیفیت اینترنت اما بدون هزینه دسترسی داشته باشند.
 فعالیت و معرفی بیشتر توسط شما ضمن کاهش محسوس و دائمی هزینه های شما منجر به احقاق این حق مسلم برای افراد بیشتری میشود،
@@ -140,6 +144,9 @@ class ReferralsHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         successful_qs = self._successful_referrals_queryset(user)
         successful_referrals = await successful_qs.acount()
+        joined_referrals = await Referral.objects.filter(
+            referrer=user, brand=self.brand
+        ).exclude(status=Referral.ReferralStatus.REJECTED).acount()
         now = timezone.now()
         active_referrals = await successful_qs.filter(
             referee__owned_subscriptions__brand=self.brand,
@@ -152,8 +159,9 @@ class ReferralsHandler(BaseHandler):
         text = f"""
 📈 <b>آمار معرفی</b>
 
-• کل معرفی‌های موفق: {successful_referrals}
-• معرفی‌های جاری(دارای اشتراک فعال): {active_referrals}
+• عضوشده با لینک شما: {joined_referrals}
+• معرفی‌های دارای خرید تأییدشده: {successful_referrals}
+• معرفی‌های دارای اشتراک فعال: {active_referrals}
         """
 
         keyboard = self.create_keyboard(
