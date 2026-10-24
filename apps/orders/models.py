@@ -220,6 +220,28 @@ class Payment(models.Model):
         return f"Payment {self.payment_id} - {self.get_payment_method_display()}"
 
 
+class AdminReceiptMessage(models.Model):
+    """An admin-chat receipt message that is removed only after payment confirmation."""
+
+    payment = models.ForeignKey(
+        Payment, on_delete=models.CASCADE, related_name="admin_receipt_messages"
+    )
+    chat_id = models.BigIntegerField()
+    message_id = models.BigIntegerField()
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "admin_receipt_messages"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payment", "chat_id", "message_id"],
+                name="uniq_admin_receipt_message",
+            ),
+        ]
+        indexes = [models.Index(fields=["payment", "deleted_at"], name="receipt_pending_idx")]
+
+
 class PaymentCard(models.Model):
     """Bank cards for card transfer payments"""
 

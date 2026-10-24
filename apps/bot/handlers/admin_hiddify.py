@@ -1,5 +1,6 @@
 import logging
 from html import escape
+from utils.jalali import jalali_date
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
@@ -1564,6 +1565,7 @@ UUID:  <code>{u.uuid}</code>
             buttons.extend(
                 [
                     [{"text": "📊 داشبورد", "callback_data": "admin_dashboard"}],
+                    [{"text": "🛒 خریدهای امروز", "callback_data": "admin_today_sales"}],
                     [{"text": "👥 کاربران ربات", "callback_data": "ac:users"}],
                     [{"text": "📋 پلن‌ها", "callback_data": "ac:plans"}],
                     [{"text": "🔗 لینک‌های معرفی", "callback_data": "ac:links"}],
@@ -2134,6 +2136,7 @@ UUID:  <code>{u.uuid}</code>
 
         keyboard = self.create_keyboard(
             [
+                [{"text": "🛒 خریدهای امروز", "callback_data": "admin_today_sales"}],
                 [
                     {
                         "text": "تمام سفارشات",
@@ -2164,6 +2167,77 @@ UUID:  <code>{u.uuid}</code>
 
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
+
+    async def show_today_sales(self, callback: types.CallbackQuery, page: int = 1):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        if not await self.check_admin_access(user):
+            await callback.answer("❌ دسترسی ندارید", show_alert=True)
+            return
+
+        # Verified timestamp, not order creation date: never show unpaid receipts.
+        today = timezone.localdate()
+        qs = Payment.objects.filter(
+            brand=self.brand, status=Payment.PaymentStatus.CONFIRMED,
+            order__isnull=False, verified_at__date=today,
+        ).select_related("order", "order__plan", "order__user")
+        count = await qs.acount()
+        size = 8
+        last_page = max(1, (count + size - 1) // size)
+        page = max(1, min(page, last_page))
+        payments = [p async for p in qs.order_by("-verified_at", "-pk")[(page - 1) * size:page * size]]
+        rows = [[{
+            "text": f"{p.order.plan.name[:32]} | {format_amount(p.amount)} تومان",
+            "callback_data": f"admin_today_sale_{p.pk}",
+        }] for p in payments]
+        nav = []
+        if page > 1:
+            nav.append({"text": "◀️ قبلی", "callback_data": f"admin_today_sales_{page - 1}"})
+        if page < last_page:
+            nav.append({"text": "بعدی ▶️", "callback_data": f"admin_today_sales_{page + 1}"})
+        if nav:
+            rows.append(nav)
+        rows.append([{"text": "🔙 بازگشت", "callback_data": "admin_orders"}])
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id,
+            f"🛒 خریدهای امروز\n{jalali_date(timezone.now())}\n{count} خرید\nصفحه {page} از {last_page}",
+            self.create_keyboard(rows),
+        )
+        await callback.answer()
+
+    async def show_today_sale_details(self, callback: types.CallbackQuery, payment_id: int):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        if not await self.check_admin_access(user):
+            await callback.answer("❌ دسترسی ندارید", show_alert=True)
+            return
+        payment = await Payment.objects.select_related(
+            "order", "order__plan", "order__user", "order__user__referred_by",
+        ).filter(
+            pk=payment_id, brand=self.brand,
+            status=Payment.PaymentStatus.CONFIRMED, order__isnull=False,
+        ).afirst()
+        if payment is None:
+            await callback.answer("❌ خرید یافت نشد", show_alert=True)
+            return
+        from .purchase import _telegram_profile_link
+        buyer = payment.order.user
+        referrer = buyer.referred_by
+        name = buyer.full_name or buyer.get_full_name() or buyer.username
+        detail = (
+            f"🧾 خرید تاییدشده\n"
+            f"حساب مقصد: <code>{escape(payment.card_number or '—')}</code>"
+            f" — {escape(payment.cardholder_name or '—')}\n"
+            f"مبلغ: {format_amount(payment.amount)} تومان\n"
+            f"پلن: {escape(payment.order.plan.name)}\n"
+            f"تاریخ: {jalali_date(payment.verified_at or payment.created_at, time=True)}\n"
+            f"خریدار: {_telegram_profile_link(buyer.telegram_id, name)}\n"
+            f"آیدی عددی خریدار: {_telegram_profile_link(buyer.telegram_id, buyer.telegram_id or '—')}\n"
+            f"آیدی عددی معرف: {_telegram_profile_link(referrer.telegram_id if referrer else None, referrer.telegram_id if referrer else '—')}"
+        )
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, detail,
+            self.create_keyboard([[{"text": "🔙 خریدهای امروز", "callback_data": "admin_today_sales"}]]),
         )
         await callback.answer()
 

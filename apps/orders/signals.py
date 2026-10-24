@@ -147,6 +147,16 @@ def payment_post_save(sender, instance, created, **kwargs):
     # Payment Confirmed
     # ---------------------------------------------------------------
     if instance.status == Payment.PaymentStatus.CONFIRMED:
+        # Includes approvals via Telegram, Django Admin and other verified paths.
+        # Never delete before the payment status has committed successfully.
+        def cleanup_admin_receipts(payment_id=instance.pk):
+            try:
+                from apps.orders.tasks import delete_confirmed_admin_receipts
+                delete_confirmed_admin_receipts.delay(payment_id)
+            except Exception:
+                logger.exception("Could not enqueue receipt cleanup for payment %s", payment_id)
+
+        transaction.on_commit(cleanup_admin_receipts)
         if instance.order:
             order = instance.order
             confirmed_total = Payment.objects.filter(

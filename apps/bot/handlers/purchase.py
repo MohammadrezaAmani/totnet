@@ -19,6 +19,7 @@ from apps.brands.models import BrandConfiguration
 from apps.orders.models import Order, Payment, PaymentCard
 from apps.orders.services import WalletCheckoutError, cancel_unpaid_order, pay_order_with_wallet
 from apps.subscriptions.models import Subscription, SubscriptionPlan
+from apps.support.models import UsefulContent
 from apps.subscriptions.catalog import get_cached_plans, is_plan_visible_in_bot
 from apps.subscriptions.presentation import compact_plan_specs, connectix_plan_name
 from apps.subscriptions.policy import TEMPORARILY_UNAVAILABLE_TEXT, temporary_duration_blocked
@@ -1042,22 +1043,11 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             "📤 <b>ارسال رسید پرداخت</b>\n\n"
             "رسید متنی یا عکس واضح تراکنش را ارسال کنید.\n"
             "تاریخ و ساعت واریز باید در رسید قابل مشاهده باشد.\n"
-            f"🕐 زمان ثبت درخواست: <code>{now}</code>\n\n"
-            "تا زمان تأیید تراکنش و ارسال/تمدید اشتراک شما، "
-            "می‌توانید محتواهای کاربردی آکادمی را مطالعه کنید."
+            f"🕐 زمان ثبت درخواست: <code>{now}</code>"
         )
-        keyboard = self.create_keyboard(
-            [
-                *[[{"text": label, "callback_data": f"useful_category_{key}"}]
-                  for key, label in UsefulContentHandler.CATEGORY_LABELS.items()],
-                [
-                    {
-                        "text": "❌ لغو پرداخت",
-                        "callback_data": f"payment_not_done_{order_id}",
-                    }
-                ],
-            ]
-        )
+        keyboard = self.create_keyboard([
+            [{"text": "❌ لغو پرداخت", "callback_data": f"payment_not_done_{order_id}"}],
+        ])
 
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
@@ -1181,19 +1171,21 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         at = jalali_date(payment.created_at, time=True)
         order = await Order.objects.select_related("plan", "user", "user__referred_by").aget(pk=payment.order_id)
         if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
-            # Buying for somebody else must not show a normal subscription
-            # activation/tutorial screen. The shareable link is issued only
-            # after a real payment confirmation, never on receipt upload.
             text = (
-                f"🎁 رسید خرید هدیه ثبت شد.\n🕐 تاریخ و ساعت ثبت: <code>{at}</code>\n"
-                "⏳ منتظر تأیید تراکنش هستیم. پس از تأیید پرداخت، "
-                "لینک اختصاصیِ یک‌بارمصرف هدیه برای شما ارسال می‌شود "
-                "تا آن را به دریافت‌کننده هدیه بفرستید."
+                "🎁 رسید خرید برای دیگران ثبت شد\n\n"
+                "تا زمان تایید تراکنش و ارسال اشتراک\n"
+                "میتوانید لینک نصب برنامه و توضیحات کار با برنامه را به کاربر نهایی منتقل کنید"
+            )
+            gift_help = (
+                UsefulContent.Category.DOWNLOADS,
+                UsefulContent.Category.INSTALL,
+                UsefulContent.Category.APP_USAGE,
             )
             keyboard = self.create_keyboard([
-                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
-                [{"text": "🛟 پشتیبانی", "callback_data": "support"}],
-            ])
+                [{"text": UsefulContentHandler.CATEGORY_LABELS[key],
+                  "callback_data": f"useful_category_{key}"}]
+                for key in gift_help
+            ] + [[{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}]])
         else:
             text = (
                 f"✅ رسید دریافت شد.\n🕐 تاریخ و ساعت ثبت: <code>{at}</code>\n"
@@ -1226,17 +1218,15 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         referrer = purchaser.referred_by
         payer_name = purchaser.full_name or purchaser.get_full_name() or purchaser.username
         admin_text = (
-            f"🧾 رسید جدید\nسفارش: {escape(order.order_number)}\n"
-            f"مبلغ: {self.format_price(payment.amount, order.currency)}\n"
-            f"تاریخ ثبت: {jalali_date(payment.created_at, time=True)}\n"
-            f"بانک/کارت مقصد: <code>{escape(payment.card_number or '')}</code>"
+            f"🧾 رسید جدید\n"
+            f"حساب مقصد: <code>{escape(payment.card_number or '')}</code>"
             f" — {escape(payment.cardholder_name or '—')}\n"
+            f"مبلغ: {self.format_price(payment.amount, order.currency)}\n"
+            f"پلن: {escape(order.plan.name)}\n"
+            f"تاریخ: {jalali_date(payment.created_at, time=True)}\n"
             f"خریدار: {_telegram_profile_link(purchaser.telegram_id, payer_name)}\n"
             f"آیدی عددی خریدار: {_telegram_profile_link(purchaser.telegram_id, purchaser.telegram_id or '—')}\n"
-            f"آیدی عددی معرف: {_telegram_profile_link(referrer.telegram_id if referrer else None, referrer.telegram_id if referrer and referrer.telegram_id else '—')}\n"
-            f"پلن: {escape(order.plan.name)}\n"
-            f"متن رسید: {escape((payment.receipt_reference or 'رسید تصویری')[:100])}\n"
-            f"payment_id: {payment.id}"
+            f"آیدی عددی معرف: {_telegram_profile_link(referrer.telegram_id if referrer else None, referrer.telegram_id if referrer and referrer.telegram_id else '—')}"
         )
         admin_kb = self.create_keyboard(
             [
@@ -1253,17 +1243,27 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             ]
         )
 
+        from apps.orders.models import AdminReceiptMessage
         notified = 0
         async for user in self.get_brand_admin_recipients():
             try:
                 if file_id:
-                    await self.bot.send_photo(chat_id=user.telegram_id, photo=file_id,
-                                              caption=admin_text, reply_markup=admin_kb,
-                                              parse_mode="HTML")
+                    sent = await self.bot.send_photo(
+                        chat_id=user.telegram_id, photo=file_id,
+                        caption=admin_text, reply_markup=admin_kb, parse_mode="HTML",
+                    )
                 else:
-                    await self.bot.send_message(chat_id=user.telegram_id, text=admin_text,
-                                                reply_markup=admin_kb, parse_mode="HTML")
+                    sent = await self.bot.send_message(
+                        chat_id=user.telegram_id, text=admin_text,
+                        reply_markup=admin_kb, parse_mode="HTML",
+                    )
                 notified += 1
+                # Keep IDs even if the Celery broker is temporarily unavailable.
+                if isinstance(getattr(sent, "message_id", None), int):
+                    await AdminReceiptMessage.objects.aget_or_create(
+                        payment=payment, chat_id=user.telegram_id,
+                        message_id=sent.message_id,
+                    )
             except Exception:
                 logger.exception("Failed to send receipt notification to admin %s", user.pk)
         if notified:
@@ -1306,7 +1306,8 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         payment.verified_by = user
         await payment.asave(update_fields=["status", "verified_at", "verified_by", "updated_at"])
 
-        await callback.message.edit_reply_markup(reply_markup=None)
+        # The post-save confirmation hook queues deletion of every admin receipt
+        # message, including copies sent to other administrators.
         await callback.answer("✅ پرداخت تأیید شد.")
 
     async def admin_reject_payment(

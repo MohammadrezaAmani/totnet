@@ -1236,6 +1236,22 @@ class MultiBrandDispatcher:
                 await handlers["admin_hiddify"].show_users_management(callback)
             elif data == "admin_orders":
                 await handlers["admin_hiddify"].show_orders_management(callback)
+            elif data == "admin_today_sales":
+                await handlers["admin_hiddify"].show_today_sales(callback)
+            elif data.startswith("admin_today_sales_"):
+                try:
+                    page = int(data.removeprefix("admin_today_sales_"))
+                except ValueError:
+                    await callback.answer("❌ درخواست نامعتبر است", show_alert=True)
+                else:
+                    await handlers["admin_hiddify"].show_today_sales(callback, page)
+            elif data.startswith("admin_today_sale_"):
+                try:
+                    payment_id = int(data.removeprefix("admin_today_sale_"))
+                except ValueError:
+                    await callback.answer("❌ درخواست نامعتبر است", show_alert=True)
+                else:
+                    await handlers["admin_hiddify"].show_today_sale_details(callback, payment_id)
             elif data == "admin_tickets":
                 await handlers["admin_hiddify"].show_tickets_management(callback)
             elif data == "admin_broadcast":
