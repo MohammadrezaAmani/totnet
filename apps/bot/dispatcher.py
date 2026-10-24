@@ -213,22 +213,9 @@ class MultiBrandDispatcher:
 
         @router.chat_join_request()
         async def handle_channel_join_request(join_request):
-            # Explicit opt-in. The bot must be admin with can_invite_users rights.
-            from apps.accounts.models import User, UserProfile
-            from apps.brands.models import BrandConfiguration
-            config = await BrandConfiguration.objects.filter(brand_id=brand.pk).afirst()
-            custom = config.custom_fields if config and isinstance(config.custom_fields, dict) else {}
-            if not custom.get("auto_approve_join_requests"):
-                return
-            if str(join_request.chat.id) != str(custom.get("required_channel_id")):
-                return
-            requester = await User.objects.filter(brand_id=brand.pk, telegram_id=join_request.from_user.id).afirst()
-            if not requester or not await UserProfile.objects.filter(user=requester, channel_join_required=True).aexists():
-                return
-            try:
-                await join_request.approve()
-            except Exception as exc:
-                logger.warning("Channel join approval failed for brand %s (%s)", brand.pk, type(exc).__name__)
+            from apps.bot.channel_join import approve_required_channel_join
+
+            await approve_required_channel_join(join_request, brand_id=brand.pk)
 
         @router.message(CommandStart())
         async def start_command(message: Message, command: Command):
@@ -1990,7 +1977,10 @@ class MultiBrandDispatcher:
                 brand = await Brand.objects.aget(slug=brand_slug)
                 if brand.webhook_url:
                     webhook_url = f"{brand.webhook_url}/bot/{brand.bot_token}"
-                    await bot.set_webhook(webhook_url)
+                    dp = self.brand_dispatchers[brand_slug]
+                    await bot.set_webhook(
+                        webhook_url, allowed_updates=dp.resolve_used_update_types()
+                    )
                     logger.info(f"Webhook set for {brand.name}: {webhook_url}")
             except Exception as e:
                 logger.error(f"Failed to set webhook for {brand_slug}: {e}")
