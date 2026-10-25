@@ -16,6 +16,7 @@ from django.utils import timezone
 from apps.referrals.models import MarketingMaterial, Referral, ReferralLink
 from apps.orders.models import Order, Payment
 from apps.subscriptions.models import Subscription
+from apps.referrals.selectors import pill_progress
 
 from .base import BaseHandler
 
@@ -101,8 +102,13 @@ class ReferralsHandler(BaseHandler):
             | Q(referee__owned_subscriptions__expires_at__gt=now)
         ).distinct().acount()
 
-        intro = await self.section_intro_once(user, "referrals", "لینک معرفی مخصوص شماست. فقط عضویت و خریدهای واجد شرایط، پاداش دریافت می‌کنند.")
-        text = intro + f"""
+        pills = await pill_progress(user_id=user.pk, brand_id=self.brand.pk)
+        added_line = (
+            "این بستر راه اندازی شده تا هزینه vpn شما برای همیشه صفر شود،از این سیستم نهایت استفاده را ببرید!"
+            if pills["outstanding"] > 0
+            else "با معرفی و کسب قرص های بیشتر ، باخیال راحت تری خرید کنید"
+        )
+        text = f"""
 👥 <b>معرفی دوستان</b>
 
 🔗 <b>لینک معرفی شما:</b>
@@ -114,6 +120,7 @@ class ReferralsHandler(BaseHandler):
 • معرفی‌های دارای اشتراک فعال: {active_referrals}
 
 👨🏽‍⚕ این سیستم راه اندازی شده تا افراد به بهترین کیفیت اینترنت اما بدون هزینه دسترسی داشته باشند.
+{added_line}
 فعالیت و معرفی بیشتر توسط شما ضمن کاهش محسوس و دائمی هزینه های شما منجر به احقاق این حق مسلم برای افراد بیشتری میشود،
 شما عضو اصلی این تیم پزشکی هستید نه یک بیمار ساده!
         """

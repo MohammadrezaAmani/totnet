@@ -17,10 +17,11 @@ from apps.subscriptions.models import (
     SubscriptionClaim,
     SubscriptionConfig,
     SubscriptionPlan,
+    HiddenSubscription,
 )
 from apps.vpn_providers.models import VPNProvider
-from apps.subscriptions.usage import remaining_usage
-from apps.subscriptions.presentation import compact_plan_specs
+from apps.subscriptions.usage import remaining_usage, is_subscription_expired
+from apps.subscriptions.presentation import compact_plan_specs, number
 from apps.subscriptions.policy import temporary_duration_blocked
 from apps.subscriptions.catalog import get_cached_plans
 
@@ -37,7 +38,7 @@ class SubscriptionHandler(BaseHandler):
     async def show_my_subscriptions(self, callback: types.CallbackQuery, page: int = 1):
         """List subscriptions; selecting one opens its details (not all renewal plans)."""
         user, _ = await self.get_or_create_user(callback.from_user)
-        queryset = Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand).exclude(status=Subscription.SubscriptionStatus.CANCELLED)
+        queryset = Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand).exclude(hidden_for_users__user=user)
         total = await queryset.acount()
         per_page = 8
         last_page = max(1, (total + per_page - 1) // per_page)
@@ -46,14 +47,13 @@ class SubscriptionHandler(BaseHandler):
         async for sub in (
             Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand)
             .select_related("plan", "owner", "user", "vpn_provider", "remote_account")
-            .exclude(status=Subscription.SubscriptionStatus.CANCELLED)
+            .exclude(hidden_for_users__user=user)
             .order_by("-created_at")[(page - 1) * per_page:page * per_page]
         ):
             subscriptions.append(sub)
 
-        text = "📱 <b>اشتراک‌های من</b>\n\nبرای مشاهده اطلاعات، اشتراک موردنظر را انتخاب کنید."
+        text = "📱 <b>اشتراک‌های من</b>"
         if not subscriptions:
-            text += "\n\nهنوز اشتراکی برای شما ثبت نشده است."
             rows = [
                 [{"text": "🛒 خرید اشتراک", "callback_data": "purchase_subscription"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
@@ -66,29 +66,24 @@ class SubscriptionHandler(BaseHandler):
                 SubscriptionPlan.ServiceCategory.IRAN_IP: "آی‌پی ایران",
             }
             for sub in subscriptions:
-                username = (
-                    sub.connectix_username
-                    or sub.vpn_user_email
-                    or str(sub.subscription_id)[:8]
-                )
-                service_type = category_labels.get(
-                    sub.plan.service_category, sub.plan.name
-                )
-                remaining_traffic, remaining_time = remaining_usage(sub)
-                label = f"{sub.display_name or username} • {service_type}"
-                text += f"\n\n👤 <code>{escape(sub.display_name or username)}</code> • {escape(service_type)}\n📦 حجم باقیمانده: {escape(remaining_traffic)}\n⏳ زمان باقیمانده: {escape(remaining_time)}"
-                if len(label) > 58:
-                    label = label[:57] + "…"
-                rows.append(
-                    [
-                        {
-                            "text": label,
-                            "callback_data": f"subscription_details_{sub.pk}",
-                        }
-                    ]
-                )
+                username = sub.connectix_username or sub.vpn_user_email or str(sub.subscription_id)[:8]
+                service_type = category_labels.get(sub.plan.service_category, sub.plan.name)
+                if sub.plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED:
+                    volume = "نامحدود"
+                else:
+                    volume = (
+                        f"{number(sub.plan.traffic_limit_gb)}گ"
+                        if sub.plan.traffic_limit_gb is not None else "—"
+                    )
+                label = f"{service_type} {volume} {sub.plan.max_users}کاربر _ {username}"
+                expired = is_subscription_expired(sub)
+                if expired:
+                    label = f"{label} (منقضی شده · تمدید/حذف)"
+                if len(label) > 62:
+                    label = label[:48] + "…" + (" (منقضی شده)" if expired else "")
+                rows.append([{"text": label, "callback_data": f"subscription_details_{sub.pk}",
+                              **({"style": "danger"} if expired else {})}])
             if last_page > 1:
-                text += f"\n\nصفحه {page} از {last_page} · {total} اشتراک"
                 rows.append([
                     {"text": label, "callback_data": f"subscriptions_page_{target}"}
                     for target, label in ((page - 1, "◀️ قبلی"), (page + 1, "بعدی ▶️"))
@@ -342,7 +337,7 @@ class SubscriptionHandler(BaseHandler):
                         "callback_data": f"subscription_details_{subscription.pk}",
                     }
                 ],
-                [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
+                [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}", "style": "success"}],
                 [{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}],
             ]
         )
@@ -408,6 +403,7 @@ class SubscriptionHandler(BaseHandler):
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user", "remote_account")
                 .filter(Q(user=user) | Q(owner=user))
+                .exclude(hidden_for_users__user=user)
                 .aget(id=subscription_id, brand=self.brand)
             )
         except Subscription.DoesNotExist:
@@ -422,7 +418,7 @@ class SubscriptionHandler(BaseHandler):
         service = category_names.get(subscription.plan.service_category, "سایر")
         traffic, days = remaining_usage(subscription)
         name = (subscription.display_name or "").strip()
-        shown_name = escape(name) if name else "هنوز نام‌گذاری نشده؛ از دکمه «نام‌گذاری اشتراک» استفاده کنید."
+        shown_name = escape(name) if name else "از منو پایین نام اشتراک را تعیین کنید،مثلا (رویال خودم)"
         specs = compact_plan_specs(subscription.plan)
         text = (
             "📱 <b>جزئیات اشتراک</b>\n\n"
@@ -443,23 +439,16 @@ class SubscriptionHandler(BaseHandler):
                             "text": "📥 دریافت کانفیگ",
                             "callback_data": f"get_config_{subscription_id}",
                         },
-                        {
-                            "text": "📊 آمار مصرف",
-                            "callback_data": f"usage_stats_{subscription_id}",
-                        },
                     ],
                 ]
             )
-        elif subscription.status == Subscription.SubscriptionStatus.EXPIRED:
-            keyboard_buttons.append(
-                [
-                    {
-                        "text": "🛒 خرید اشتراک جدید",
-                        "callback_data": "purchase_subscription",
-                    }
-                ]
-            )
-        if subscription.status != Subscription.SubscriptionStatus.CANCELLED:
+        if is_subscription_expired(subscription):
+            keyboard_buttons.append([
+                {"text": "🔄 تمدید", "callback_data": f"renewal_details_{subscription_id}"},
+                {"text": "🗑 حذف", "callback_data": f"hide_subscription_{subscription_id}",
+                 "style": "danger"},
+            ])
+        if subscription.status != Subscription.SubscriptionStatus.CANCELLED and not is_subscription_expired(subscription):
             keyboard_buttons.append(
                 [
                     {
@@ -468,7 +457,7 @@ class SubscriptionHandler(BaseHandler):
                     }
                 ]
             )
-        keyboard_buttons.append([{"text": "✏️ نام‌گذاری اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}])
+        keyboard_buttons.append([{"text": "✏️ نام‌گذاری اشتراک", "callback_data": f"rename_subscription_{subscription.pk}", "style": "success"}])
         keyboard_buttons.append([{"text": "🔙 بازگشت", "callback_data": "my_subscriptions"}])
 
         keyboard = self.create_keyboard(keyboard_buttons)
@@ -477,6 +466,23 @@ class SubscriptionHandler(BaseHandler):
             callback.message.chat.id, callback.message.message_id, text, keyboard
         )
         await callback.answer()
+
+    async def hide_expired_subscription(
+        self, callback: types.CallbackQuery, subscription_id: int
+    ):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        subscription = await (
+            Subscription.objects.select_related("vpn_provider", "remote_account")
+            .filter(Q(user=user) | Q(owner=user), brand=self.brand, pk=subscription_id)
+            .afirst()
+        )
+        if subscription is None or not is_subscription_expired(subscription):
+            await callback.answer("❌ امکان حذف این اشتراک وجود ندارد.", show_alert=True)
+            return
+        await HiddenSubscription.objects.aget_or_create(
+            user=user, subscription=subscription
+        )
+        await self.show_my_subscriptions(callback)
 
     async def get_subscription_config(
         self, callback: types.CallbackQuery, subscription_id: int
@@ -554,12 +560,13 @@ class SubscriptionHandler(BaseHandler):
             f"🏷 نام اشتراک: {name}\n"
             f"👤 نام کاربری: <code>{username}</code>\n"
             f"🔑 رمز عبور: <code>{password}</code>\n"
-            "(جهت ورود به برنامه ما، کانکتیکس)\n\n"
+            "با این نام کاربری و رمز عبور وارد برنامه ما،کانکتیکس شوید و به اشتراکتون وصل بشید\n\n"
             f"🔗 لینک اشتراک V2Ray:\n<code>{escape(subscription_url)}</code>"
         )
         keyboard = self.create_keyboard([
-            [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
+            [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}", "style": "success"}],
             [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+            [{"text": "📚 آکادمی", "callback_data": "useful_content"}],
             [{"text": "🧩 نحوه وارد کردن اشتراک", "callback_data": "useful_category_install"}],
             [{"text": "📥 دانلود و نصب برنامه", "callback_data": "useful_category_downloads"}],
         ])
@@ -644,8 +651,9 @@ class SubscriptionHandler(BaseHandler):
                         "callback_data": f"config_file_{subscription.id}",
                     }
                 ],
-                [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
+                [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}", "style": "success"}],
                 [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+                [{"text": "📚 آکادمی", "callback_data": "useful_content"}],
                 [{"text": "🧩 نحوه وارد کردن اشتراک", "callback_data": "useful_category_install"}],
                 [{"text": "📥 دانلود و نصب برنامه", "callback_data": "useful_category_downloads"}],
             ]
@@ -673,52 +681,7 @@ class SubscriptionHandler(BaseHandler):
     async def show_usage_statistics(
         self, callback: types.CallbackQuery, subscription_id: int
     ):
-        """Show subscription usage statistics"""
-        user, _ = await self.get_or_create_user(callback.from_user)
-
-        try:
-            subscription = (
-                await Subscription.objects.select_related("plan", "vpn_provider", "remote_account")
-                .filter(Q(user=user) | Q(owner=user))
-                .aget(id=subscription_id, brand=self.brand)
-            )
-        except Subscription.DoesNotExist:
-            await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
-            return
-
-        from apps.subscriptions.usage import consumed_traffic_gb
-
-        used = consumed_traffic_gb(subscription)
-        label = (
-            f"{format(used.normalize(), 'f')} گیگابایت"
-            if used is not None else "در انتظار اطلاعات مصرف از سرویس‌دهنده"
-        )
-        text = (
-            "📊 <b>آمار مصرف اشتراک</b>\n\n"
-            f"📈 ترافیک مصرف‌شده: {escape(label)}"
-        )
-
-        keyboard = self.create_keyboard(
-            [
-                [
-                    {
-                        "text": "🔄 بروزرسانی آمار",
-                        "callback_data": f"refresh_stats_{subscription_id}",
-                    }
-                ],
-                [
-                    {
-                        "text": "🔙 بازگشت",
-                        "callback_data": f"subscription_details_{subscription_id}",
-                    }
-                ],
-            ]
-        )
-
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text, keyboard
-        )
-        await callback.answer()
+        await self.show_my_subscriptions(callback)
 
     def generate_qr_code(self, data: str) -> bytes:
         """Generate QR code image"""

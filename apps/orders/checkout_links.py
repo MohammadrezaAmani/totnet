@@ -122,6 +122,8 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
     if not gift or gift.expires_at <= now:
         raise GiftClaimError('لینک هدیه نامعتبر یا منقضی شده است.')
     if gift.claimed_by_id:
+        if gift.claimed_by_id == user_id:
+            return gift.order
         raise GiftClaimError('این کد هدیه قبلاً استفاده شده است.')
     order = Order.objects.select_for_update().get(pk=gift.order_id)
     if order.status not in (Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED):
@@ -174,13 +176,23 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
     if not provider or provider.status != VPNProvider.ProviderStatus.ACTIVE:
         raise GiftClaimError('فعال‌سازی این سرویس موقتاً در دسترس نیست؛ بعداً دوباره تلاش کنید.')
     if provider and provider.status == VPNProvider.ProviderStatus.ACTIVE:
-        Subscription.objects.get_or_create(order=order, defaults={
+        subscription, created_subscription = Subscription.objects.get_or_create(order=order, defaults={
             'brand_id': brand_id, 'user_id': order.user_id, 'owner': user,
             'plan': order.plan, 'vpn_provider': provider,
             'is_gift': True, 'starts_at': now,
             'traffic_limit_gb': order.plan.traffic_limit_gb,
             'status': Subscription.SubscriptionStatus.PENDING,
         })
+        if not created_subscription and subscription.owner_id != user.pk:
+            from apps.subscriptions.models import ProviderRemoteSubscription
+            if (subscription.status != Subscription.SubscriptionStatus.PENDING
+                or ProviderRemoteSubscription.objects.filter(
+                    subscription=subscription, remote_id__gt=""
+                ).exists()):
+                raise GiftClaimError('مالکیت اشتراک نیازمند بررسی پشتیبانی است.')
+            subscription.owner = user
+            subscription.is_gift = True
+            subscription.save(update_fields=['owner', 'is_gift', 'updated_at'])
         from apps.orders.signals import _enqueue_order_provisioning
         subscription_id = Subscription.objects.only('pk').get(order=order).pk
         transaction.on_commit(

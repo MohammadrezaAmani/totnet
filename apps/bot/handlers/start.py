@@ -216,9 +216,14 @@ class StartHandler(BaseHandler):
         """Show profile setup screen for new users"""
         await self.update_user_state(user, BotState.StateType.PROFILE_SETUP)
 
-        welcome_text = f"""
-🎉 خوش آمدید به {self.brand.name}!
-        """
+        from apps.referrals.selectors import pill_progress
+        pills = await pill_progress(user_id=user.pk, brand_id=self.brand.pk)
+        progress = int(pills["outstanding"]) % 3
+        visual = "💊" * progress + "▫️" * (3 - progress)
+        welcome_text = (
+            f"🎉 خوش آمدید به {self.brand.name}!\n\n"
+            f"مسیر رایگان شدن دائمی خدمات\n{visual}"
+        )
 
         keyboard = self.create_keyboard(
             [
@@ -725,10 +730,14 @@ class StartHandler(BaseHandler):
         await profile.asave(update_fields=["device_type", "updated_at"])
         await self.clear_previous_keyboard(chat_id, user)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-        await self.bot.send_message(
-            chat_id,
-            "✅ پروفایل شما با موفقیت تکمیل شد.",
+        confirmation = await self.bot.send_message(
+            chat_id, "✅ پروفایل شما با موفقیت تکمیل شد.",
             reply_markup=types.ReplyKeyboardRemove(),
+        )
+        from apps.orders.tasks import delete_transient_payment_message
+        delete_transient_payment_message.apply_async(
+            kwargs={"brand_id": self.brand.pk, "chat_id": chat_id,
+                    "message_id": confirmation.message_id}, countdown=8
         )
         if await self.show_channel_gate_if_required(chat_id, user):
             return

@@ -40,13 +40,16 @@ class ConnectixDeliveryTests(SimpleTestCase):
         async_to_sync(handler.send_connectix_config)(callback, subscription, None)
         text = bot.send_message.await_args.args[1]
         self.assertIn("🔑 رمز عبور", text)
+        self.assertIn("با این نام کاربری و رمز عبور وارد برنامه ما،کانکتیکس شوید", text)
         self.assertIn("pass-123", text)
         self.assertIn("V2Ray", text)
         self.assertIn("https://example.test/v2ray", text)
         keyboard = bot.send_message.await_args.kwargs["reply_markup"]
         callbacks = [button["callback_data"] for row in keyboard for button in row]
         self.assertEqual(callbacks, ["rename_subscription_15", "main_menu",
-                                     "useful_category_install", "useful_category_downloads"])
+                                     "useful_content", "useful_category_install",
+                                     "useful_category_downloads"])
+        self.assertEqual(keyboard[0][0]["style"], "success")
         bot.send_photo.assert_awaited_once()
         # The menu must be the last bot message, below the QR photo.
         self.assertEqual(bot.send_message.await_count, 1)

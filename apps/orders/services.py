@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from django.db import transaction
 from django.db.models import F, Sum
@@ -170,6 +171,26 @@ def pay_order_with_wallet(
     if existing_transaction:
         raise WalletCheckoutError("Wallet transaction exists without confirmed payment")
 
+    # Older single-pool wallet transactions have no provenance. Use the
+    # conservative lower bound for reward-funded cash to avoid inventing a
+    # discount from the total number of earned pills. All new reward spending
+    # gets an explicit immutable amount in the transaction ledger.
+    previous = WalletTransaction.objects.filter(wallet=wallet)
+    prior_reward_credit = previous.filter(
+        transaction_type=WalletTransaction.TransactionType.REFERRAL_REWARD
+    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    prior_debits = previous.filter(
+        transaction_type__in=[
+            WalletTransaction.TransactionType.PAYMENT,
+            WalletTransaction.TransactionType.WITHDRAWAL,
+        ]
+    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    provable_reward_cash = min(
+        max(prior_reward_credit - prior_debits, Decimal("0")),
+        max(wallet.balance, Decimal("0")),
+    )
+    reward_spent = min(provable_reward_cash, amount_to_apply)
+
     try:
         debit_wallet(
             wallet_id=wallet.pk,
@@ -178,6 +199,10 @@ def pay_order_with_wallet(
             description=f"Wallet payment for order {order.order_number}",
             reference_id=str(order.order_id),
             idempotency_key=idempotency_key,
+            metadata={
+                "order_id": str(order.order_id),
+                "reward_discount_amount": str(reward_spent),
+            },
         )
     except WalletOperationError as exc:
         raise WalletCheckoutError(str(exc)) from exc
@@ -468,3 +493,42 @@ def confirm_stars_payment(
         )
     )
     return payment
+
+
+def confirmed_reward_discounts(*, user_id: int, brand_id: int) -> Decimal:
+    """Reward-funded portion of confirmed purchases with explicit provenance.
+
+    Historical mixed-pool payments without attribution must not be estimated
+    from earned pills. Canceled/refunded/unpaid purchases never count.
+    """
+    wallet = Wallet.objects.filter(user_id=user_id, brand_id=brand_id).first()
+    if not wallet:
+        return Decimal("0")
+    transactions = WalletTransaction.objects.filter(
+        wallet=wallet, transaction_type=WalletTransaction.TransactionType.PAYMENT,
+        metadata__has_key="reward_discount_amount",
+    ).values_list("metadata", flat=True)
+    by_order = {}
+    for meta in transactions:
+        order_id = meta.get("order_id") if isinstance(meta, dict) else None
+        if not order_id:
+            continue
+        try:
+            order_id = str(UUID(str(order_id)))
+            amount = Decimal(str(meta.get("reward_discount_amount", "0")))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if amount > 0 and amount.is_finite():
+            by_order[order_id] = by_order.get(order_id, Decimal("0")) + amount
+    if not by_order:
+        return Decimal("0")
+    valid_orders = set(
+        str(order_id) for order_id in Order.objects.filter(
+            order_id__in=list(by_order), user_id=user_id, brand_id=brand_id,
+            status__in=[Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
+                        Order.OrderStatus.COMPLETED],
+            payments__payment_method=Payment.PaymentMethod.WALLET,
+            payments__status=Payment.PaymentStatus.CONFIRMED,
+        ).values_list("order_id", flat=True).distinct()
+    )
+    return sum((by_order[key] for key in valid_orders), Decimal("0"))

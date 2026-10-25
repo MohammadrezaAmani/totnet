@@ -86,3 +86,18 @@ def remaining_usage(subscription):
     else:
         time_left = "نامحدود"
     return traffic, time_left
+
+
+def is_subscription_expired(subscription, *, now=None):
+    """Use provider-reported traffic only when its unit is verified."""
+    now = now or timezone.now()
+    if subscription.status in {"expired", "cancelled"}:
+        return True
+    if subscription.expires_at and subscription.expires_at <= now:
+        return True
+    used = consumed_traffic_gb(subscription)
+    return bool(
+        used is not None
+        and subscription.traffic_limit_gb is not None
+        and used >= subscription.traffic_limit_gb
+    )

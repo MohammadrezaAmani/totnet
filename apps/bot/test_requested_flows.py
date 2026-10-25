@@ -190,6 +190,6 @@ class RequestedBotFlowTests(TestCase):
             )
         async_to_sync(self.handler(RewardsHandler).show_rewards)(self.callback)
         text = self.bot.edit_message_text.call_args.kwargs["text"]
-        self.assertIn("تمام امتیازات خرج شده توسط شما تا الان:</b> 9", text)
-        self.assertIn("امتیازهای موجود در جعبه فعلی: 1", text)
-        self.assertIn("قرص‌های نقد: 1", text)
+        self.assertIn("جمع کل تخفیفات نقدی خرج‌شده:</b> 0 تومان", text)
+        self.assertIn("قرص‌های موجود در جعبه فعلی: 1", text)
+        self.assertIn("امتیاز نقدشونده: 0 تومان", text)

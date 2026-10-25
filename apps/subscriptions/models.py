@@ -279,6 +279,25 @@ class Subscription(models.Model):
         return 0
 
 
+class HiddenSubscription(models.Model):
+    """User-side removal from menus; never delete a billed provider account."""
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="hidden_subscriptions"
+    )
+    subscription = models.ForeignKey(
+        Subscription, on_delete=models.CASCADE, related_name="hidden_for_users"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "hidden_subscriptions"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "subscription"], name="uniq_hidden_subscription_user"
+            )
+        ]
+
+
 class SubscriptionClaim(models.Model):
     """User request to attach an already-existing subscription to their profile.
 

@@ -9,6 +9,7 @@ import uuid
 from aiogram import types
 from asgiref.sync import sync_to_async
 from django.db.models import Sum
+from apps.orders.services import confirmed_reward_discounts
 
 from apps.referrals.models import (
     RewardAccount,
@@ -44,23 +45,9 @@ class RewardsHandler(BaseHandler):
 
         from apps.referrals.models import ReferralReward
 
-        cashed_out = await ReferralReward.objects.filter(
-            user=user,
-            brand=self.brand,
-            status=ReferralReward.RewardStatus.PROCESSED,
-            is_cashed_out=True,
-        ).aaggregate(total=Sum("amount"))
-        spent_ledger = await RewardPointLedger.objects.filter(
-            account__user=user,
-            account__brand=self.brand,
-            points_delta__lt=0,
-            entry_type__in=[
-                RewardPointLedger.EntryType.REDEEMED,
-                RewardPointLedger.EntryType.CONVERTED_TO_WALLET,
-            ],
-        ).aaggregate(total=Sum("points_delta"))
-        spent_points = (cashed_out["total"] or 0) - (spent_ledger["total"] or 0)
-
+        spent_discounts = await sync_to_async(confirmed_reward_discounts)(
+            user_id=user.pk, brand_id=self.brand.pk
+        )
         open_box = await ReferralReward.objects.filter(
             user=user,
             brand=self.brand,
@@ -75,7 +62,7 @@ class RewardsHandler(BaseHandler):
             reward_type__in=["normal_point", "profile_point"],
             status=ReferralReward.RewardStatus.PROCESSED,
             is_cashed_out=True,
-        ).aaggregate(total=Sum("amount"))
+        ).aaggregate(total=Sum("cash_value"))
 
         text = f"""
 🏅 <b>درجه پزشکی و امتیازات</b>
@@ -83,11 +70,11 @@ class RewardsHandler(BaseHandler):
 🩺 <b>درجه پزشکی:</b> {level_name}
 با فعالیت بیشتر در این سیستم اعتبار و جایگاه شما در این جامعه پزشکی ارتقا میابد.
 
-🧾 <b>تمام امتیازات خرج شده توسط شما تا الان:</b> {format_point_count(spent_points)}
+🧾 <b>جمع کل تخفیفات نقدی خرج‌شده:</b> {self.format_price(spent_discounts, self.brand.currency)}
 
 📦 <b>جعبه قرص‌ها</b>
 • قرص‌های موجود در جعبه فعلی: {format_point_count(box_points)}
-• قرص‌های نقدشده: {format_point_count(completed_normal_points["total"])}
+• امتیاز نقدشونده: {self.format_price(completed_normal_points["total"] or 0, self.brand.currency)}
 
 جمع ارزش هر ۳ قرص به موجودی نقد کیف پول منتقل می‌شود.
         """

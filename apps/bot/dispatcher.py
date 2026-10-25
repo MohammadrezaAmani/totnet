@@ -724,6 +724,13 @@ class MultiBrandDispatcher:
                 await handlers["purchase"].purchase_plan_for_subscription(
                     callback, int(sub_id_text), int(plan_id_text)
                 )
+            elif data.startswith("hide_subscription_"):
+                try:
+                    sub_id = int(data.removeprefix("hide_subscription_"))
+                except ValueError:
+                    await callback.answer("❌ درخواست نامعتبر است.", show_alert=True)
+                else:
+                    await handlers["subscriptions"].hide_expired_subscription(callback, sub_id)
             elif data.startswith("subscription_details_"):
                 sub_id = int(data.split("_")[2])
                 await handlers["subscriptions"].show_subscription_details(

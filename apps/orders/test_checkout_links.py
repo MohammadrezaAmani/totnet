@@ -113,6 +113,12 @@ class CheckoutLinksTests(TestCase):
         self.assertEqual(self.existing.referral_count, 0)
         self.assertFalse(Referral.objects.filter(referee=self.existing).exists())
         self.assertEqual(Subscription.objects.get(order=order).owner_id, self.existing.pk)
+        # Telegram can resend the same /start after an interrupted connection.
+        self.assertEqual(
+            claim_gift(token=gift.token, brand_id=self.brand.pk,
+                       user_id=self.existing.pk, newly_registered=False).pk, order.pk
+        )
+        self.assertEqual(Subscription.objects.filter(order=order).count(), 1)
         with self.assertRaises(GiftClaimError):
             claim_gift(token=gift.token, brand_id=self.brand.pk,
                        user_id=self.buyer.pk, newly_registered=False)
