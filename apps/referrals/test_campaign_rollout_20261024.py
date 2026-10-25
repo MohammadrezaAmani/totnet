@@ -200,7 +200,8 @@ class CampaignRolloutTests(TestCase):
         order.order_type = Order.OrderType.GIFT
         order.save(update_fields=["order_type"])
         with patch("apps.referrals.tasks._queue_once", return_value=True) as notices:
-            with patch("apps.orders.signals._enqueue_referral_reward"):
+            with patch("apps.orders.signals._enqueue_referral_reward"), \
+                 patch("apps.orders.signals._enqueue_order_provisioning"):
                 with self.captureOnCommitCallbacks(execute=True):
                     Payment.objects.create(
                         brand=self.brand, user=self.recipient, order=order,
@@ -209,11 +210,12 @@ class CampaignRolloutTests(TestCase):
                         amount=order.final_price, currency="T",
                     )
         messages = [call.kwargs for call in notices.call_args_list]
-        self.assertEqual(len(messages), 2)
-        self.assertEqual({m["user"].pk for m in messages}, {self.recipient.pk})
-        self.assertTrue(all("?start=gift_" in m["text"] for m in messages))
-        self.assertTrue(any("آیفون خودم" in m["text"] for m in messages))
-        self.assertTrue(any("۷۲" in m["text"] for m in messages))
+        # Payment confirmation alone must not claim the account is ready.
+        # Verified credentials and the gift link are sent together after provisioning.
+        self.assertEqual(messages, [])
+        from apps.subscriptions.models import Subscription
+        subscription = Subscription.objects.get(order=order)
+        self.assertEqual(subscription.status, Subscription.SubscriptionStatus.PENDING)
 
     def test_required_channel_gate_only_after_phone_name_device(self):
         from apps.accounts.models import UserProfile

@@ -186,45 +186,13 @@ class CheckoutAndProfileRegressionTests(TestCase):
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
 class RenewalKeyboardRegressionTests(TestCase):
-    def test_renewal_large_catalog_is_paginated(self):
-        brand = Brand.objects.create(name="Renewal", slug="renewal-rollout-20261022", currency="T", bot_token="renewal-test-token", contact_email="renewal@example.invalid")
-        user = User.objects.create_user(username="renew-rollout", telegram_id=99887, brand=brand)
-        provider = VPNProvider.objects.create(
-            brand=brand, name="Provider", provider_type="connectix", base_url="https://example.invalid", is_default=True,
-        )
-        plan = SubscriptionPlan.objects.create(
-            brand=brand, vpn_provider=provider, name="Current", plan_type="hybrid",
-            currency="T", price=Decimal("100000"), duration_value=1, duration_unit="months",
-            traffic_limit_gb=Decimal("40")
-        )
-        order = Order.objects.create(brand=brand, user=user, plan=plan, original_price=plan.price, final_price=plan.price, currency="T")
-        sub = Subscription.objects.create(
-            brand=brand, user=user, owner=user, order=order, vpn_provider=provider, plan=plan,
-            status="active", starts_at=timezone.now(), traffic_limit_gb=Decimal("40"), connectix_username="customer"
-        )
-        catalog = [plan] + [SubscriptionPlan(
-            pk=20000+i, brand=brand, name=f"Plan {i}", plan_type="hybrid", price=Decimal("101000")+i,
-            currency="T", duration_value=1, duration_unit="months", traffic_limit_gb=Decimal("60"), max_users=1
-        ) for i in range(142)]
-        bot = MagicMock()
-        bot.edit_message_text = AsyncMock()
-        handler = SubscriptionHandler(bot, brand)
-        handler.get_or_create_user = AsyncMock(return_value=(user, False))
-        handler.purchase_credit = AsyncMock(return_value=Decimal("0"))
+    def test_renewal_uses_original_plan_without_catalog(self):
         callback = MagicMock()
-        callback.message.chat.id = user.telegram_id
-        callback.message.message_id = 31
-        callback.answer = AsyncMock()
-        with patch("apps.bot.handlers.subscriptions.get_cached_plans", new_callable=AsyncMock, return_value=catalog):
-            async_to_sync(handler.show_renewal_details)(callback, sub.pk, page=1)
-            kwargs = bot.edit_message_text.call_args.kwargs
-            buttons = [button for row in kwargs["reply_markup"].inline_keyboard for button in row]
-            self.assertLessEqual(len(buttons), 13)
-            self.assertIn("صفحه 1 از 18", kwargs["text"])
-            self.assertEqual(len([b for b in buttons if b.callback_data.startswith("renew_with_plan_") or b.callback_data.startswith("repurchase_subscription_")]), 8)
-            async_to_sync(handler.show_renewal_details)(callback, sub.pk, page=18)
-            kwargs = bot.edit_message_text.call_args.kwargs
-            self.assertIn("صفحه 18 از 18", kwargs["text"])
+        brand = MagicMock()
+        handler = SubscriptionHandler(MagicMock(), brand)
+        with patch("apps.bot.handlers.purchase.PurchaseHandler.repurchase_subscription", new_callable=AsyncMock) as renew:
+            async_to_sync(handler.show_renewal_details)(callback, 17, page=18)
+        renew.assert_awaited_once_with(callback, 17)
 
 class SubscriptionDetailAndAccountTests(TestCase):
     def setUp(self):

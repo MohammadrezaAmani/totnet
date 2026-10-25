@@ -473,6 +473,11 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
             return
 
+        # Renewal never selects a different plan, including from stale callbacks.
+        if plan_id is not None and plan_id != subscription.plan_id:
+            await callback.answer("تمدید فقط با طرح فعلی این اشتراک امکان‌پذیر است.", show_alert=True)
+            return
+
         if plan_id is None:
             plan = subscription.plan
         else:

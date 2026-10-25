@@ -166,40 +166,36 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
                     )
             )
 
-    # Provision only after a real recipient exists. Delayed side effects are
-    # idempotent and never executed on an uncommitted claim.
+    # Reuse the paid gift's account, including any already provisioned remote account.
     from apps.subscriptions.models import Subscription
     from apps.vpn_providers.models import VPNProvider
-    provider = order.plan.vpn_provider if order.plan.vpn_provider_id else VPNProvider.objects.filter(
-        brand_id=brand_id, is_default=True, status=VPNProvider.ProviderStatus.ACTIVE
-    ).first()
-    if not provider or provider.status != VPNProvider.ProviderStatus.ACTIVE:
-        raise GiftClaimError('فعال‌سازی این سرویس موقتاً در دسترس نیست؛ بعداً دوباره تلاش کنید.')
-    if provider and provider.status == VPNProvider.ProviderStatus.ACTIVE:
-        subscription, created_subscription = Subscription.objects.get_or_create(order=order, defaults={
-            'brand_id': brand_id, 'user_id': order.user_id, 'owner': user,
-            'plan': order.plan, 'vpn_provider': provider,
-            'is_gift': True, 'starts_at': now,
-            'traffic_limit_gb': order.plan.traffic_limit_gb,
-            'status': Subscription.SubscriptionStatus.PENDING,
-        })
-        if not created_subscription and subscription.owner_id != user.pk:
-            from apps.subscriptions.models import ProviderRemoteSubscription
-            if (subscription.status != Subscription.SubscriptionStatus.PENDING
-                or ProviderRemoteSubscription.objects.filter(
-                    subscription=subscription, remote_id__gt=""
-                ).exists()):
-                raise GiftClaimError('مالکیت اشتراک نیازمند بررسی پشتیبانی است.')
-            subscription.owner = user
-            subscription.is_gift = True
-            subscription.save(update_fields=['owner', 'is_gift', 'updated_at'])
-        from apps.orders.signals import _enqueue_order_provisioning
-        subscription_id = Subscription.objects.only('pk').get(order=order).pk
-        transaction.on_commit(
-            lambda sub_pk=subscription_id: _enqueue_order_provisioning(sub_pk)
+    subscription = Subscription.objects.select_for_update().filter(order=order).first()
+    if subscription:
+        subscription.owner = user
+        subscription.save(update_fields=['owner', 'updated_at'])
+    else:
+        provider = order.plan.vpn_provider if order.plan.vpn_provider_id else VPNProvider.objects.filter(
+            brand_id=brand_id, is_default=True, status=VPNProvider.ProviderStatus.ACTIVE
+        ).first()
+        if not provider or provider.status != VPNProvider.ProviderStatus.ACTIVE:
+            raise GiftClaimError('فعال‌سازی این سرویس موقتاً در دسترس نیست؛ بعداً دوباره تلاش کنید.')
+        subscription = Subscription.objects.create(
+            order=order, brand_id=brand_id, user_id=order.user_id, owner=user,
+            plan=order.plan, vpn_provider=provider, is_gift=True,
+            starts_at=now, traffic_limit_gb=order.plan.traffic_limit_gb,
+            status=Subscription.SubscriptionStatus.PENDING,
         )
-    # The reward handler is idempotent and must not raise inside the Telegram
-    # request after the single-use token has already committed.
+    if subscription.status == Subscription.SubscriptionStatus.ACTIVE:
+        from apps.orders.gift_delivery import queue_ready_gift_details
+        transaction.on_commit(
+            lambda order_pk=order.pk, recipient_pk=user.pk:
+                queue_ready_gift_details(order_id=order_pk, recipient_id=recipient_pk)
+        )
+    else:
+        from apps.orders.signals import _enqueue_order_provisioning
+        transaction.on_commit(
+            lambda subscription_pk=subscription.pk: _enqueue_order_provisioning(subscription_pk)
+        )
     payment_id = (Payment.objects.filter(order=order, status=Payment.PaymentStatus.CONFIRMED)
                   .order_by('-created_at').values_list('payment_id', flat=True).first())
     if payment_id and gift.new_member_at_claim:

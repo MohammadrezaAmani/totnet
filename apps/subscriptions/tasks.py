@@ -27,9 +27,6 @@ def provision_paid_order(order_pk: int):
     except Order.DoesNotExist:
         logger.warning("Provisioning skipped: order %s does not exist", order_pk)
         return False
-    if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
-        logger.info("Gift %s awaiting a recipient", order.pk)
-        return False
     if order.status not in (Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING):
         logger.info("Provisioning skipped for order %s in state %s", order.pk, order.status)
         return False
@@ -51,6 +48,11 @@ def provision_paid_order(order_pk: int):
             logger.warning("Provisioning skipped: order %s has no local subscription", order.pk)
             return False
         if subscription.status == Subscription.SubscriptionStatus.ACTIVE:
+            if order.order_type == Order.OrderType.GIFT:
+                from apps.orders.gift_delivery import queue_ready_gift_details
+                queue_ready_gift_details(order_id=order.pk)
+                if order.recipient_id:
+                    queue_ready_gift_details(order_id=order.pk, recipient_id=order.recipient_id)
             return True
         remote_identity_exists = ProviderRemoteSubscription.objects.filter(
             subscription=subscription, remote_id__gt=""
@@ -146,6 +148,12 @@ def provision_paid_order(order_pk: int):
             provisioning_error="",
             provisioning_retryable=False,
         )
+        if order.order_type == Order.OrderType.GIFT:
+            from apps.orders.gift_delivery import queue_ready_gift_details
+            queue_ready_gift_details(order_id=order.pk)
+            if order.recipient_id:
+                queue_ready_gift_details(order_id=order.pk, recipient_id=order.recipient_id)
+            return True
         telegram_ids = {
             telegram_id
             for telegram_id in (

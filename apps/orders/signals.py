@@ -175,37 +175,33 @@ def payment_post_save(sender, instance, created, **kwargs):
                 # A paid gift without a recipient becomes a redeemable link,
                 # never a provider account owned by its purchaser.
                 if order.order_type == Order.OrderType.GIFT and order.recipient_id is None:
-                    from apps.orders.checkout_links import issue_paid_gift, paid_gift_link
+                    from apps.orders.checkout_links import issue_paid_gift
                     voucher = issue_paid_gift(order_id=order.pk)
-                    if voucher:
-                        link = paid_gift_link(voucher)
-                        from apps.referrals.tasks import _queue_once
-                        if link:
-                            gift_text = (
-                                '🎁 <b>اشتراک هدیه آماده ارسال است.</b>\n\n'
-                                f'{link}\n\n'
-                                f'⏳ پایان مهلت: {jalali_date(voucher.expires_at, time=True)}'
-                            )
-                            referral_text = None
-                        else:
-                            gift_text = '⚠️ اشتراک هدیه پرداخت شد، اما نام کاربری ربات تنظیم نشده است؛ با پشتیبانی تماس بگیرید.'
-                            referral_text = None
-                        buyer = order.user
-                        brand_id = order.brand_id
-                        gift_id = voucher.pk
-                        def queue_gift_messages():
-                            _queue_once(
-                                user=buyer, brand_id=brand_id, notification_type='custom',
-                                dedupe_key=f'gift-handover:{gift_id}', text=gift_text,
-                                metadata={'gift_voucher_id': gift_id, 'event': 'gift_handover'},
-                            )
-                            if referral_text:
-                                _queue_once(
-                                    user=buyer, brand_id=brand_id, notification_type='custom',
-                                    dedupe_key=f'gift-referral-link:{gift_id}', text=referral_text,
-                                    metadata={'gift_voucher_id': gift_id, 'event': 'gift_referral_handover'},
-                                )
-                        transaction.on_commit(queue_gift_messages)
+                    if not voucher:
+                        logger.error("Paid gift %s could not issue a voucher", order.pk)
+                    provider = order.plan.vpn_provider if order.plan.vpn_provider_id else VPNProvider.objects.filter(
+                        brand=order.brand, status=VPNProvider.ProviderStatus.ACTIVE, is_default=True,
+                    ).first()
+                    if provider and provider.brand_id == order.brand_id and provider.status == VPNProvider.ProviderStatus.ACTIVE:
+                        subscription, _ = Subscription.objects.get_or_create(
+                            order=order,
+                            defaults={
+                                "brand": order.brand,
+                                "user": order.user,
+                                "owner": order.user,
+                                "plan": order.plan,
+                                "vpn_provider": provider,
+                                "is_gift": True,
+                                "status": Subscription.SubscriptionStatus.PENDING,
+                                "starts_at": timezone.now(),
+                                "traffic_limit_gb": order.plan.traffic_limit_gb,
+                            },
+                        )
+                        transaction.on_commit(
+                            lambda subscription_pk=subscription.pk: _enqueue_order_provisioning(subscription_pk)
+                        )
+                    else:
+                        logger.error("Paid gift %s has no active VPN provider", order.pk)
                     from apps.referrals.services import snapshot_gift_reward
                     snapshot_gift_reward(order_id=order.pk)
                     transaction.on_commit(

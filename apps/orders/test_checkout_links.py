@@ -92,13 +92,54 @@ class CheckoutLinksTests(TestCase):
             self.assertEqual(quote.expected_amount, Decimal('500000'))
             self.assertFalse(quote.reserved)
 
-    def test_paid_gift_not_provisioned_until_claim(self):
+    def test_paid_gift_prepares_one_account_before_claim(self):
         order, gift = self.paid_gift()
         self.assertEqual(order.status, Order.OrderStatus.PAID)
-        self.assertFalse(Subscription.objects.filter(order=order).exists())
+        subscription = Subscription.objects.get(order=order)
+        self.assertEqual(subscription.owner_id, self.buyer.pk)
+        self.assertEqual(subscription.status, Subscription.SubscriptionStatus.PENDING)
         self.assertTrue(paid_gift_link(gift).startswith('https://t.me/gift_tests_bot?start=gift_'))
         self.assertEqual(issue_paid_gift(order_id=order.pk).pk, gift.pk)
         self.assertAlmostEqual((gift.expires_at - gift.created_at).total_seconds(), 72*3600, delta=5)
+
+    def test_gift_details_include_account_credentials_sub_link_and_claim_link(self):
+        from apps.orders.gift_delivery import queue_ready_gift_details
+        order, gift = self.paid_gift()
+        subscription = Subscription.objects.get(order=order)
+        subscription.status = Subscription.SubscriptionStatus.ACTIVE
+        subscription.connectix_username = 'gift_account'
+        subscription.connectix_password = 'gift_password'
+        subscription.subscription_url = 'https://vpn.example.invalid/sub/gift_account'
+        subscription.save(update_fields=['status', 'connectix_username',
+                                         'connectix_password', 'subscription_url'])
+        with patch('apps.referrals.tasks._queue_once', return_value=True) as queued:
+            self.assertTrue(queue_ready_gift_details(order_id=order.pk))
+        payload = queued.call_args.kwargs
+        self.assertEqual(payload['user'].pk, self.buyer.pk)
+        self.assertIn('gift_account', payload['text'])
+        self.assertIn('gift_password', payload['text'])
+        self.assertIn('https://vpn.example.invalid/sub/gift_account', payload['text'])
+        self.assertIn(f'?start=gift_{gift.token}', payload['text'])
+        self.assertIn('۲۵', payload['text'])
+        self.assertEqual(payload['metadata']['event'], 'gift_handover')
+
+    def test_claiming_prepared_gift_keeps_same_account(self):
+        from apps.orders.gift_delivery import queue_ready_gift_details
+        order, gift = self.paid_gift()
+        subscription = Subscription.objects.get(order=order)
+        subscription.status = Subscription.SubscriptionStatus.ACTIVE
+        subscription.connectix_username = 'gift_account'
+        subscription.subscription_url = 'https://vpn.example.invalid/sub/gift_account'
+        subscription.save(update_fields=['status', 'connectix_username', 'subscription_url'])
+        with patch('apps.orders.gift_delivery.queue_ready_gift_details', return_value=True) as queued, \
+             patch('apps.referrals.services._enqueue_claimed_gift_reward'), \
+             self.captureOnCommitCallbacks(execute=True):
+            claim_gift(token=gift.token, brand_id=self.brand.pk,
+                       user_id=self.existing.pk, newly_registered=False)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.owner_id, self.existing.pk)
+        self.assertEqual(Subscription.objects.filter(order=order).count(), 1)
+        queued.assert_called_once_with(order_id=order.pk, recipient_id=self.existing.pk)
 
     def test_existing_member_claims_gift_without_becoming_a_new_referral(self):
         order, gift = self.paid_gift()
@@ -145,7 +186,7 @@ class CheckoutLinksTests(TestCase):
         with self.assertRaises(GiftClaimError):
             claim_gift(token=gift.token, brand_id=self.brand.pk,
                        user_id=self.existing.pk, newly_registered=False)
-        self.assertFalse(Subscription.objects.filter(order=order).exists())
+        self.assertEqual(Subscription.objects.get(order=order).owner_id, self.buyer.pk)
 
     def test_unpaid_gift_has_no_link(self):
         order = self.order(kind=Order.OrderType.GIFT)

@@ -29,9 +29,6 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
     order = await Order.objects.select_related(
         "brand", "user", "recipient", "plan", "plan__vpn_provider"
     ).aget(pk=order_id)
-    if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
-        logger.warning("Unclaimed gift %s cannot be provisioned", order.pk)
-        return None
     subscription = await Subscription.objects.filter(order=order).select_related(
         "vpn_provider", "plan", "owner"
     ).afirst()
@@ -288,7 +285,7 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
 
 async def provision_connectix_subscription(subscription: Subscription) -> bool:
     subscription = await Subscription.objects.select_related(
-        "vpn_provider", "plan", "owner"
+        "vpn_provider", "plan", "owner", "order"
     ).aget(pk=subscription.pk)
     provider = subscription.vpn_provider
     plan = subscription.plan
@@ -318,16 +315,20 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
             remote_id = remote_account.remote_id
             username = remote_account.username
         else:
+            unclaimed_gift = subscription.is_gift and not subscription.order.recipient_id
             request = ConnectixProvisioningRequest(
                 subscription_id=str(subscription.subscription_id),
                 display_name=(
-                    subscription.display_name
-                    or subscription.owner.full_name
-                    or subscription.owner.get_full_name()
-                    or subscription.owner.username
+                    (subscription.display_name or "اشتراک خرید برای دیگران")
+                    if unclaimed_gift else (
+                        subscription.display_name
+                        or subscription.owner.full_name
+                        or subscription.owner.get_full_name()
+                        or subscription.owner.username
+                    )
                 ),
-                email=subscription.owner.email or None,
-                telegram_id=subscription.owner.telegram_id,
+                email=None if unclaimed_gift else (subscription.owner.email or None),
+                telegram_id=None if unclaimed_gift else subscription.owner.telegram_id,
                 plan_id=plan.upstream_plan_id,
                 plan_name=plan.upstream_plan_name or plan.name,
                 group_id=plan.upstream_group_id,
