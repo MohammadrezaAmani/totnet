@@ -69,6 +69,7 @@ class Order(models.Model):
         related_name="gift_orders",
     )
 
+    use_wallet_credit = models.BooleanField(default=True)
     original_price = models.DecimalField(max_digits=15, decimal_places=2)
     discount_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)

@@ -521,12 +521,22 @@ class MultiBrandDispatcher:
                 await handlers["purchase"].request_purchase_coupon(
                     callback, data.removeprefix("purchase_coupon_")
                 )
+            elif data.startswith("purchase_nocredit_"):
+                plan_id = int(data.removeprefix("purchase_nocredit_"))
+                await handlers["purchase"].initiate_purchase(
+                    callback, plan_id, use_wallet_credit=False
+                )
             elif data.startswith("purchase_plan_"):
                 plan_id = int(data.split("_")[2])
                 await handlers["purchase"].initiate_purchase(callback, plan_id)
             elif data.startswith("gift_plan_"):
                 plan_id = int(data.split("_")[2])
                 await handlers["purchase"].show_plan_details(callback, plan_id)
+            elif data.startswith("buy_for_other_nocredit_"):
+                plan_id = int(data.removeprefix("buy_for_other_nocredit_"))
+                await handlers["purchase"].initiate_purchase(
+                    callback, plan_id, "other", use_wallet_credit=False
+                )
             elif data.startswith("buy_for_other_"):
                 plan_id = int(data.split("_")[3])
                 await handlers["purchase"].initiate_purchase(callback, plan_id, "other")
@@ -583,12 +593,16 @@ class MultiBrandDispatcher:
                     show_alert=True,
                 )
             elif data.startswith("select_card_"):
-                parts = data.split("_")
-                if len(parts) >= 4:
-                    order_id = parts[3]
-                    await handlers["purchase"].show_card_transfer_payment(
-                        callback, order_id
-                    )
+                parts = data.split("_", 3)
+                if len(parts) == 4:
+                    try:
+                        card_id = int(parts[2])
+                    except ValueError:
+                        await callback.answer("❌ شناسه کارت نامعتبر است.", show_alert=True)
+                    else:
+                        await handlers["purchase"].show_selected_card(
+                            callback, parts[3], card_id
+                        )
                 else:
                     await callback.answer("❌ شناسه سفارش نامعتبر است.", show_alert=True)
             # در متد route_callback اضافه کنید:
@@ -718,6 +732,12 @@ class MultiBrandDispatcher:
             elif data.startswith("repurchase_subscription_"):
                 sub_id = int(data.removeprefix("repurchase_subscription_"))
                 await handlers["purchase"].repurchase_subscription(callback, sub_id)
+            elif data.startswith("renew_nocredit_"):
+                payload = data.removeprefix("renew_nocredit_")
+                sub_id_text, plan_id_text = payload.split("_", 1)
+                await handlers["purchase"].purchase_plan_for_subscription(
+                    callback, int(sub_id_text), int(plan_id_text), use_wallet_credit=False
+                )
             elif data.startswith("renew_with_plan_"):
                 payload = data.removeprefix("renew_with_plan_")
                 sub_id_text, plan_id_text = payload.split("_", 1)

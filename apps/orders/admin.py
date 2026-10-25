@@ -190,12 +190,13 @@ class PaymentCardAdmin(admin.ModelAdmin):
         "unique_amount_enabled",
         "unique_amount_max_extra",
         "display_order",
+        "card_color",
         "total_payments",
         "last_used",
     )
     list_filter = ("is_active", "brand")
     search_fields = ("brand__name", "bank_name", "cardholder_name")
-    list_editable = ("is_active", "unique_amount_enabled", "display_order")
+    list_editable = ("is_active", "unique_amount_enabled", "display_order", "card_color")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

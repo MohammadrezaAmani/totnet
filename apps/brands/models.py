@@ -39,9 +39,9 @@ class Brand(models.Model):
         help_text="با فعال شدن این گزینه، کاربران جدید فقط با لینک دعوت فعال همین برند وارد می‌شوند. کاربران موجود محدودیتی ندارند.",
     )
     gift_expiry_hours = models.PositiveIntegerField(
-        "مهلت استفاده از هدیه (ساعت)", default=72,
+        "مهلت استفاده از هدیه (ساعت)", default=48,
         validators=[MinValueValidator(1), MaxValueValidator(720)],
-        help_text="پیش‌فرض ۷۲ ساعت پس از تأیید کامل پرداخت؛ حداکثر ۷۲۰ ساعت.",
+        help_text="پیش‌فرض ۴۸ ساعت پس از تأیید کامل پرداخت؛ حداکثر ۷۲۰ ساعت.",
     )
     show_free_plans = models.BooleanField(
         "نمایش پلن‌های رایگان در ربات",
@@ -170,6 +170,10 @@ class BrandPaymentMethod(models.Model):
 
     icon = models.ImageField(upload_to="payment_icons/", null=True, blank=True)
     display_order = models.PositiveIntegerField(default=0)
+    button_style = models.CharField(
+        max_length=10, default="primary",
+        choices=[("primary", "آبی"), ("success", "سبز"), ("danger", "قرمز")],
+    )
 
     min_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     max_amount = models.DecimalField(

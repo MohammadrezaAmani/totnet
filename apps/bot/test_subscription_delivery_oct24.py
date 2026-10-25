@@ -13,14 +13,15 @@ from apps.subscriptions.policy import blocked_duration_key, temporary_duration_b
 
 class DurationPolicyTests(SimpleTestCase):
     @override_settings(TEMP_DISABLE_2_3_MONTH_PLANS=True)
-    def test_normal_month_two_allowed_three_blocked_royal_two_blocked(self):
+    def test_normal_month_two_allowed_three_blocked_royal_two_and_three_enabled(self):
         for category, months, expected in (("normal", 2, False), ("normal", 3, True),
-                                            ("royal", 2, True), ("royal", 3, True)):
+                                            ("royal", 2, False), ("royal", 3, False)):
             plan = SimpleNamespace(service_category=category, duration_unit="months", duration_value=months)
             self.assertEqual(temporary_duration_blocked(plan), expected)
         self.assertFalse(blocked_duration_key("m2", "normal"))
         self.assertTrue(blocked_duration_key("m3", "normal"))
-        self.assertTrue(blocked_duration_key("m2", "royal"))
+        self.assertFalse(blocked_duration_key("m2", "royal"))
+        self.assertFalse(blocked_duration_key("m3", "royal"))
 
 
 class ConnectixDeliveryTests(SimpleTestCase):

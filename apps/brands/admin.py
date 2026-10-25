@@ -19,13 +19,13 @@ from .models import (
 
 class BrandPaymentMethodInline(admin.TabularInline):
     model = BrandPaymentMethod
-    fields = ("name", "payment_type", "is_enabled", "display_order")
+    fields = ("name", "payment_type", "is_enabled", "display_order", "button_style")
     extra = 0
 
 
 class BrandPaymentCardInline(admin.TabularInline):
     model = PaymentCard
-    fields = ("bank_name", "card_number", "cardholder_name", "is_active", "unique_amount_enabled", "unique_amount_max_extra", "display_order")
+    fields = ("bank_name", "card_number", "cardholder_name", "is_active", "unique_amount_enabled", "unique_amount_max_extra", "display_order", "card_color")
     extra = 0
 
 
@@ -154,12 +154,14 @@ class BrandPaymentMethodAdmin(admin.ModelAdmin):
         "name",
         "is_enabled",
         "display_order",
+        "button_style",
         "min_amount",
         "max_amount",
     )
     list_filter = ("payment_type", "is_enabled", "brand")
     search_fields = ("brand__name", "name")
     ordering = ("display_order",)
+    list_editable = ("display_order", "button_style", "is_enabled")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

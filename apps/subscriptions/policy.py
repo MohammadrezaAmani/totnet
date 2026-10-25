@@ -45,15 +45,17 @@ def temporary_duration_blocked(plan):
         else 0
     )
     if plan.service_category == SubscriptionPlan.ServiceCategory.NORMAL:
-        # Normal three-month offers are disabled regardless of the legacy
-        # feature flag. Normal two-month offers remain available.
         return months == 3
+    if plan.service_category == SubscriptionPlan.ServiceCategory.ROYAL:
+        return False
     return getattr(settings, "TEMP_DISABLE_2_3_MONTH_PLANS", True) and months in (2, 3)
 
 
 def blocked_duration_key(key, category=None):
     if category == SubscriptionPlan.ServiceCategory.NORMAL:
         return key in {"m3", "d90", "w12"}
+    if category == SubscriptionPlan.ServiceCategory.ROYAL:
+        return False
     if not getattr(settings, "TEMP_DISABLE_2_3_MONTH_PLANS", True):
         return False
     return key in {"m2", "m3", "d60", "d90", "w8", "w12"}

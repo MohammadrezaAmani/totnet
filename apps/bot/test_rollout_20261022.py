@@ -13,7 +13,9 @@ from apps.brands.models import Brand
 from apps.orders.coupons import PurchaseCouponError, apply_purchase_coupon
 from apps.orders.models import Coupon, CouponUsage, Order, Wallet, WalletTransaction
 from apps.referrals.models import ServiceRewardRate
-from apps.referrals.services import grant_profile_completion_reward
+from apps.referrals.services import grant_profile_completion_pill, grant_profile_completion_reward
+from apps.referrals.models import ReferralReward, RewardAccount
+from apps.bot.handlers.profile import _profile_pill_message
 from apps.subscriptions.models import Subscription, SubscriptionPlan
 from apps.subscriptions.policy import effective_reward_percent
 from apps.vpn_providers.models import VPNProvider
@@ -57,19 +59,85 @@ class CheckoutAndProfileRegressionTests(TestCase):
         )
         self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("6"))
 
-    def test_profile_cash_is_exactly_ten_thousand_once(self):
+    def _complete_profile(self):
         self.user.full_name = "Tester"
         self.user.phone_number = "09120000000"
         self.user.birth_date = date(1990, 2, 10)
         self.user.save()
-        profile = UserProfile.objects.create(user=self.user, living_location="تهران", gender="undisclosed")
-        self.assertTrue(grant_profile_completion_reward(user_id=self.user.pk, brand_id=self.brand.pk))
-        self.assertFalse(grant_profile_completion_reward(user_id=self.user.pk, brand_id=self.brand.pk))
+        return UserProfile.objects.create(
+            user=self.user, living_location="تهران", gender="undisclosed"
+        )
+
+    def test_profile_reward_is_exactly_one_pill_once_without_direct_cash(self):
+        profile = self._complete_profile()
+        self.assertEqual(
+            grant_profile_completion_pill(user_id=self.user.pk, brand_id=self.brand.pk), 2
+        )
+        self.assertIsNone(
+            grant_profile_completion_pill(user_id=self.user.pk, brand_id=self.brand.pk)
+        )
+        self.assertFalse(
+            grant_profile_completion_reward(user_id=self.user.pk, brand_id=self.brand.pk)
+        )
         profile.refresh_from_db()
         self.assertIsNotNone(profile.profile_reward_granted_at)
-        wallet = Wallet.objects.get(user=self.user, brand=self.brand)
-        self.assertEqual(wallet.balance, Decimal("10000"))
-        self.assertEqual(WalletTransaction.objects.filter(wallet=wallet, idempotency_key__startswith="profile-completion-cash:").count(), 1)
+        rewards = ReferralReward.objects.filter(
+            user=self.user, brand=self.brand, reward_type="profile_point"
+        )
+        self.assertEqual(rewards.count(), 1)
+        self.assertEqual(rewards.get().amount, Decimal("1"))
+        self.assertEqual(RewardAccount.objects.get(user=self.user, brand=self.brand).lifetime_points, Decimal("1"))
+        self.assertFalse(WalletTransaction.objects.filter(
+            idempotency_key__startswith="profile-completion-cash:"
+        ).exists())
+        self.assertFalse(Wallet.objects.filter(user=self.user, brand=self.brand, balance__gt=0).exists())
+        self.assertEqual(_profile_pill_message(2), (
+            "پروفایل شما تکمیل شد\n\n"
+            "یک 💊 دریافت کردید\n"
+            "🦠دریافت تنها۲ قرص لازمه تا نقد شدن کامل یک امتیاز"
+        ))
+
+    def test_profile_pill_count_reflects_prior_rewards_and_third_is_cashed_out(self):
+        for prior, expected in ((1, 1), (2, 0)):
+            with self.subTest(prior=prior):
+                user = User.objects.create_user(
+                    username=f"pill-test-{prior}", telegram_id=234120 + prior, brand=self.brand,
+                    full_name="Tester", phone_number="09120000000", birth_date=date(1990, 2, 10)
+                )
+                UserProfile.objects.create(user=user, living_location="تهران", gender="undisclosed")
+                for _ in range(prior):
+                    ReferralReward.objects.create(
+                        user=user, brand=self.brand, reward_type="normal_point",
+                        amount=Decimal("1"), cash_value=Decimal("1000"),
+                        currency="T", status=ReferralReward.RewardStatus.PROCESSED,
+                    )
+                self.assertEqual(
+                    grant_profile_completion_pill(user_id=user.pk, brand_id=self.brand.pk), expected
+                )
+                self.assertEqual(ReferralReward.objects.filter(
+                    user=user, brand=self.brand, reward_type="profile_point"
+                ).count(), 1)
+                self.assertIn(f"تنها{str(expected).translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))} قرص", _profile_pill_message(expected))
+                if prior == 2:
+                    self.assertEqual(Wallet.objects.get(user=user, brand=self.brand).balance, Decimal("12000"))
+                    self.assertEqual(ReferralReward.objects.filter(user=user, is_cashed_out=True).count(), 3)
+                else:
+                    self.assertFalse(Wallet.objects.filter(user=user, brand=self.brand, balance__gt=0).exists())
+
+    def test_previously_rewarded_profile_does_not_receive_a_second_reward(self):
+        profile = self._complete_profile()
+        profile.profile_reward_granted_at = timezone.now()
+        profile.save(update_fields=["profile_reward_granted_at"])
+        self.assertIsNone(
+            grant_profile_completion_pill(user_id=self.user.pk, brand_id=self.brand.pk)
+        )
+        self.assertFalse(ReferralReward.objects.filter(
+            user=self.user, reward_type="profile_point"
+        ).exists())
+
+    def test_incomplete_profile_earns_no_pill(self):
+        self.assertIsNone(grant_profile_completion_pill(user_id=self.user.pk, brand_id=self.brand.pk))
+        self.assertFalse(ReferralReward.objects.filter(user=self.user, reward_type="profile_point").exists())
 
     def test_percent_and_fixed_checkout_coupons_are_integer_toman_and_once_only(self):
         now = timezone.now()

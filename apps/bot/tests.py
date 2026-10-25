@@ -407,10 +407,12 @@ class BotConnectixFlowTests(TestCase):
             order = await Order.objects.aget(user=self.user)
             order_id = str(order.order_id)
             await self.handler.show_card_transfer_payment(self.callback, order_id)
+            card_list = self.bot.edit_message_text.call_args.kwargs["text"]
+            self.assertIn("انتخاب حساب مقصد", card_list)
+            await self.handler.show_selected_card(self.callback, order_id, card.pk)
             card_text = self.bot.edit_message_text.call_args.kwargs["text"]
             self.assertIn("Test &amp; Bank", card_text)
             self.assertIn("شماره کارت", card_text)
-            self.assertNotIn("بانک مقصد را انتخاب کنید", card_text)
             await self.handler.payment_done(self.callback, order_id)
             state = await self.handler.get_user_state(self.user)
             await self.handler.handle_photo_message(photo, state)

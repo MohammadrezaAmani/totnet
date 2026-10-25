@@ -64,19 +64,20 @@ class RewardsHandler(BaseHandler):
             is_cashed_out=True,
         ).aaggregate(total=Sum("cash_value"))
 
+        pills_needed = 3 - (int(box_points) % 3)
         text = f"""
 🏅 <b>درجه پزشکی و امتیازات</b>
+
+📦 <b>جعبه قرص‌ها</b>
+• تعداد قرص لازم برای نقد شدن کامل امتیاز: {pills_needed}
+• امتیاز نقد: {self.format_price(completed_normal_points["total"] or 0, self.brand.currency)}
+
+جمع ارزش هر ۳ قرص به موجودی نقد کیف پول منتقل می‌شود.
 
 🩺 <b>درجه پزشکی:</b> {level_name}
 با فعالیت بیشتر در این سیستم اعتبار و جایگاه شما در این جامعه پزشکی ارتقا میابد.
 
 🧾 <b>جمع کل تخفیفات نقدی خرج‌شده:</b> {self.format_price(spent_discounts, self.brand.currency)}
-
-📦 <b>جعبه قرص‌ها</b>
-• قرص‌های موجود در جعبه فعلی: {format_point_count(box_points)}
-• امتیاز نقدشونده: {self.format_price(completed_normal_points["total"] or 0, self.brand.currency)}
-
-جمع ارزش هر ۳ قرص به موجودی نقد کیف پول منتقل می‌شود.
         """
 
         keyboard = self.create_keyboard(

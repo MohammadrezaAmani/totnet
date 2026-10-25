@@ -1072,33 +1072,62 @@ def award_level_one_referral_for_payment(*, payment_id: str) -> Decimal:
 
 
 @transaction.atomic
-def grant_profile_completion_reward(*, user_id: int, brand_id: int) -> bool:
-    """Once-only 10,000-toman wallet credit for a voluntarily completed profile.
+def grant_profile_completion_pill(*, user_id: int, brand_id: int) -> int | None:
+    """Grant exactly one profile pill and return the remaining pills in its box.
 
-    Guarded by a row lock and a unique wallet ledger idempotency key. Never
-    require a notification to have been sent, and never mint reward pills.
+    The completion timestamp is the idempotency guard. Profile rewards share
+    the existing three-pill cash-out ledger with direct referral purchases.
     """
     from apps.accounts.models import UserProfile
+    from .gamification import POINTS_PER_PILL, cash_out_completed_pills
+
     profile, _ = UserProfile.objects.select_for_update().get_or_create(user_id=user_id)
     user = User.objects.get(pk=user_id, brand_id=brand_id)
     if profile.profile_reward_granted_at or not (
-        user.full_name and user.birth_date and user.phone_number and profile.living_location and profile.gender
+        user.full_name and user.birth_date and user.phone_number
+        and profile.living_location and profile.gender
     ):
-        return False
-    brand_currency = Brand.objects.values_list("currency", flat=True).get(pk=brand_id)
-    # 10,000 is denominated in toman; never credit 10,000 dollars/other units.
-    if brand_currency not in {"T", "IRT"}:
-        return False
-    _credit_wallet_once(
+        return None
+
+    currency = Brand.objects.values_list("currency", flat=True).get(pk=brand_id)
+    if currency not in {"T", "IRT"}:
+        return None
+
+    now = timezone.now()
+    ReferralReward.objects.create(
         user_id=user_id,
         brand_id=brand_id,
-        amount=Decimal("10000"),
-        idempotency_key=f"profile-completion-cash:{brand_id}:{user_id}",
-        description="One-time profile completion bonus (10,000 toman)",
+        reward_type="profile_point",
+        amount=Decimal("1"),
+        cash_value=Decimal("10000"),
+        currency=currency,
+        status=ReferralReward.RewardStatus.PROCESSED,
+        processed_at=now,
+        notes="One-time profile completion pill",
     )
-    profile.profile_reward_granted_at = timezone.now()
+    account = _locked_reward_account(user_id=user_id, brand_id=brand_id)
+    account.lifetime_points += Decimal("1")
+    account.save(update_fields=["lifetime_points", "updated_at"])
+
+    # Count awarded pills before cash-out changes their is_cashed_out flags.
+    awarded_count = ReferralReward.objects.filter(
+        user_id=user_id,
+        brand_id=brand_id,
+        reward_type__in=["normal_point", "profile_point"],
+        status=ReferralReward.RewardStatus.PROCESSED,
+        amount=Decimal("1"),
+    ).count()
+    remaining = (-awarded_count) % POINTS_PER_PILL
+
+    profile.profile_reward_granted_at = now
     profile.save(update_fields=["profile_reward_granted_at", "updated_at"])
-    return True
+    cash_out_completed_pills(user_id=user_id, brand_id=brand_id)
+    return remaining
+
+
+def grant_profile_completion_reward(*, user_id: int, brand_id: int) -> bool:
+    """Preserve the boolean caller contract for the once-only profile reward."""
+    return grant_profile_completion_pill(user_id=user_id, brand_id=brand_id) is not None
 
 
 def active_purchase_reward_percent(*, user_id: int, brand_id: int, at=None):

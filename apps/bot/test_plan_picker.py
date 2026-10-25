@@ -202,7 +202,7 @@ class PlanPickerTests(TestCase):
                          [f"select_plan_{second.pk}", f"select_plan_{first.pk}"])
 
     @override_settings(TEMP_DISABLE_2_3_MONTH_PLANS=True)
-    def test_royal_two_month_blocked_but_normal_two_month_visible(self):
+    def test_royal_two_month_enabled_and_normal_three_month_blocked(self):
         normal_two = self.plan(volume=30, months=2, category="normal")
         normal_three = self.plan(volume=30, months=3, category="normal")
         royal_two = self.plan(volume=40, months=2, category="royal")
@@ -214,7 +214,7 @@ class PlanPickerTests(TestCase):
         self.assertEqual(self.picker()["stage"], "ranges")
         self.feed(callback="purchase_subscription", user_id=1)
         self.feed(callback="purchase_category_royal", user_id=1)
-        self.assertTrue(any("🔴" in b.text and "۲" in b.text for b in self.buttons()))
+        self.assertTrue(any("🔴" not in b.text and "۲" in b.text for b in self.buttons()))
         self.feed(callback=f"select_plan_{royal_two.pk}", user_id=1)
         self.assertEqual(Order.objects.count(), 0)
         self.feed(callback=f"purchase_plan_{normal_three.pk}", user_id=1)

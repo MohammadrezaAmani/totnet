@@ -65,7 +65,17 @@ def available_purchase_credit(*, user_id, brand_id, currency):
     wallet = Wallet.objects.filter(
         user_id=user_id, brand_id=brand_id, currency=currency
     ).first()
-    return spendable_wallet_balance(wallet) if wallet else Decimal("0")
+    if not wallet:
+        return Decimal("0")
+    return checkout_rounded_credit(spendable_wallet_balance(wallet), currency)
+
+
+def checkout_rounded_credit(amount, currency):
+    """Return usable credit without spending fractional thousand-toman balances."""
+    value = max(Decimal(str(amount)), Decimal("0"))
+    if currency in ("T", "IRT"):
+        return (value // Decimal("1000")) * Decimal("1000")
+    return value
 
 
 @transaction.atomic
@@ -145,6 +155,8 @@ def pay_order_with_wallet(
         Order.OrderStatus.AWAITING_PAYMENT,
     ):
         raise WalletCheckoutError("Order cannot be paid in its current state")
+    if not order.use_wallet_credit:
+        raise WalletCheckoutError("Wallet credit is disabled for this order")
     from apps.subscriptions.policy import temporary_duration_blocked
     if temporary_duration_blocked(order.plan):
         raise WalletCheckoutError("Requested duration is temporarily unavailable")
@@ -158,7 +170,10 @@ def pay_order_with_wallet(
     if wallet.currency != order.currency:
         raise WalletCheckoutError("Wallet currency does not match order currency")
 
-    amount_to_apply = min(spendable_wallet_balance(wallet), remaining_due)
+    amount_to_apply = min(
+        checkout_rounded_credit(spendable_wallet_balance(wallet), order.currency),
+        remaining_due,
+    )
     if not allow_partial and amount_to_apply < remaining_due:
         raise WalletCheckoutError("Insufficient wallet balance")
     if amount_to_apply <= 0:

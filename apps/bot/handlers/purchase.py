@@ -317,34 +317,18 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             f"🛒 <b>{escape(self.CATEGORY_LABELS.get(plan.service_category, plan.get_service_category_display()))}</b>\n"
             f"📋 {compact_plan_specs(plan)}\n\n"
             f"💳 <b>مبلغ پرداختی شما:</b> {self.format_price(self.payable_plan_price(plan, credit), plan.currency)}\n"
-            f"💰 قیمت بدون احتساب امتیازات نقد: {self.format_price(plan.price, plan.currency)}"
+            f"💰 قیمت بدون احتساب امتیازات نقد: {self.format_price(plan.discounted_price, plan.currency)}"
         )
         if plan.discounted_price != plan.price:
             text += f"\n🔥 قیمت با تخفیف عمومی: {self.format_price(plan.discounted_price, plan.currency)}"
 
-        keyboard = self.create_keyboard(
-            [
-                [
-                    {
-                        "text": "✅ ادامه و رفتن به خرید",
-                        "callback_data": f"purchase_plan_{plan_id}",
-                        "style": "success",
-                    }
-                ],
-                [
-                    {
-                        "text": "👤 خرید برای دیگری",
-                        "callback_data": f"buy_for_other_{plan_id}",
-                    },
-                ],
-                [
-                    {
-                        "text": "🔙 بازگشت به پلن‌ها",
-                        "callback_data": back_callback,
-                    }
-                ],
-            ]
-        )
+        keyboard = self.create_keyboard([
+            [{"text": "✅ ادامه و پرداخت", "callback_data": f"purchase_plan_{plan_id}", "style": "success"}],
+            [{"text": "💰 خرید بدون استفاده از امتیازات", "callback_data": f"purchase_nocredit_{plan_id}"}],
+        [{"text": "👤 خرید برای دیگران", "callback_data": f"buy_for_other_{plan_id}"}],
+        [{"text": "👤 خرید برای دیگران بدون استفاده از امتیازات", "callback_data": f"buy_for_other_nocredit_{plan_id}"}],
+            [{"text": "🔙 بازگشت به پلن‌ها", "callback_data": back_callback}],
+        ])
 
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
@@ -352,7 +336,8 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         await callback.answer()
 
     async def initiate_purchase(
-        self, callback: types.CallbackQuery, plan_id: int, purchase_type: str = "self"
+        self, callback: types.CallbackQuery, plan_id: int, purchase_type: str = "self",
+        *, use_wallet_credit: bool = True,
     ):
         """Initiate purchase process"""
         user, _ = await self.get_or_create_user(callback.from_user)
@@ -392,6 +377,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             discount_amount=plan.price - plan.discounted_price,
             final_price=plan.discounted_price,
             currency=plan.currency,
+            use_wallet_credit=use_wallet_credit,
             status=Order.OrderStatus.PENDING,
         )
 
@@ -473,6 +459,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         callback: types.CallbackQuery,
         subscription_id: int,
         plan_id: int | None,
+        *, use_wallet_credit: bool = True,
     ):
         """Create a new order for the selected renewal plan and preserve the source owner."""
         user, _ = await self.get_or_create_user(callback.from_user)
@@ -531,6 +518,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             discount_amount=plan.price - plan.discounted_price,
             final_price=plan.discounted_price,
             currency=plan.currency,
+            use_wallet_credit=use_wallet_credit,
             status=Order.OrderStatus.PENDING,
             notes=(
                 f"Renewal/re-purchase requested from subscription {subscription.pk}; "
@@ -655,7 +643,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 and temporary_duration_blocked(order.plan)):
             return TEMPORARILY_UNAVAILABLE_TEXT, self.get_back_keyboard("purchase_subscription")
         if order.status in {Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT}:
-            if await self.purchase_credit(user, order.currency) > 0:
+            if order.use_wallet_credit and await self.purchase_credit(user, order.currency) > 0:
                 try:
                     await sync_to_async(pay_order_with_wallet)(
                         order_id=str(order.order_id), user_id=user.pk,
@@ -683,20 +671,19 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 ]),
             )
         plan = order.plan
-        plan_code = connectix_plan_name(
-            max_users=plan.max_users, plan_type=plan.plan_type,
-            traffic_limit_gb=plan.traffic_limit_gb,
-            duration_value=plan.duration_value, duration_unit=plan.duration_unit,
-            service_category=plan.service_category,
-        )
         text = (
             "💳 <b>انتخاب روش پرداخت</b>\n\n"
-            f"Plan : <code>{escape(plan_code)}</code>\n"
-            f"مبلغ قابل پرداخت: {self._copyable_amount(remaining_due, order.currency)}\n\n"
-            "روش پرداخت را انتخاب کنید:"
+            f"💰 مبلغ قابل پرداخت: {self._copyable_amount(remaining_due, order.currency)}\n\n"
+            "💳 روش پرداخت را انتخاب کنید:"
         )
         if order.order_type == Order.OrderType.GIFT:
-            text = '🎁 <b>خرید هدیه</b>\nلینک یک‌بارمصرف بعد از تأیید پرداخت برای شما فرستاده می‌شود.\n\n' + text
+            hours = self.brand.gift_expiry_hours
+            text = (
+                "🎁 <b>خرید برای دیگران</b>\n"
+                "بعد از تایید واریز،لینک مخصوص این خرید برای شما ارسال میشود.\n"
+                f"اگر کاربر نهایی این اشتراک تا {hours}ساعت آینده با این لینک وارد ربات شده و اشتراکش را ثبت کند،\n"
+                "شما امتیاز این معرفی را دریافت خواهید کرد\n\n"
+            ) + text
         await self.update_user_state(
             user,
             BotState.StateType.PURCHASE_FLOW,
@@ -712,8 +699,8 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             for row in keyboard.inline_keyboard for button in row
         ):
             text = text.replace(
-                "روش پرداخت را انتخاب کنید:",
-                "⚠️ در حال حاضر روش پرداختی فعال نیست.\nبرای راهنمایی با پشتیبانی هماهنگ کنید.",
+                "💳 روش پرداخت را انتخاب کنید:",
+                "⚠️ در حال حاضر روش پرداختی فعال نیست.",
             )
             keyboard.inline_keyboard.insert(0, [types.InlineKeyboardButton(
                 text="🛟 پشتیبانی", callback_data="support"
@@ -792,13 +779,17 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                     {
                         "text": "💳 کارت‌به‌کارت",
                         "callback_data": f"payment_{method.payment_type}_{order.order_id}",
+                        "style": method.button_style,
                     }
                 ]
             )
 
         total_paid = await self._confirmed_order_payments(order)
         remaining_due = max(order.final_price - total_paid, 0)
-        wallet_amount = min(await self.purchase_credit(user, order.currency), remaining_due)
+        wallet_amount = (
+            min(await self.purchase_credit(user, order.currency), remaining_due)
+            if order.use_wallet_credit else 0
+        )
         if wallet_amount > 0:
             wallet_label = (
                 "💰 پرداخت کامل از کیف پول"
@@ -819,7 +810,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             )
 
         keyboard_buttons.append(
-            [{"text": "❌ انصراف", "callback_data": f"cancel_purchase_{order.order_id}"}]
+            [{"text": "🔙 بازگشت", "callback_data": f"cancel_purchase_{order.order_id}"}]
         )
         return self.create_keyboard(keyboard_buttons)
 
@@ -832,18 +823,22 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         except WalletCheckoutError:
             await callback.answer("این سفارش قابل انصراف خودکار نیست؛ با پشتیبانی هماهنگ کنید.", show_alert=True)
             return
+        cancelled_plan_id = await Order.objects.filter(
+            order_id=order_id, user=user, brand=self.brand
+        ).values_list("plan_id", flat=True).aget()
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-        text = "سفارش لغو شد."
         if returned:
             currency = await Order.objects.filter(
                 order_id=order_id, user=user, brand=self.brand
             ).values_list("currency", flat=True).aget()
-            text += f"\n💰 {self.format_price(returned, currency)} به موجودی نقد شما برگشت."
-        await self.edit_message_with_keyboard(
-            callback.message.chat.id, callback.message.message_id, text,
-            self.get_back_keyboard("purchase_subscription"),
-        )
-        await callback.answer()
+            await self.edit_message_with_keyboard(
+                callback.message.chat.id, callback.message.message_id,
+                f"💰 {self.format_price(returned, currency)} به موجودی نقد شما برگشت.",
+                self.get_back_keyboard("purchase_subscription"),
+            )
+            await callback.answer()
+            return
+        await self.show_plan_details(callback, cancelled_plan_id)
 
     @staticmethod
     async def _confirmed_order_payments(order):
@@ -861,6 +856,13 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             order_id=order_id, user=user, brand=self.brand
         ).values_list("plan_id", flat=True).afirst()
         if requested_plan:
+            credit_allowed = await Order.objects.filter(
+                order_id=order_id, user=user, brand=self.brand,
+                use_wallet_credit=True,
+            ).aexists()
+            if not credit_allowed:
+                await callback.answer("برای این سفارش استفاده از امتیازات غیرفعال است.", show_alert=True)
+                return
             plan = await SubscriptionPlan.objects.filter(pk=requested_plan).afirst()
             if plan and temporary_duration_blocked(plan):
                 await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
@@ -927,27 +929,73 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             else "✅ پرداخت با موفقیت انجام شد!"
         )
 
+    @staticmethod
+    def _card_button_style(color):
+        """Map editable card swatches to Telegram's supported button styles."""
+        if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            return "primary"
+        r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+        if g > r * 1.2 and g > b * 1.05:
+            return "success"
+        if r > g * 1.2 and r > b * 1.05:
+            return "danger"
+        return "primary"
+
     async def show_card_transfer_payment(self, callback: types.CallbackQuery, order_id: str):
-        """One card/amount screen after payment method: no intermediate bank menu."""
         user, _ = await self.get_or_create_user(callback.from_user)
-        order = await Order.objects.select_related('plan').filter(
+        order = await Order.objects.select_related("plan").filter(
             order_id=order_id, user=user, brand=self.brand,
             status__in=[Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT],
         ).afirst()
         if not order or max(order.final_price - await self._confirmed_order_payments(order), 0) <= 0:
-            await callback.answer('این سفارش قابل پرداخت نیست.', show_alert=True)
+            await callback.answer("این سفارش قابل پرداخت نیست.", show_alert=True)
             return
         if temporary_duration_blocked(order.plan):
             await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
             return
         if not await self.brand.payment_methods.filter(
-            payment_type='card_transfer', is_enabled=True,
+            payment_type="card_transfer", is_enabled=True,
         ).aexists():
-            await callback.answer('روش کارت‌به‌کارت فعال نیست.', show_alert=True)
+            await callback.answer("روش کارت‌به‌کارت فعال نیست.", show_alert=True)
             return
-        card = await self.brand.payment_cards.filter(is_active=True).order_by('display_order', 'pk').afirst()
+        cards = [card async for card in self.brand.payment_cards.filter(
+            is_active=True).order_by("display_order", "pk")]
+        if not cards:
+            await callback.answer("کارت بانکی فعالی ثبت نشده است.", show_alert=True)
+            return
+        remaining = max(order.final_price - await self._confirmed_order_payments(order), 0)
+        rows = [[{
+            "text": f"🏦 {card.bank_name} · {card.card_number[-4:]}",
+            "callback_data": f"select_card_{card.pk}_{order_id}",
+            "style": self._card_button_style(card.card_color),
+        }] for card in cards]
+        rows.append([{"text": "🔙 روش‌های پرداخت", "callback_data": f"payment_methods_{order_id}"}])
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id,
+            "💳 <b>انتخاب حساب مقصد</b>\n\n"
+            f"💰 مبلغ واریز: {self._copyable_amount(remaining, order.currency)}",
+            self.create_keyboard(rows),
+        )
+        await callback.answer()
+
+    async def show_selected_card(self, callback: types.CallbackQuery, order_id: str, card_id: int):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        order = await Order.objects.select_related("plan").filter(
+            order_id=order_id, user=user, brand=self.brand,
+            status__in=[Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT],
+        ).afirst()
+        if not order or max(order.final_price - await self._confirmed_order_payments(order), 0) <= 0:
+            await callback.answer("این سفارش قابل پرداخت نیست.", show_alert=True)
+            return
+        if temporary_duration_blocked(order.plan):
+            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
+            return
+        if not await self.brand.payment_methods.filter(payment_type="card_transfer", is_enabled=True).aexists():
+            await callback.answer("روش کارت‌به‌کارت فعال نیست.", show_alert=True)
+            return
+        card = await self.brand.payment_cards.filter(pk=card_id, is_active=True).afirst()
         if not card:
-            await callback.answer('کارت بانکی فعالی ثبت نشده است.', show_alert=True)
+            await callback.answer("حساب انتخاب‌شده غیرفعال است.", show_alert=True)
             return
         from apps.orders.checkout_links import reserve_card_quote, QuoteUnavailable
         try:
@@ -955,35 +1003,28 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 order_id=order_id, user_id=user.pk, brand_id=self.brand.pk, card_id=card.pk,
             )
         except (QuoteUnavailable, Order.DoesNotExist, PaymentCard.DoesNotExist) as exc:
-            await callback.answer(str(exc) if isinstance(exc, QuoteUnavailable) else 'اطلاعات پرداخت در دسترس نیست.', show_alert=True)
+            await callback.answer(str(exc) if isinstance(exc, QuoteUnavailable) else "اطلاعات پرداخت در دسترس نیست.", show_alert=True)
             return
         await self.update_user_state(user, BotState.StateType.PAYMENT_PROCESS, {
-            'step': PurchaseStep.CARD_TRANSFER, 'order_id': order_id, 'card_id': card.pk,
-            'action': None,
+            "step": PurchaseStep.CARD_TRANSFER, "order_id": order_id,
+            "card_id": card.pk, "action": None,
         })
-        extra = quote.expected_amount - quote.base_amount
         text = (
-            '💳 <b>کارت‌به‌کارت</b>\n\n'
-            f'💰 مبلغ واریز: {self._copyable_amount(quote.expected_amount, order.currency)}\n'
-            f'🏦 بانک {escape(card.bank_name)}\n'
-            f'💳 شماره کارت: <code>{escape(card.card_number)}</code>\n'
-            f'👤 {escape(card.cardholder_name)}\n\n'
-            'روی مبلغ بزنید تا کپی شود؛ لطفاً دقیقاً همین مبلغ را واریز کنید.\n'
-            'بعد از واریز، رسید متنی یا تصویری را بفرستید.'
+            "💳 <b>کارت‌به‌کارت</b>\n\n"
+            f"💳 شماره کارت: <code>{escape(card.card_number)}</code>\n"
+            f"👤 صاحب حساب: {escape(card.cardholder_name)}\n"
+            f"🏦 بانک: {escape(card.bank_name)}\n"
+            f"💰 مبلغ واریز: {self._copyable_amount(quote.expected_amount, order.currency)}\n\n"
+            "لطفا روی مبلغ ضربه بزنید تا عینا کپی شود و همین مبلغ را واریز کنید."
         )
-        if extra > 0:
-            text += '\n\nمبلغ شامل یک اختلاف کوچک برای شناسایی آسان‌تر واریز شماست.'
         kb = self.create_keyboard([
-            [{'text': '✅ واریز کردم', 'callback_data': f'payment_done_{order_id}'}],
-            [{'text': '🔙 روش‌های پرداخت', 'callback_data': f'payment_methods_{order_id}'}],
+            [{"text": "✅ واریز کردم", "callback_data": f"payment_done_{order_id}"}],
+            [{"text": "🔙 انتخاب حساب", "callback_data": f"payment_card_transfer_{order_id}"}],
         ])
-        await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, kb)
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, kb,
+        )
         await callback.answer()
-
-    async def show_selected_card(self, callback: types.CallbackQuery, order_id: str, card_id: int):
-        # Old Telegram keyboards may still exist. Never let them bypass the
-        # currently configured single-card checkout or its reserved quote.
-        await self.show_card_transfer_payment(callback, order_id)
 
     async def create_subscription(self, order: Order):
         """Delegate provisioning to the provider-aware subscription service."""

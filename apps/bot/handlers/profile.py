@@ -26,6 +26,15 @@ from utils.phone import normalize_iranian_phone, is_valid_iranian_phone
 logger = logging.getLogger(__name__)
 
 
+def _profile_pill_message(remaining: int) -> str:
+    count = str(remaining).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+    return (
+        "پروفایل شما تکمیل شد\n\n"
+        "یک 💊 دریافت کردید\n"
+        f"🦠دریافت تنها{count} قرص لازمه تا نقد شدن کامل یک امتیاز"
+    )
+
+
 class ProfileHandler(BaseHandler):
     """Handle user profile operations"""
 
@@ -145,7 +154,7 @@ class ProfileHandler(BaseHandler):
         """
 
         keyboard = self.create_keyboard([
-            [{"text": "🎁 تکمیل پروفایل و دریافت اعتبار", "callback_data": "complete_profile"}],
+            [{"text": "🎁 تکمیل پروفایل و دریافت قرص", "callback_data": "complete_profile"}],
             [
                 {"text": "🎂 تاریخ تولد", "callback_data": "edit_birth_date"},
                 {"text": "👨‍💼 نام کامل", "callback_data": "edit_full_name"},
@@ -185,10 +194,12 @@ class ProfileHandler(BaseHandler):
         profile, _ = await UserProfile.objects.aget_or_create(user=user)
         profile.gender = gender
         await profile.asave(update_fields=["gender", "updated_at"])
-        from apps.referrals.services import grant_profile_completion_reward
-        granted = await sync_to_async(grant_profile_completion_reward)(user_id=user.pk, brand_id=self.brand.pk)
+        from apps.referrals.services import grant_profile_completion_pill
+        remaining = await sync_to_async(grant_profile_completion_pill)(
+            user_id=user.pk, brand_id=self.brand.pk
+        )
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-        text = "✅ انتخاب شما ذخیره شد." + ("\n🎁 ۱۰٬۰۰۰ تومان اعتبار نقدی به کیف پول شما افزوده شد." if granted else "")
+        text = _profile_pill_message(remaining) if remaining is not None else "✅ انتخاب شما ذخیره شد."
         await self._render(callback, text, self.create_keyboard([
             [{"text": "👤 پروفایل من", "callback_data": "my_profile"}],
             [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
@@ -367,7 +378,7 @@ class ProfileHandler(BaseHandler):
             await self.update_user_state(
                 user,
                 BotState.StateType.PROFILE_EDIT,
-                {"field": next_field, "step": "waiting_input"},
+                {"completion_flow": True, "field": next_field, "step": "waiting_input"},
             )
             await self.send_profile_prompt(
                 message.chat.id,
@@ -376,7 +387,7 @@ class ProfileHandler(BaseHandler):
                 self.get_back_keyboard("edit_profile"),
             )
             return
-        from apps.referrals.services import grant_profile_completion_reward
+        from apps.referrals.services import grant_profile_completion_pill
 
         profile = await UserProfile.objects.filter(user=user).afirst()
         if state.state_data.get("completion_flow") and not (profile and profile.gender):
@@ -390,16 +401,12 @@ class ProfileHandler(BaseHandler):
                 ]),
             )
             return
-        granted = await sync_to_async(grant_profile_completion_reward)(
+        remaining = await sync_to_async(grant_profile_completion_pill)(
             user_id=user.pk, brand_id=self.brand.pk
         )
         await self.clear_previous_keyboard(message.chat.id, user)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
-        text = "✅ پروفایل شما ذخیره شد." + (
-            "\n🎁 ۱۰٬۰۰۰ تومان اعتبار نقدی تکمیل پروفایل به کیف پول شما اضافه شد."
-            if granted
-            else ""
-        )
+        text = _profile_pill_message(remaining) if remaining is not None else "✅ پروفایل شما ذخیره شد."
         await self.send_message_with_keyboard(
             message.chat.id,
             text,
