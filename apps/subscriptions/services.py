@@ -104,6 +104,8 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
             vpn_user_email=vpn_email,
             owner=order.recipient or order.user,
             is_gift=order.order_type == Order.OrderType.GIFT,
+            display_name=(f"{order.user.full_name or order.user.username}_others"[:100]
+                          if order.order_type == Order.OrderType.GIFT and not order.recipient_id else ""),
             starts_at=start_date,
             expires_at=end_date,
             traffic_limit_gb=order.plan.traffic_limit_gb,
@@ -319,7 +321,8 @@ async def provision_connectix_subscription(subscription: Subscription) -> bool:
             request = ConnectixProvisioningRequest(
                 subscription_id=str(subscription.subscription_id),
                 display_name=(
-                    (subscription.display_name or "اشتراک خرید برای دیگران")
+                    (subscription.display_name or
+                     f"{subscription.user.full_name or subscription.user.username}_others"[:100])
                     if unclaimed_gift else (
                         subscription.display_name
                         or subscription.owner.full_name

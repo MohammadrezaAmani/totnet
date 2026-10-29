@@ -119,11 +119,9 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
     gift = (GiftVoucher.objects.select_for_update().select_related('order', 'order__plan')
             .filter(token=token, order__brand_id=brand_id).first())
     now = timezone.now()
-    if not gift or gift.expires_at <= now:
+    if not gift or (gift.expires_at <= now and not gift.claimed_by_id):
         raise GiftClaimError('لینک هدیه نامعتبر یا منقضی شده است.')
-    if gift.claimed_by_id:
-        if gift.claimed_by_id == user_id:
-            return gift.order
+    if gift.claimed_by_id and gift.claimed_by_id != user_id:
         raise GiftClaimError('این کد هدیه قبلاً استفاده شده است.')
     order = Order.objects.select_for_update().get(pk=gift.order_id)
     if order.status not in (Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING, Order.OrderStatus.COMPLETED):
@@ -132,16 +130,26 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
         raise GiftClaimError('نمی‌توانید هدیه خودتان را دریافت کنید.')
     user = User.objects.select_for_update().get(pk=user_id, brand_id=brand_id, is_active=True)
     if order.recipient_id:
+        if order.recipient_id == user_id:
+            return order
         raise GiftClaimError('این هدیه قبلاً دریافت شده است.')
-    gift.claimed_by = user
-    gift.claimed_at = now
-    gift.new_member_at_claim = bool(newly_registered)
-    gift.save(update_fields=['claimed_by', 'claimed_at', 'new_member_at_claim'])
+    if not gift.claimed_by_id:
+        gift.claimed_by = user
+        gift.claimed_at = now
+        gift.new_member_at_claim = bool(newly_registered)
+        gift.save(update_fields=['claimed_by', 'claimed_at', 'new_member_at_claim'])
+    # Reserve the voucher for this Telegram account, but do not transfer the
+    # paid VPN credentials until its initial profile is complete.
+    from apps.accounts.models import UserProfile
+    profile = UserProfile.objects.filter(user_id=user_id).first()
+    if not (user.full_name and user.phone_number and profile and
+            (profile.devices or profile.device_type)):
+        return order
     order.recipient = user
     order.recipient_claimed_at = now
     order.save(update_fields=['recipient', 'recipient_claimed_at', 'updated_at'])
 
-    if newly_registered and not user.referred_by_id:
+    if gift.new_member_at_claim and not user.referred_by_id:
         # Invitation is counted only when this Telegram ID was actually created by
         # this /start. Returning users never acquire a new referral relationship.
         from django.db.models import F
@@ -158,13 +166,8 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
             user.save(update_fields=['referred_by', 'updated_at'])
             User.objects.filter(pk=order.user_id).update(referral_count=F('referral_count') + 1)
             ReferralLink.objects.filter(pk=link.pk).update(conversion_count=F('conversion_count') + 1)
-            from apps.referrals.services import _queue_referrer_join_safely
-            transaction.on_commit(
-                lambda referrer_id=order.user_id, referee_id=user.pk, b=brand_id:
-                    _queue_referrer_join_safely(
-                        referrer_id=referrer_id, referee_id=referee_id, brand_id=b
-                    )
-            )
+            # Gift entry has its own single invitation notice after activation.
+            # Do not emit the ordinary join notice as a duplicate.
 
     # Reuse the paid gift's account, including any already provisioned remote account.
     from apps.subscriptions.models import Subscription
@@ -172,7 +175,8 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
     subscription = Subscription.objects.select_for_update().filter(order=order).first()
     if subscription:
         subscription.owner = user
-        subscription.save(update_fields=['owner', 'updated_at'])
+        subscription.display_name = (user.full_name or user.username)[:100]
+        subscription.save(update_fields=['owner', 'display_name', 'updated_at'])
     else:
         provider = order.plan.vpn_provider if order.plan.vpn_provider_id else VPNProvider.objects.filter(
             brand_id=brand_id, is_default=True, status=VPNProvider.ProviderStatus.ACTIVE
@@ -204,3 +208,24 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
             lambda paid_id=payment_id: _enqueue_claimed_gift_reward(paid_id)
         )
     return order
+
+
+@transaction.atomic
+def complete_claimed_gifts(*, user_id: int, brand_id: int) -> list[int]:
+    """Finish held handovers after the recipient completed initial onboarding.
+
+    Re-running the operation is safe and cannot transfer another user's gift.
+    """
+    vouchers = list(GiftVoucher.objects.filter(
+        claimed_by_id=user_id, order__brand_id=brand_id,
+        order__recipient__isnull=True,
+    ).values_list('token', flat=True))
+    completed = []
+    for token in vouchers:
+        order = claim_gift(token=token, brand_id=brand_id, user_id=user_id,
+                           newly_registered=False)
+        from apps.subscriptions.models import Subscription
+        sub_pk = Subscription.objects.filter(order=order).values_list('pk', flat=True).first()
+        if sub_pk:
+            completed.append(sub_pk)
+    return completed

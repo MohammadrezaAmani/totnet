@@ -165,23 +165,18 @@ def provision_paid_order(order_pk: int):
         try:
             from utils.message import broadcast_message
 
-            activation_lines = [
-                f"✅ <b>اشتراک «{escape(subscription.plan.name)}» فعال شد.</b>"
-            ]
-            if subscription.connectix_username:
-                activation_lines.append(
-                    f"👤 نام کاربری: <code>{escape(subscription.connectix_username)}</code>"
-                )
-            if subscription.connectix_password:
-                activation_lines.append(
-                    f"🔑 رمز عبور: <code>{escape(subscription.connectix_password)}</code>"
-                )
+            from apps.subscriptions.presentation import connectix_account_message
+            activation_text = (
+                connectix_account_message(subscription)
+                if subscription.connectix_username else
+                f"✅ اشتراک «{escape(subscription.plan.name)}» فعال شد."
+            )
             # Subscription URLs and QR codes are delivered only on explicit
             # account retrieval, never in unsolicited activation notices.
             broadcast_message(
                 brand_id=order.brand_id,
                 user_ids=list(telegram_ids),
-                text="\n".join(activation_lines),
+                text=activation_text,
                 buttons_data=[
                     [
                         {

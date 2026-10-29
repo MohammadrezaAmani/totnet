@@ -100,3 +100,35 @@ def recover_confirmed_admin_receipt_deletions():
         except Exception:
             logger.exception("Could not enqueue deletion recovery for payment %s", payment_id)
     return count
+
+
+@shared_task
+def remind_unclaimed_paid_gifts(limit: int = 200):
+    """Once-only reminder for paid links 24h after issue, if unclaimed."""
+    from datetime import timedelta
+    from django.utils import timezone
+    from apps.orders.models import GiftVoucher
+    from apps.orders.checkout_links import paid_gift_link
+    from apps.referrals.tasks import _queue_once
+
+    cutoff = timezone.now() - timedelta(hours=24)
+    vouchers = GiftVoucher.objects.filter(
+        created_at__lte=cutoff, expires_at__gt=timezone.now(),
+        claimed_by__isnull=True, order__recipient__isnull=True,
+        order__brand__status="active",
+    ).select_related("order", "order__user", "order__brand").order_by("created_at")[:limit]
+    queued = 0
+    for voucher in vouchers:
+        url = paid_gift_link(voucher)
+        if url and _queue_once(
+            user=voucher.order.user,
+            brand_id=voucher.order.brand_id,
+            notification_type="custom",
+            dedupe_key=f"gift-unclaimed-reminder:{voucher.pk}",
+            text=("⏰ ۲۴ ساعت از آماده‌شدن لینک اشتراک خرید برای دیگران گذشت. "
+                  "کاربر نهایی هنوز وارد ربات نشده است.\n"
+                  "لطفاً لینک را برای او ارسال کنید:\n" + url),
+            metadata={"gift_voucher_id": voucher.pk, "event": "gift_unclaimed_reminder"},
+        ):
+            queued += 1
+    return queued

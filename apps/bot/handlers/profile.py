@@ -336,7 +336,7 @@ class ProfileHandler(BaseHandler):
                 if born > timezone.localdate() or born.year < 1900:
                     raise ValueError()
                 user.birth_date = born
-            except ValueError, OverflowError:
+            except (ValueError, OverflowError):
                 error = "تاریخ تولد معتبر نیست؛ آن را به شکل سال/ماه/روز وارد کنید."
         elif field == "phone":
             phone = normalize_iranian_phone(value)

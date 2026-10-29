@@ -43,6 +43,10 @@ app.conf.beat_schedule = {
         "task": "apps.vpn_providers.tasks.cleanup_old_stats",
         "schedule": 86400.0,
     },
+    "remind-unclaimed-paid-gifts": {
+        "task": "apps.orders.tasks.remind_unclaimed_paid_gifts",
+        "schedule": 900.0,
+    },
     "recover-confirmed-admin-receipt-deletions": {
         "task": "apps.orders.tasks.recover_confirmed_admin_receipt_deletions",
         "schedule": 300.0,

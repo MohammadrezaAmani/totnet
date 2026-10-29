@@ -81,6 +81,12 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 plan.offer_expires_at is None or plan.offer_expires_at > now
             )]
 
+        if await Subscription.objects.filter(brand=self.brand).filter(
+            Q(user=user) | Q(owner=user)
+        ).aexists():
+            catalog = [p for p in catalog if not p.is_trial]
+        else:
+            catalog.sort(key=lambda p: (not p.is_trial, p.display_order, p.pk))
         total = len(catalog)
         page_size = 10
         last_page = max(1, (total + page_size - 1) // page_size)
@@ -97,7 +103,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         elif category:
             title = f"🛒 {self.CATEGORY_LABELS.get(category, 'پلن‌های اشتراک')}"
         else:
-            title = f"🛒 پلن‌های اشتراک {escape(self.brand.name)}"
+            title = "🛒 پلن‌های اشتراک"
 
         text = f"{title}\n\nلطفاً یکی از پلن‌های زیر را انتخاب کنید:"
         if last_page > 1:
@@ -161,7 +167,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         )
 
         text = f"""
-🛒 خرید اشتراک {escape(self.brand.name)}
+🛒 خرید اشتراک
 
 نوع سرویس را انتخاب کنید. برای مقایسهٔ سرویس‌ها می‌توانید ابتدا راهنمای انتخاب سرویس را ببینید.
         """
@@ -174,17 +180,6 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             [{"text": "📖 راهنمای انتخاب سرویس", "callback_data": "service_guide"}],
             [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
         ])
-        pending = await Order.objects.filter(
-            brand=self.brand, user=user,
-            status__in=[Order.OrderStatus.PENDING, Order.OrderStatus.AWAITING_PAYMENT],
-            payments__status=Payment.PaymentStatus.CONFIRMED,
-            payments__payment_method=Payment.PaymentMethod.WALLET,
-        ).order_by("-created_at").afirst()
-        if pending:
-            buttons.insert(0, [{
-                "text": "💳 ادامه سفارش نیمه‌پرداخت‌شده",
-                "callback_data": f"payment_methods_{pending.order_id}",
-            }])
         keyboard = self.create_keyboard(buttons)
         await self.edit_message_with_keyboard(
             callback.message.chat.id, callback.message.message_id, text, keyboard
@@ -284,6 +279,11 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             await callback.answer("❌ پلن یافت نشد.", show_alert=True)
             return
 
+        if plan.is_trial and await Subscription.objects.filter(
+            brand=self.brand,
+        ).filter(Q(user=user) | Q(owner=user)).aexists():
+            await callback.answer("اکانت تست فقط برای کاربر بدون سابقه اشتراک است.", show_alert=True)
+            return
         if not await is_plan_visible_in_bot(plan, self.brand.pk):
             await callback.answer("❌ این پلن در دسترس نیست.", show_alert=True)
             return
@@ -357,11 +357,23 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             await callback.answer("❌ پلن یافت نشد.", show_alert=True)
             return
 
+        if plan.is_trial and await Subscription.objects.filter(
+            brand=self.brand,
+        ).filter(Q(user=user) | Q(owner=user)).aexists():
+            await callback.answer("اکانت تست فقط برای کاربر بدون سابقه اشتراک است.", show_alert=True)
+            return
         if not await is_plan_visible_in_bot(plan, self.brand.pk):
             await callback.answer("❌ این پلن در دسترس نیست.", show_alert=True)
             return
         if temporary_duration_blocked(plan):
             await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
+            return
+
+        if plan.is_trial and (purchase_type != "self" or await Order.objects.filter(
+            brand=self.brand, user=user, plan__is_trial=True,
+        ).exclude(status__in=[Order.OrderStatus.CANCELLED, Order.OrderStatus.REFUNDED,
+                              Order.OrderStatus.FAILED]).aexists()):
+            await callback.answer("اکانت تست قبلاً استفاده شده یا قابل هدیه‌دادن نیست.", show_alert=True)
             return
 
         order = await Order.objects.acreate(
@@ -687,7 +699,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 "🎁 <b>خرید برای دیگران</b>\n"
                 "بعد از تایید واریز،لینک مخصوص این خرید برای شما ارسال میشود.\n"
                 f"اگر کاربر نهایی این اشتراک تا {hours}ساعت آینده با این لینک وارد ربات شده و اشتراکش را ثبت کند،\n"
-                "شما امتیاز این معرفی را دریافت خواهید کرد\n\n"
+                "در صورت واجد شرایط بودن معرفی، امتیاز طبق قوانین محاسبه می‌شود.\n\n"
             ) + text
         await self.update_user_state(
             user,
@@ -700,7 +712,10 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                 text="🎟 ثبت کد تخفیف", callback_data=f"purchase_coupon_{order.order_id}"
             )])
         if not any(
-            button.callback_data and button.callback_data.startswith("payment_")
+            button.callback_data and (
+                button.callback_data.startswith("payment_")
+                or button.callback_data.startswith("select_card_")
+            )
             for row in keyboard.inline_keyboard for button in row
         ):
             text = text.replace(
@@ -764,7 +779,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
 
     async def _payment_methods_keyboard(self, user, order):
         keyboard_buttons = []
-        cards_available = await self.brand.payment_cards.filter(is_active=True).aexists()
+        cards = [card async for card in self.brand.payment_cards.filter(
+            is_active=True,
+        ).order_by("display_order", "pk")]
         async for method in self.brand.payment_methods.filter(is_enabled=True).order_by(
             "display_order"
         ):
@@ -777,17 +794,16 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
                     self.brand.slug,
                 )
                 continue
-            if not cards_available:
+            if not cards:
                 continue
-            keyboard_buttons.append(
-                [
-                    {
-                        "text": "💳 کارت‌به‌کارت",
-                        "callback_data": f"payment_{method.payment_type}_{order.order_id}",
-                        "style": method.button_style,
-                    }
-                ]
-            )
+            # Bank selection happens here. Card number/holder and exact unique
+            # transfer quote appear only on the final card detail screen.
+            for card in cards:
+                keyboard_buttons.append([{
+                    "text": f"🏦 {card.bank_name} · {card.card_number[-4:]}",
+                    "callback_data": f"select_card_{card.pk}_{order.order_id}",
+                    "style": self._card_button_style(card.card_color),
+                }])
 
         total_paid = await self._confirmed_order_payments(order)
         remaining_due = max(order.final_price - total_paid, 0)

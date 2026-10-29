@@ -79,6 +79,10 @@ class SubscriptionPlan(models.Model):
     server_locations = models.JSONField(default=list, blank=True)
 
     is_featured = models.BooleanField(default=False)
+    is_trial = models.BooleanField(
+        "پلن تست مخصوص کاربران جدید", default=False,
+        help_text="فقط برای ۱ کاربر در سرویس نرمال یا رویال؛ پس از سابقه اشتراک مخفی می‌شود.",
+    )
     display_order = models.PositiveIntegerField(default=0)
     color = models.CharField(max_length=7, default="#007bff")
 
@@ -122,6 +126,10 @@ class SubscriptionPlan(models.Model):
             errors["gift_days"] = "روز هدیه باید بین ۰ تا ۳۶۵ باشد."
         if self.max_users is not None and self.max_users < 1:
             errors["max_users"] = "تعداد کاربر باید حداقل یک نفر باشد."
+        if self.is_trial and (self.max_users != 1 or self.service_category not in ("normal", "royal")):
+            errors["is_trial"] = "پلن تست فقط در سرویس نرمال یا رویال و برای یک کاربر مجاز است."
+        if self.is_trial and self.discounted_price > 0:
+            errors["is_trial"] = "قیمت نهایی پلن تست باید صفر باشد."
         if (
             self.vpn_provider_id
             and self.brand_id

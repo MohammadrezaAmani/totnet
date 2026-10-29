@@ -91,7 +91,7 @@ def deliver_gamification_notification(self, notification_id):
             # A purchased gift handover is a transactional fulfillment notice,
             # not opt-in marketing. The buyer must still receive the unique
             # voucher even when promotional notifications are disabled.
-            transactional = metadata.get("event") in {"gift_handover", "gift_referral_handover"}
+            transactional = metadata.get("event") in {"gift_handover", "gift_referral_handover", "gift_unclaimed_reminder"}
             if (opted_out and not transactional) or not notification.user.is_active:
                 return False
             if notification.rule_id:
@@ -359,8 +359,8 @@ def _queue_confirmed_referral_purchase(order):
             notification_type=GamificationNotification.NotificationType.REFERRAL_PURCHASE,
             dedupe_key=f"gift-claim-referral:{order.pk}",
             text=(
-                "🎁 کاربری که با لینک هدیه شما عضو شد، هدیه را دریافت کرد."
-                "\n\nوضعیت امتیازات معرفی را از بخش امتیازات بررسی کنید."
+                "کاربری که برایشان اشتراک خرید کرده بودید وارد ربات شد و "
+                "امتیاز این معرفی برای شما ثبت شد"
             ),
             buttons_data=[[{"text": "🏅 امتیازات معرفی", "callback_data": "rewards"}]],
             metadata={"order_id": order.pk, "referee_id": order.recipient_id},

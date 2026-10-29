@@ -57,11 +57,9 @@ class StartHandler(BaseHandler):
                     token=referral_code[5:], brand_id=self.brand.pk,
                     user_id=user.pk, newly_registered=created,
                 )
-                gift_feedback = (
-                    '🎁 هدیه شما دریافت شد و در صف فعال‌سازی قرار گرفت.\n\n'
-                    '✏️ لطفاً از منوی «اشتراک‌های من» نام اشتراک خود را تعیین کنید.\n'
-                    'مثال: آیفون خودم'
-                )
+                # An incomplete profile only reserves the gift. Account
+                # credentials are issued after completing the device step.
+                gift_feedback = None
             except GiftClaimError as exc:
                 gift_feedback = f'❌ {escape(str(exc))}'
         elif referral_code:
@@ -77,18 +75,29 @@ class StartHandler(BaseHandler):
             elif referral_result == "invalid_link":
                 await message.answer("❌ کد دعوت معتبر یا فعال نیست؛ ارتباط معرفی ثبت نشد.")
             elif referral_result == "unowned_link":
-                await message.answer("⚠️ این لینک صاحب معرف ندارد؛ عضویت ثبت شد اما معرفی شخصی ثبت نشد. با پشتیبانی تماس بگیرید.")
+                # Brand-owned, reward-free links are valid entry links. Never
+                # spam either the visitor or any admin with referral notices.
+                pass
             elif referral_result == "failed":
                 await message.answer("⚠️ ثبت معرفی با خطا مواجه شد. پیش از خرید با پشتیبانی تماس بگیرید.")
 
         from apps.accounts.models import UserProfile
         profile = await UserProfile.objects.filter(user=user).afirst()
         state = await self.get_user_state(user)
+        from apps.orders.models import GiftVoucher
+        pending_gift = await GiftVoucher.objects.filter(
+            claimed_by=user, order__brand=self.brand,
+            order__recipient__isnull=True,
+        ).aexists()
+        missing_initial_profile = not (
+            user.full_name and user.phone_number and profile and
+            (profile.devices or profile.device_type)
+        )
         onboarding_incomplete = (
             created
             or state.current_state == BotState.StateType.PROFILE_SETUP
-            or (profile and profile.channel_join_required and
-                (not user.full_name or not user.phone_number or not profile.device_type))
+            or (missing_initial_profile and (pending_gift or
+                (profile and profile.channel_join_required)))
         )
         if onboarding_incomplete:
             if user.full_name and user.phone_number and profile and not profile.device_type:
@@ -210,7 +219,8 @@ class StartHandler(BaseHandler):
             await callback.answer("عضویت هنوز تأیید نشده است.", show_alert=True)
             return
         await callback.answer("✅ عضویت تأیید شد.")
-        await self.show_main_menu(callback.message.chat.id, user)
+        if not await self._deliver_reserved_gifts_or_prompt(callback.message.chat.id, user):
+            await self.show_main_menu(callback.message.chat.id, user)
 
     async def show_profile_setup(self, chat_id: int, user: User):
         """Show profile setup screen for new users"""
@@ -220,9 +230,15 @@ class StartHandler(BaseHandler):
         pills = await pill_progress(user_id=user.pk, brand_id=self.brand.pk)
         progress = int(pills["outstanding"]) % 3
         visual = "💊" * progress + "▫️" * (3 - progress)
+        from apps.orders.models import GiftVoucher
+        pending_gift = await GiftVoucher.objects.filter(
+            claimed_by=user, order__brand=self.brand,
+            order__recipient__isnull=True,
+        ).aexists()
         welcome_text = (
             f"🎉 خوش آمدید به {self.brand.name}!\n\n"
-            f"مسیر رایگان شدن دائمی خدمات\n{visual}"
+            + ("ابتدا پروفایل خود را تکمیل کنید تا اشتراکتان ارسال شود"
+               if pending_gift else f"مسیر رایگان شدن دائمی خدمات\n{visual}")
         )
 
         keyboard = self.create_keyboard(
@@ -477,11 +493,13 @@ class StartHandler(BaseHandler):
         state = await self.get_user_state(user)
         step = (state.state_data or {}).get("step")
         required_step = (
-            "device" if callback.data.startswith("setup_device_") else "phone"
+            "device" if (callback.data.startswith("setup_device_")
+                         or callback.data == "finish_devices") else "phone"
         )
         if (
             callback.data in {"request_phone", "skip_phone"}
             or callback.data.startswith("setup_device_")
+            or callback.data == "finish_devices"
         ) and (
             state.current_state != BotState.StateType.PROFILE_SETUP
             or step != required_step
@@ -508,7 +526,8 @@ class StartHandler(BaseHandler):
             if user.full_name and user.phone_number:
                 if profile and profile.device_type:
                     if not await self.show_channel_gate_if_required(callback.message.chat.id, user):
-                        await self.show_main_menu(callback.message.chat.id, user)
+                        if not await self._deliver_reserved_gifts_or_prompt(callback.message.chat.id, user):
+                            await self.show_main_menu(callback.message.chat.id, user)
                 else:
                     await self.show_device_setup(callback.message.chat.id, user)
             else:
@@ -532,6 +551,8 @@ class StartHandler(BaseHandler):
                 user,
                 callback.data.removeprefix("setup_device_"),
             )
+        elif callback.data == "finish_devices":
+            await self.finish_initial_devices(callback.message.chat.id, user)
         elif callback.data in {"skip_profile", "main_menu"}:
             # Old inline keyboards must not bypass mandatory onboarding fields.
             await self.start_profile_setup(callback.message.chat.id, user)
@@ -703,17 +724,18 @@ class StartHandler(BaseHandler):
             (UserProfile.DeviceType.MACOS, "مکینتاش"),
             (UserProfile.DeviceType.LINUX, "لینوکس"),
         ]
-        keyboard = self.create_keyboard(
-            [
-                [{"text": label, "callback_data": f"setup_device_{value}"}]
-                for value, label in choices
-            ]
-        )
+        profile, _ = await UserProfile.objects.aget_or_create(user=user)
+        selected = profile.devices or ([profile.device_type] if profile.device_type else [])
+        rows = [
+            [{"text": ("✅ " if value in selected else "") + label,
+              "callback_data": f"setup_device_{value}"}]
+            for value, label in choices
+        ]
+        rows.append([{"text": "✅ ثبت دستگاه‌ها و ادامه", "callback_data": "finish_devices"}])
         await self.send_profile_prompt(
-            chat_id,
-            user,
-            "📱 <b>دستگاه‌ها</b>\n\nدستگاه اصلی خود را انتخاب کنید:",
-            keyboard,
+            chat_id, user,
+            "📱 <b>دستگاه‌ها</b>\n\nیک یا چند دستگاه را انتخاب کنید و سپس «ثبت دستگاه‌ها و ادامه» را بزنید.",
+            self.create_keyboard(rows),
         )
 
     async def set_initial_device(self, chat_id: int, user: User, device_type: str):
@@ -726,8 +748,21 @@ class StartHandler(BaseHandler):
             )
             return
         profile, _ = await UserProfile.objects.aget_or_create(user=user)
-        profile.device_type = device_type
-        await profile.asave(update_fields=["device_type", "updated_at"])
+        selected = list(profile.devices or ([profile.device_type] if profile.device_type else []))
+        if device_type in selected:
+            selected.remove(device_type)
+        else:
+            selected.append(device_type)
+        profile.devices = selected
+        profile.device_type = selected[0] if selected else None
+        await profile.asave(update_fields=["device_type", "devices", "updated_at"])
+        await self.show_device_setup(chat_id, user)
+
+    async def finish_initial_devices(self, chat_id: int, user: User):
+        profile = await UserProfile.objects.filter(user=user).afirst()
+        if not profile or not (profile.devices or profile.device_type):
+            await self.show_device_setup(chat_id, user)
+            return
         await self.clear_previous_keyboard(chat_id, user)
         await self.update_user_state(user, BotState.StateType.MAIN_MENU)
         confirmation = await self.bot.send_message(
@@ -741,7 +776,32 @@ class StartHandler(BaseHandler):
         )
         if await self.show_channel_gate_if_required(chat_id, user):
             return
-        await self.show_main_menu(chat_id, user)
+        if not await self._deliver_reserved_gifts_or_prompt(chat_id, user):
+            await self.show_main_menu(chat_id, user)
+
+    async def _deliver_reserved_gifts_or_prompt(self, chat_id: int, user: User) -> bool:
+        """Finish a pending gift after profile and optional channel verification."""
+        from apps.orders.checkout_links import complete_claimed_gifts
+        try:
+            gifted = await sync_to_async(complete_claimed_gifts)(
+                user_id=user.pk, brand_id=self.brand.pk,
+            )
+        except Exception:
+            logger.exception("Could not finalize claimed gift for user %s", user.pk)
+            return False
+        if not gifted:
+            return False
+        await self.send_profile_prompt(
+            chat_id, user,
+            "🎁 اشتراک خود را نام‌گذاری کنید. مثلاً: آیفون خودم\n\n"
+            "زین پس می‌توانید خودتان اشتراکتان را تمدید کرده\n"
+            "و با معرفی فقط چند نفر، بدون هزینه، خدمات دائمی ما را دریافت کنید.",
+            self.create_keyboard([
+                [{"text": "✏️ نام‌گذاری اشتراک", "callback_data": f"rename_subscription_{gifted[0]}"}],
+                [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
+            ]),
+        )
+        return True
 
     @staticmethod
     def _normalize_phone(phone: str) -> str:

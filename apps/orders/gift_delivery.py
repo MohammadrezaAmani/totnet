@@ -6,7 +6,7 @@ from html import escape
 from apps.orders.checkout_links import paid_gift_link
 from apps.orders.models import GiftVoucher, Order
 from apps.subscriptions.models import Subscription
-from apps.subscriptions.presentation import compact_plan_specs
+from apps.subscriptions.presentation import compact_plan_specs, connectix_account_message
 from utils.jalali import jalali_date
 
 logger = logging.getLogger(__name__)
@@ -36,16 +36,13 @@ def queue_ready_gift_details(*, order_id: int, recipient_id: int | None = None) 
     is_buyer = recipient_id is None
     service = SERVICE_NAMES.get(order.plan.service_category, order.plan.get_service_category_display())
     lines = [
-        "🎁 <b>اشتراک خریداری‌شده برای دیگران آماده است.</b>" if is_buyer else "🎁 <b>اطلاعات اشتراک شما</b>",
+        "🎁 <b>لینک ورود برای دریافت اشتراک خریداری‌شده</b>" if is_buyer else "🎁 <b>اطلاعات اشتراک شما</b>",
         "",
         f"🩺 نوع سرویس: {escape(service)}",
         f"📋 نوع اشتراک: {escape(compact_plan_specs(order.plan))}",
     ]
-    if subscription.connectix_username:
-        lines.append(f"👤 نام کاربری: <code>{escape(subscription.connectix_username)}</code>")
-    if subscription.connectix_password:
-        lines.append(f"🔑 رمز عبور: <code>{escape(subscription.connectix_password)}</code>")
-    lines.extend(("", "🔗 لینک اشتراک:", f"<code>{escape(subscription.subscription_url)}</code>"))
+    if not is_buyer:
+        lines = [connectix_account_message(subscription)]
     if is_buyer:
         gift_link = paid_gift_link(voucher)
         if gift_link:
@@ -54,13 +51,16 @@ def queue_ready_gift_details(*, order_id: int, recipient_id: int | None = None) 
         else:
             logger.error("Gift %s ready but bot username is not valid", order.pk)
 
-    lines.append("با این نام کاربری و رمز عبور وارد برنامه کانکتیکس شوید و به اشتراکتان وصل شوید." if subscription.connectix_username and subscription.connectix_password else "")
-    buttons = [
-        [{"text": "📥 دریافت اکانت / QR", "callback_data": f"get_config_{subscription.pk}"}],
-        [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
-        [{"text": "📥 دانلود برنامه", "callback_data": "useful_category_downloads"}],
-        [{"text": "📖 آکادمی", "callback_data": "useful_category_install"}],
-    ]
+    buttons = (
+        [[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}]]
+        if is_buyer else [
+            [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
+            [{"text": "📥 دریافت اکانت / QR", "callback_data": f"get_config_{subscription.pk}"}],
+            [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}],
+            [{"text": "📥 دانلود برنامه", "callback_data": "useful_category_downloads"}],
+            [{"text": "📖 آکادمی", "callback_data": "useful_category_install"}],
+        ]
+    )
     return _queue_once(
         user=target,
         brand_id=order.brand_id,

@@ -19,6 +19,7 @@ from uuid import uuid4
 import qrcode
 from aiogram import types
 from aiogram.enums import ContentType
+from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.subscriptions.models import Subscription
@@ -37,6 +38,15 @@ logger = logging.getLogger(__name__)
 
 class SubscriptionHiddifyHandler(BaseHandler):
     """Enhanced subscription handler with Hiddify client features"""
+
+    @staticmethod
+    def _accessible_subscription_filter(user):
+        """A paid gift belongs to its recipient only after a completed handover."""
+        return (
+            Q(user=user, is_gift=False)
+            | Q(owner=user, is_gift=False)
+            | Q(owner=user, is_gift=True, order__recipient=user)
+        )
 
     async def get_hiddify_provider(self) -> Optional[HiddifyProvider]:
         """Get Hiddify provider instance for this brand"""
@@ -100,7 +110,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
 
             sub = (
                 await Subscription.objects.filter(
-                    user=user,
+                    self._accessible_subscription_filter(user),
                     brand=self.brand,
                     status=Subscription.SubscriptionStatus.ACTIVE,
                 )
@@ -127,7 +137,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
 
         subscriptions = []
         async for sub in (
-            Subscription.objects.filter(user=user, brand=self.brand)
+            Subscription.objects.filter(self._accessible_subscription_filter(user), brand=self.brand)
             .select_related("plan", "vpn_provider")
             .order_by("-created_at")
         ):
@@ -195,7 +205,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
         try:
             sub = (
                 await Subscription.objects.filter(
-                    id=sub_id, user=user, brand=self.brand
+                    self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
                 )
                 .select_related("plan", "vpn_provider")
                 .afirst()
@@ -257,7 +267,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
         try:
             sub = (
                 await Subscription.objects.filter(
-                    id=sub_id, user=user, brand=self.brand
+                    self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
                 )
                 .select_related("vpn_provider")
                 .afirst()
@@ -407,7 +417,7 @@ UUID کاربر در پنل یافت نشد.
 
         try:
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -488,7 +498,7 @@ UUID کاربر در پنل یافت نشد.
 
         try:
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -550,7 +560,7 @@ UUID کاربر در پنل یافت نشد.
 
         try:
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -680,7 +690,7 @@ UUID کاربر در پنل یافت نشد.
 
         try:
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -753,7 +763,7 @@ UUID کاربر در پنل یافت نشد.
         try:
             sub = (
                 await Subscription.objects.filter(
-                    id=sub_id, user=user, brand=self.brand
+                    self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
                 )
                 .select_related("plan")
                 .afirst()
@@ -848,7 +858,7 @@ UUID کاربر در پنل یافت نشد.
 
         try:
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -947,7 +957,7 @@ UUID کاربر در پنل یافت نشد.
 
         try:
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -989,7 +999,7 @@ UUID کاربر در پنل یافت نشد.
             user, _ = await self.get_or_create_user(callback.from_user)
 
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -1043,7 +1053,7 @@ UUID کاربر در پنل یافت نشد.
 
         try:
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:
@@ -1119,7 +1129,7 @@ UUID کاربر در پنل یافت نشد.
             user, _ = await self.get_or_create_user(callback.from_user)
 
             sub = await Subscription.objects.filter(
-                id=sub_id, user=user, brand=self.brand
+                self._accessible_subscription_filter(user), id=sub_id, brand=self.brand
             ).afirst()
 
             if not sub:

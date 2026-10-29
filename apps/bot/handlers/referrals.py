@@ -11,6 +11,9 @@ from html import escape
 from aiogram import types
 from aiogram.types import FSInputFile
 from django.db.models import Exists, F, OuterRef, Q, Sum
+from asgiref.sync import sync_to_async
+from apps.bot.models import BotState
+from apps.brands.models import BrandConfiguration
 from django.utils import timezone
 
 from apps.referrals.models import MarketingMaterial, Referral, ReferralLink
@@ -125,14 +128,17 @@ class ReferralsHandler(BaseHandler):
 شما عضو اصلی این تیم پزشکی هستید نه یک بیمار ساده!
         """
 
-        keyboard = self.create_keyboard(
-            [
-                [{"text": "📤 اشتراک‌گذاری لینک", "copy_text": {"text": referral_url}}],
-                [{"text": "🧰 محتواهای کمکی", "callback_data": "referral_materials"}],
-                [{"text": "📈 آمار معرفی", "callback_data": "referral_stats"}],
-                [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
-            ]
-        )
+        rows = [
+            [{"text": "📤 اشتراک‌گذاری لینک", "copy_text": {"text": referral_url}}],
+            [{"text": "🧰 محتواهای کمکی", "callback_data": "referral_materials"}],
+            [{"text": "📈 آمار معرفی", "callback_data": "referral_stats"}],
+        ]
+        if not user.referred_by_id and await BrandConfiguration.objects.filter(
+            brand=self.brand, allow_manual_referrer=True,
+        ).aexists():
+            rows.append([{"text": "👥 ثبت دستی معرف", "callback_data": "manual_referrer"}])
+        rows.append([{"text": "🔙 بازگشت", "callback_data": "main_menu"}])
+        keyboard = self.create_keyboard(rows)
 
         try:
             await self.edit_message_with_keyboard(
@@ -145,6 +151,46 @@ class ReferralsHandler(BaseHandler):
             )
 
         await callback.answer()
+
+    async def start_manual_referrer(self, callback):
+        user, _ = await self.get_or_create_user(callback.from_user)
+        allowed = await BrandConfiguration.objects.filter(
+            brand=self.brand, allow_manual_referrer=True,
+        ).aexists()
+        if not allowed or user.referred_by_id:
+            await callback.answer("ثبت معرف برای شما فعال نیست یا قبلاً معرف ثبت کرده‌اید.", show_alert=True)
+            return
+        await self.update_user_state(user, BotState.StateType.REFERRAL_SETUP,
+                                     {"step": "manual_referrer"})
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id,
+            "👥 کد معرفی شخص را ارسال کنید. این انتخاب تنها یک بار قابل ثبت است.",
+            self.get_back_keyboard("referral_system"),
+        )
+        await callback.answer()
+
+    async def handle_manual_referrer_message(self, message, user):
+        allowed = await BrandConfiguration.objects.filter(
+            brand=self.brand, allow_manual_referrer=True,
+        ).aexists()
+        if not allowed or user.referred_by_id:
+            await message.answer("امکان ثبت معرف وجود ندارد.")
+            return
+        code = (message.text or "").strip()
+        if not 1 <= len(code) <= 50:
+            await message.answer("کد معتبر نیست.")
+            return
+        from apps.referrals.services import attribute_referral
+        success = await sync_to_async(attribute_referral)(
+            user_id=user.pk, brand_id=self.brand.pk, code=code,
+        )
+        await self.update_user_state(user, BotState.StateType.MAIN_MENU)
+        await self._remove_user_input(message)
+        await self.send_message_with_keyboard(
+            message.chat.id,
+            "✅ معرف ثبت شد." if success else "❌ کد معتبر نیست یا قبلاً معرف ثبت کرده‌اید.",
+            self.get_back_keyboard("referral_system"),
+        )
 
     async def show_referral_stats(self, callback: types.CallbackQuery):
         """Show the two product-defined referral counters."""

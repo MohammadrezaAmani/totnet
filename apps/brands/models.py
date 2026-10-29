@@ -90,6 +90,10 @@ class BrandConfiguration(models.Model):
     help_message = models.TextField(null=True, blank=True)
 
     referral_system_enabled = models.BooleanField(default=True)
+    allow_manual_referrer = models.BooleanField(
+        "اجازه ثبت دستی معرف", default=False,
+        help_text="فقط کاربران بدون معرف قبلی می‌توانند یک معرف معتبر ثبت کنند.",
+    )
     wallet_system_enabled = models.BooleanField(default=True)
     support_system_enabled = models.BooleanField(default=True)
     analytics_enabled = models.BooleanField(default=True)

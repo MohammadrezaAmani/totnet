@@ -192,6 +192,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                                 "plan": order.plan,
                                 "vpn_provider": provider,
                                 "is_gift": True,
+                                "display_name": f"{order.user.full_name or order.user.username}_others"[:100],
                                 "status": Subscription.SubscriptionStatus.PENDING,
                                 "starts_at": timezone.now(),
                                 "traffic_limit_gb": order.plan.traffic_limit_gb,

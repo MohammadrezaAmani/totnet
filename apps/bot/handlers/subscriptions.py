@@ -21,7 +21,7 @@ from apps.subscriptions.models import (
 )
 from apps.vpn_providers.models import VPNProvider
 from apps.subscriptions.usage import remaining_usage, is_subscription_expired
-from apps.subscriptions.presentation import compact_plan_specs, number
+from apps.subscriptions.presentation import compact_plan_specs, number, connectix_account_message
 from apps.subscriptions.policy import temporary_duration_blocked
 from apps.subscriptions.catalog import get_cached_plans
 
@@ -38,14 +38,14 @@ class SubscriptionHandler(BaseHandler):
     async def show_my_subscriptions(self, callback: types.CallbackQuery, page: int = 1):
         """List subscriptions; selecting one opens its details (not all renewal plans)."""
         user, _ = await self.get_or_create_user(callback.from_user)
-        queryset = Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand).exclude(hidden_for_users__user=user)
+        queryset = Subscription.objects.filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand).exclude(hidden_for_users__user=user)
         total = await queryset.acount()
         per_page = 8
         last_page = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, last_page))
         subscriptions = []
         async for sub in (
-            Subscription.objects.filter(Q(user=user) | Q(owner=user), brand=self.brand)
+            Subscription.objects.filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand)
             .select_related("plan", "owner", "user", "vpn_provider", "remote_account")
             .exclude(hidden_for_users__user=user)
             .order_by("-created_at")[(page - 1) * per_page:page * per_page]
@@ -75,7 +75,7 @@ class SubscriptionHandler(BaseHandler):
                         f"{number(sub.plan.traffic_limit_gb)}گ"
                         if sub.plan.traffic_limit_gb is not None else "—"
                     )
-                label = f"{service_type} {volume} {sub.plan.max_users}کاربر _ {username}"
+                label = f"{service_type} {volume} {sub.plan.max_users}کاربر _ {sub.display_name or username}"
                 expired = is_subscription_expired(sub)
                 if expired:
                     label = f"{label} (منقضی شده · تمدید/حذف)"
@@ -149,7 +149,9 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         queryset = Subscription.objects.filter(
             owner=user, brand=self.brand
-        ).select_related("plan", "vpn_provider", "owner", "user")
+        ).exclude(is_gift=True, order__recipient__isnull=True).select_related(
+            "plan", "vpn_provider", "owner", "user"
+        )
         await self._show_subscription_list(
             callback, queryset, title="👤 اشتراک‌های خودم"
         )
@@ -158,7 +160,7 @@ class SubscriptionHandler(BaseHandler):
         """List subscriptions bought by the user for somebody else."""
         user, _ = await self.get_or_create_user(callback.from_user)
         queryset = (
-            Subscription.objects.filter(user=user, brand=self.brand)
+            Subscription.objects.filter(user=user, brand=self.brand, is_gift=False)
             .exclude(owner=user)
             .select_related("plan", "vpn_provider", "owner", "user")
         )
@@ -236,7 +238,7 @@ class SubscriptionHandler(BaseHandler):
         from apps.bot.models import BotState
         user, _ = await self.get_or_create_user(callback.from_user)
         allowed = await Subscription.objects.filter(
-            Q(user=user) | Q(owner=user), brand=self.brand, pk=subscription_id
+            (Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand, pk=subscription_id
         ).aexists()
         if not allowed:
             await callback.answer("❌ اشتراک پیدا نشد.", show_alert=True)
@@ -260,7 +262,7 @@ class SubscriptionHandler(BaseHandler):
             return
         subscription_id = (state.state_data or {}).get("subscription_id")
         count = await Subscription.objects.filter(
-            Q(user=user) | Q(owner=user), brand=self.brand, pk=subscription_id
+            (Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand, pk=subscription_id
         ).aupdate(display_name=name)
         if not count:
             await message.reply("❌ این اشتراک در دسترس نیست.")
@@ -285,7 +287,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user", "remote_account")
-                .filter(Q(user=user) | Q(owner=user))
+                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
                 .exclude(hidden_for_users__user=user)
                 .aget(id=subscription_id, brand=self.brand)
             )
@@ -356,7 +358,7 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         subscription = await (
             Subscription.objects.select_related("vpn_provider", "remote_account")
-            .filter(Q(user=user) | Q(owner=user), brand=self.brand, pk=subscription_id)
+            .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand, pk=subscription_id)
             .afirst()
         )
         if subscription is None or not is_subscription_expired(subscription):
@@ -376,7 +378,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("vpn_provider", "plan")
-                .filter(Q(user=user) | Q(owner=user))
+                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -435,17 +437,7 @@ class SubscriptionHandler(BaseHandler):
             )
             return
 
-        name = escape(subscription.display_name or "نام‌گذاری نشده")
-        username = escape(subscription.connectix_username or "—")
-        password = escape(subscription.connectix_password or "—")
-        text = (
-            "📱 <b>اطلاعات اشتراک</b>\n\n"
-            f"🏷 نام اشتراک: {name}\n"
-            f"👤 نام کاربری: <code>{username}</code>\n"
-            f"🔑 رمز عبور: <code>{password}</code>\n"
-            "با این نام کاربری و رمز عبور وارد برنامه ما،کانکتیکس شوید و به اشتراکتون وصل بشید\n\n"
-            f"🔗 لینک اشتراک V2Ray:\n<code>{escape(subscription_url)}</code>"
-        )
+        text = connectix_account_message(subscription)
         keyboard = self.create_keyboard([
             [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}", "style": "success"}],
             [{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}],
@@ -605,7 +597,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter(Q(user=user) | Q(owner=user))
+                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -687,7 +679,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter(Q(user=user) | Q(owner=user))
+                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -733,7 +725,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter(Q(user=user) | Q(owner=user))
+                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -813,7 +805,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter(Q(user=user) | Q(owner=user))
+                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,

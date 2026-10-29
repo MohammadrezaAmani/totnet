@@ -29,6 +29,7 @@ FIELDS = (
     "max_users",
     "gift_days",
     "is_featured",
+    "is_trial",
     "display_order",
     "discount_percentage",
     "offer_expires_at",
@@ -38,7 +39,7 @@ FIELDS = (
 
 
 def catalog_key(brand_id):
-    return f"subscription-plan-catalog:v6:{brand_id}"
+    return f"subscription-plan-catalog:v7:{brand_id}"
 
 
 def invalidate_plan_catalog(brand_id):
@@ -135,16 +136,16 @@ async def get_cached_plans(brand_id, *, refresh=False):
         # Detached instances contain scalar fields only; never cache ORM objects.
         plan = SubscriptionPlan(**values)
         plan.purchase_count = purchase_count
-        if (plan.service_category == SubscriptionPlan.ServiceCategory.NORMAL
+        if (not plan.is_trial and plan.service_category == SubscriptionPlan.ServiceCategory.NORMAL
                 and temporary_duration_blocked(plan)):
             continue
-        if show_free_plans or plan.discounted_price > 0:
+        if show_free_plans or plan.is_trial or plan.discounted_price > 0:
             plans.append(plan)
     return plans
 
 
 async def is_plan_visible_in_bot(plan, brand_id):
     """Apply free-plan visibility to selections from older bot keyboards too."""
-    return plan.discounted_price > 0 or await Brand.objects.filter(
+    return plan.discounted_price > 0 or plan.is_trial or await Brand.objects.filter(
         pk=brand_id, show_free_plans=True
     ).aexists()

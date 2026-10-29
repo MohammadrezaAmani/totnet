@@ -13,6 +13,8 @@ from apps.subscriptions.catalog import get_cached_plans
 from apps.subscriptions.selection import duration_key, duration_label, traffic_key, traffic_label
 from apps.subscriptions.policy import blocked_duration_key, temporary_duration_blocked
 from apps.subscriptions.presentation import plan_gift_label
+from apps.subscriptions.models import Subscription
+from django.db.models import Q
 
 
 class PlanPickerMixin:
@@ -27,12 +29,16 @@ class PlanPickerMixin:
             "range": "", "page": 1,
         })
 
-    async def _picker_catalog(self, picker):
+    async def _picker_catalog(self, picker, user=None):
         plans = [p for p in await get_cached_plans(self.brand.pk)
                  if p.service_category == picker["category"]]
         if not plans:
             plans = [p for p in await get_cached_plans(self.brand.pk, refresh=True)
                      if p.service_category == picker["category"]]
+        if user is not None and await Subscription.objects.filter(
+            brand_id=self.brand.pk,
+        ).filter(Q(user=user) | Q(owner=user)).aexists():
+            plans = [p for p in plans if not p.is_trial]
         return plans
 
     @staticmethod
@@ -131,7 +137,7 @@ class PlanPickerMixin:
             p.display_order, p.pk))
 
     async def render_plan_picker(self, callback, user, picker):
-        catalog = await self._picker_catalog(picker)
+        catalog = await self._picker_catalog(picker, user)
         volume_plans = [
             p for p in catalog if self._volume(p)
             and Decimal(traffic_key(p)[1:]) >= self._min_volume(picker["category"], duration_key(p))
@@ -259,6 +265,12 @@ class PlanPickerMixin:
             rows.append([self._picker_button(picker, "📋 تمام اشتراک‌های این سرویس", "all")])
         rows.append([{"text": "📖 راهنمای انتخاب سرویس", "callback_data": "service_guide"}])
         rows.append([{"text": "🔙 سرویس‌ها", "callback_data": "purchase_subscription"}])
+        trial = next((p for p in catalog if p.is_trial and p.max_users == 1
+                      and p.service_category in ("normal", "royal")), None)
+        if trial:
+            rows.insert(0, [{"text": "🎁 اکانت تست ۱ کاربر — " +
+                            self.format_price(trial.discounted_price, trial.currency),
+                            "callback_data": f"select_plan_{trial.pk}", "style": "success"}])
         await self.update_user_state(user, BotState.StateType.PURCHASE_FLOW, {
             "step": "plan_selection" if stage in {"results", "volume_list", "time_list", "unlimited_users", "unlimited_results"} else "plan_filters",
             "service_category": picker["category"], "special_offers": False,
@@ -280,7 +292,7 @@ class PlanPickerMixin:
             await callback.answer("این منو قدیمی است؛ دوباره سرویس را انتخاب کنید.", show_alert=True)
             return
         _, _, action, value = parts
-        catalog = await self._picker_catalog(picker)
+        catalog = await self._picker_catalog(picker, user)
         volume = [p for p in catalog if self._volume(p)
                   and Decimal(traffic_key(p)[1:]) >= self._min_volume(picker["category"], duration_key(p))]
         stage = picker["stage"]

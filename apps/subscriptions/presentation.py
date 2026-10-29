@@ -68,3 +68,29 @@ def connectix_plan_name(
         else "open"
     )
     return f"{number(max_users)}×{traffic}_{duration}_{service_category}"
+
+
+CONNECTIX_DELIVERY_INSTRUCTIONS = (
+    "نام و رمز را کپی کرده و وارد برنامه ما یعنی کانکتیکس شوید.\n"
+    "با آموزش‌های موجود در بخش آکادمی می‌توانید آموزش کامل نصب، "
+    "ورود و کار با برنامه را مشاهده نمایید."
+)
+
+
+def connectix_account_message(subscription):
+    """Single Telegram HTML template for ready Connectix credentials."""
+    from html import escape
+    plan = subscription.plan
+    services = {"normal": "نرمال", "royal": "رویال", "iran_ip": "آی‌پی ایران"}
+    lines = [
+        "📱 <b>اطلاعات اشتراک</b>",
+        "",
+        f"🩺 نوع سرویس: {escape(services.get(plan.service_category, plan.get_service_category_display()))}",
+        f"📋 نوع اشتراک: {escape(compact_plan_specs(plan))}",
+        f"🏷 نام اشتراک: {escape(subscription.display_name or 'نام‌گذاری نشده')}",
+        f"👤 نام کاربری: <code>{escape(subscription.connectix_username or '—')}</code>",
+        f"🔑 رمز عبور: <code>{escape(subscription.connectix_password or '—')}</code>",
+        "",
+        CONNECTIX_DELIVERY_INSTRUCTIONS,
+    ]
+    return "\n".join(lines)

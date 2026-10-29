@@ -115,12 +115,14 @@ class BrandConfigurationAdmin(admin.ModelAdmin):
     list_display = (
         "brand",
         "referral_system_enabled",
+        "allow_manual_referrer",
         "wallet_system_enabled",
         "support_system_enabled",
         "analytics_enabled",
     )
     list_filter = (
         "referral_system_enabled",
+        "allow_manual_referrer",
         "wallet_system_enabled",
         "support_system_enabled",
         "analytics_enabled",

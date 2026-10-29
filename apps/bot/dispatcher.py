@@ -249,6 +249,10 @@ class MultiBrandDispatcher:
                     message, user, state
                 )
 
+            elif (state.current_state == BotState.StateType.REFERRAL_SETUP and
+                  (state.state_data or {}).get("step") == "manual_referrer"):
+                await handlers["referrals"].handle_manual_referrer_message(message, user)
+
             elif state.current_state == BotState.StateType.PROFILE_EDIT:
                 await handlers["profile"].handle_profile_field_message(
                     message, user, state
@@ -423,7 +427,7 @@ class MultiBrandDispatcher:
                 profile = await UserProfile.objects.filter(user=user).afirst()
                 state = await handlers["start"].get_user_state(user)
                 onboarding = (
-                    data in {"setup_profile", "skip_profile", "skip_phone", "request_phone"}
+                    data in {"setup_profile", "skip_profile", "skip_phone", "request_phone", "finish_devices"}
                     or data.startswith(("onboarding_", "setup_device_"))
                 )
                 if (state.current_state == BotState.StateType.PROFILE_SETUP and
@@ -465,7 +469,7 @@ class MultiBrandDispatcher:
             elif data in ["edit_full_name", "edit_birth_date", "edit_phone", "edit_locations"]:
                 field = data.replace("edit_", "")
                 await handlers["profile"].request_field_update(callback, field)
-            elif data.startswith("setup_device_"):
+            elif data.startswith("setup_device_") or data == "finish_devices":
                 await handlers["start"].handle_profile_setup_callback(callback)
             elif data in [
                 "setup_profile",
@@ -481,6 +485,8 @@ class MultiBrandDispatcher:
 
             elif data == "referral_system":
                 await handlers["referrals"].show_referral_menu(callback)
+            elif data == "manual_referrer":
+                await handlers["referrals"].start_manual_referrer(callback)
             elif data == "referral_stats":
                 await handlers["referrals"].show_referral_stats(callback)
             elif data == "referral_materials":

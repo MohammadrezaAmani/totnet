@@ -85,6 +85,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "sync_bot_settings",
         "sync_price",
         "is_featured",
+        "is_trial",
         "display_order",
     )
     list_filter = (
@@ -95,11 +96,12 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "sync_bot_settings",
         "sync_price",
         "is_featured",
+        "is_trial",
         "brand",
         "created_at",
     )
     search_fields = ("name", "description", "brand__name", "upstream_plan_id")
-    list_editable = ("is_visible", "is_featured", "display_order", "sync_bot_settings", "sync_price")
+    list_editable = ("is_visible", "is_featured", "is_trial", "display_order", "sync_bot_settings", "sync_price")
     ordering = ("brand", "display_order", "price", "pk")
     list_select_related = ("brand", "vpn_provider")
 
