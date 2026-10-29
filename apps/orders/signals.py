@@ -100,7 +100,11 @@ def wallet_transaction_deleted(sender, instance, **kwargs):
     Rollback wallet balance if transaction is deleted.
     """
 
-    wallet = instance.wallet
+    # The wallet itself can be removed by an admin's full cascade delete.
+    # In that case there is no balance left to restore.
+    wallet = Wallet.objects.filter(pk=instance.wallet_id).first()
+    if wallet is None:
+        return
 
     wallet.balance = instance.balance_before
     wallet.save(update_fields=["balance", "updated_at"])

@@ -3,6 +3,7 @@ Admin configuration for referrals app
 """
 
 from django.contrib import admin
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 from django.utils.html import format_html
 
 from .models import (
@@ -33,7 +34,7 @@ from .models import (
 )
 
 
-class ScopedReferralAdmin(admin.ModelAdmin):
+class ScopedReferralAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if not request.user.is_superuser:
             model = db_field.remote_field.model
@@ -52,7 +53,7 @@ class LedgerAdmin(ScopedReferralAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return super().has_delete_permission(request, obj)
 
     def get_readonly_fields(self, request, obj=None):
         return tuple(field.name for field in self.model._meta.fields)
@@ -651,7 +652,7 @@ class UserChallengeAdmin(LedgerAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return super().has_delete_permission(request, obj)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -746,7 +747,7 @@ class NotificationRuleAdmin(ScopedReferralAdmin):
         )
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return super().has_delete_permission(request, obj)
 
 
 @admin.register(ServiceRewardRate)

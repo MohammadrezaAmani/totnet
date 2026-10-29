@@ -3,6 +3,7 @@ Admin configuration for support app
 """
 
 from django.contrib import admin
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 
 from .models import (
     SupportAttachment,
@@ -19,7 +20,7 @@ from .models import (
 
 
 @admin.register(SupportCategory)
-class SupportCategoryAdmin(admin.ModelAdmin):
+class SupportCategoryAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "brand",
@@ -41,7 +42,7 @@ class SupportCategoryAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportTicket)
-class SupportTicketAdmin(admin.ModelAdmin):
+class SupportTicketAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "ticket_number",
         "brand",
@@ -135,7 +136,7 @@ class SupportTicketAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportMessage)
-class SupportMessageAdmin(admin.ModelAdmin):
+class SupportMessageAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("ticket", "message_type", "sender", "is_public", "created_at")
     list_filter = ("message_type", "is_public", "ticket", "created_at")
     search_fields = ("ticket__ticket_number", "sender__username", "content")
@@ -149,7 +150,7 @@ class SupportMessageAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportAttachment)
-class SupportAttachmentAdmin(admin.ModelAdmin):
+class SupportAttachmentAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "message",
         "original_filename",
@@ -174,7 +175,7 @@ class SupportAttachmentAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportTemplate)
-class SupportTemplateAdmin(admin.ModelAdmin):
+class SupportTemplateAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "name",
@@ -195,7 +196,7 @@ class SupportTemplateAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportKnowledgeBase)
-class SupportKnowledgeBaseAdmin(admin.ModelAdmin):
+class SupportKnowledgeBaseAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "title",
@@ -219,7 +220,7 @@ class SupportKnowledgeBaseAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportMetrics)
-class SupportMetricsAdmin(admin.ModelAdmin):
+class SupportMetricsAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "agent",
@@ -244,7 +245,7 @@ class SupportMetricsAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportEscalation)
-class SupportEscalationAdmin(admin.ModelAdmin):
+class SupportEscalationAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "ticket",
         "escalation_type",
@@ -267,7 +268,7 @@ class SupportEscalationAdmin(admin.ModelAdmin):
 
 
 @admin.register(SupportAutomation)
-class SupportAutomationAdmin(admin.ModelAdmin):
+class SupportAutomationAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "name",
@@ -288,7 +289,7 @@ class SupportAutomationAdmin(admin.ModelAdmin):
 
 
 @admin.register(UsefulContent)
-class UsefulContentAdmin(admin.ModelAdmin):
+class UsefulContentAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "category",

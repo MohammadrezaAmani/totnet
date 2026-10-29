@@ -3,6 +3,7 @@ Admin configuration for brands app
 """
 
 from django.contrib import admin, messages
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 
 from apps.orders.models import PaymentCard
 from .models import (
@@ -30,7 +31,7 @@ class BrandPaymentCardInline(admin.TabularInline):
 
 
 @admin.register(Brand)
-class BrandAdmin(admin.ModelAdmin):
+class BrandAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     inlines = (BrandPaymentMethodInline, BrandPaymentCardInline)
     list_display = (
         "name",
@@ -111,7 +112,7 @@ class BrandAdmin(admin.ModelAdmin):
 
 
 @admin.register(BrandConfiguration)
-class BrandConfigurationAdmin(admin.ModelAdmin):
+class BrandConfigurationAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "referral_system_enabled",
@@ -137,7 +138,7 @@ class BrandConfigurationAdmin(admin.ModelAdmin):
 
 
 @admin.register(BrandTheme)
-class BrandThemeAdmin(admin.ModelAdmin):
+class BrandThemeAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("brand", "button_style", "menu_style", "font_family")
     search_fields = ("brand__name",)
 
@@ -149,7 +150,7 @@ class BrandThemeAdmin(admin.ModelAdmin):
 
 
 @admin.register(BrandPaymentMethod)
-class BrandPaymentMethodAdmin(admin.ModelAdmin):
+class BrandPaymentMethodAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "payment_type",
@@ -173,7 +174,7 @@ class BrandPaymentMethodAdmin(admin.ModelAdmin):
 
 
 @admin.register(BrandSocialMedia)
-class BrandSocialMediaAdmin(admin.ModelAdmin):
+class BrandSocialMediaAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "platform",
@@ -194,7 +195,7 @@ class BrandSocialMediaAdmin(admin.ModelAdmin):
 
 
 @admin.register(BrandAnalytics)
-class BrandAnalyticsAdmin(admin.ModelAdmin):
+class BrandAnalyticsAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "date",
@@ -218,7 +219,7 @@ class BrandAnalyticsAdmin(admin.ModelAdmin):
 
 
 @admin.register(BrandWebhook)
-class BrandWebhookAdmin(admin.ModelAdmin):
+class BrandWebhookAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("brand", "name", "url", "is_active", "max_retries", "created_at")
     list_filter = ("is_active", "brand")
     search_fields = ("brand__name", "name", "url")
@@ -231,7 +232,7 @@ class BrandWebhookAdmin(admin.ModelAdmin):
 
 
 @admin.register(BrandApiKey)
-class BrandApiKeyAdmin(admin.ModelAdmin):
+class BrandApiKeyAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "name",

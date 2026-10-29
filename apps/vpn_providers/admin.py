@@ -6,6 +6,7 @@ Enhanced with Hiddify integration
 from asgiref.sync import async_to_sync
 from django import forms
 from django.contrib import admin, messages
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
@@ -52,7 +53,7 @@ class VPNProviderAdminForm(forms.ModelForm):
 
 
 @admin.register(HiddifyAdmin)
-class HiddifyAdminAdmin(admin.ModelAdmin):
+class HiddifyAdminAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     """Admin for Hiddify Panel Admins"""
 
     list_display = (
@@ -204,7 +205,7 @@ class HiddifyAdminAdmin(admin.ModelAdmin):
 
 
 @admin.register(VPNProvider)
-class VPNProviderAdmin(admin.ModelAdmin):
+class VPNProviderAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     form = VPNProviderAdminForm
     list_display = (
         "name",
@@ -431,7 +432,7 @@ class VPNProviderAdmin(admin.ModelAdmin):
 
 
 @admin.register(VPNServer)
-class VPNServerAdmin(admin.ModelAdmin):
+class VPNServerAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "provider",
@@ -457,7 +458,7 @@ class VPNServerAdmin(admin.ModelAdmin):
 
 
 @admin.register(VPNProviderLog)
-class VPNProviderLogAdmin(admin.ModelAdmin):
+class VPNProviderLogAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "provider",
         "level",
@@ -480,7 +481,7 @@ class VPNProviderLogAdmin(admin.ModelAdmin):
 
 
 @admin.register(VPNProviderStats)
-class VPNProviderStatsAdmin(admin.ModelAdmin):
+class VPNProviderStatsAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "provider",
         "collected_at",
@@ -508,7 +509,7 @@ class VPNProviderStatsAdmin(admin.ModelAdmin):
 
 
 @admin.register(VPNProviderHealthCheck)
-class VPNProviderHealthCheckAdmin(admin.ModelAdmin):
+class VPNProviderHealthCheckAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "provider",
         "check_time",
@@ -525,7 +526,7 @@ class VPNProviderHealthCheckAdmin(admin.ModelAdmin):
 
 
 @admin.register(VPNProviderInbound)
-class VPNProviderInboundAdmin(admin.ModelAdmin):
+class VPNProviderInboundAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "provider",
         "tag",

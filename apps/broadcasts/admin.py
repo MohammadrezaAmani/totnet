@@ -3,6 +3,7 @@ Admin configuration for broadcasts app
 """
 
 from django.contrib import admin
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 
 from .models import (
     AutomationExecution,
@@ -18,7 +19,7 @@ from .models import (
 
 
 @admin.register(BroadcastCampaign)
-class BroadcastCampaignAdmin(admin.ModelAdmin):
+class BroadcastCampaignAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "brand",
@@ -96,7 +97,7 @@ class BroadcastCampaignAdmin(admin.ModelAdmin):
 
 
 @admin.register(BroadcastMessage)
-class BroadcastMessageAdmin(admin.ModelAdmin):
+class BroadcastMessageAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "campaign",
         "recipient",
@@ -120,7 +121,7 @@ class BroadcastMessageAdmin(admin.ModelAdmin):
 
 
 @admin.register(BroadcastTemplate)
-class BroadcastTemplateAdmin(admin.ModelAdmin):
+class BroadcastTemplateAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "brand",
@@ -140,7 +141,7 @@ class BroadcastTemplateAdmin(admin.ModelAdmin):
 
 
 @admin.register(BroadcastAudience)
-class BroadcastAudienceAdmin(admin.ModelAdmin):
+class BroadcastAudienceAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "brand",
@@ -161,7 +162,7 @@ class BroadcastAudienceAdmin(admin.ModelAdmin):
 
 
 @admin.register(NotificationPreference)
-class NotificationPreferenceAdmin(admin.ModelAdmin):
+class NotificationPreferenceAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "brand",
@@ -189,7 +190,7 @@ class NotificationPreferenceAdmin(admin.ModelAdmin):
 
 
 @admin.register(AutomationRule)
-class AutomationRuleAdmin(admin.ModelAdmin):
+class AutomationRuleAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "brand",
@@ -213,7 +214,7 @@ class AutomationRuleAdmin(admin.ModelAdmin):
 
 
 @admin.register(AutomationExecution)
-class AutomationExecutionAdmin(admin.ModelAdmin):
+class AutomationExecutionAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "rule",
         "user",
@@ -235,7 +236,7 @@ class AutomationExecutionAdmin(admin.ModelAdmin):
 
 
 @admin.register(BroadcastAnalytics)
-class BroadcastAnalyticsAdmin(admin.ModelAdmin):
+class BroadcastAnalyticsAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "campaign",
         "date",
@@ -259,7 +260,7 @@ class BroadcastAnalyticsAdmin(admin.ModelAdmin):
 
 
 @admin.register(PushNotification)
-class PushNotificationAdmin(admin.ModelAdmin):
+class PushNotificationAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "user",

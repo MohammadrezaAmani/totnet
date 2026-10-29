@@ -3,12 +3,13 @@ Admin configuration for bot app
 """
 
 from django.contrib import admin
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 
 from .models import BehaviorEvent, BotAnalytics, BotCommand, BotKeyboard, BotMessage, BotState
 
 
 @admin.register(BotState)
-class BotStateAdmin(admin.ModelAdmin):
+class BotStateAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "brand",
@@ -29,7 +30,7 @@ class BotStateAdmin(admin.ModelAdmin):
 
 
 @admin.register(BotMessage)
-class BotMessageAdmin(admin.ModelAdmin):
+class BotMessageAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "brand",
@@ -52,7 +53,7 @@ class BotMessageAdmin(admin.ModelAdmin):
 
 
 @admin.register(BotKeyboard)
-class BotKeyboardAdmin(admin.ModelAdmin):
+class BotKeyboardAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("name", "brand", "context", "is_active", "created_at", "updated_at")
     list_filter = ("is_active", "brand")
     search_fields = ("brand__name", "name", "description")
@@ -66,7 +67,7 @@ class BotKeyboardAdmin(admin.ModelAdmin):
 
 
 @admin.register(BotCommand)
-class BotCommandAdmin(admin.ModelAdmin):
+class BotCommandAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("brand", "command", "description", "handler_function", "is_active")
     list_filter = ("is_active", "brand")
     search_fields = ("brand__name", "command", "handler_function")
@@ -79,7 +80,7 @@ class BotCommandAdmin(admin.ModelAdmin):
 
 
 @admin.register(BotAnalytics)
-class BotAnalyticsAdmin(admin.ModelAdmin):
+class BotAnalyticsAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "date",
@@ -102,7 +103,7 @@ class BotAnalyticsAdmin(admin.ModelAdmin):
 
 
 @admin.register(BehaviorEvent)
-class BehaviorEventAdmin(admin.ModelAdmin):
+class BehaviorEventAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("created_at", "brand", "user", "event", "value", "outcome")
     list_filter = ("brand", "event", "outcome", "created_at")
     search_fields = ("user__username", "value")
@@ -115,7 +116,7 @@ class BehaviorEventAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return super().has_delete_permission(request, obj)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request).select_related("user", "brand")

@@ -4,6 +4,7 @@ Admin configuration for orders app
 
 from django import forms
 from django.contrib import admin
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 from django.db.models import Sum
 from django.utils import timezone
 from django.utils.html import format_html
@@ -42,7 +43,7 @@ class OrderAdminForm(forms.ModelForm):
 
 
 @admin.register(Order)
-class OrderAdmin(admin.ModelAdmin):
+class OrderAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     form = OrderAdminForm
     list_display = (
         "order_number",
@@ -96,7 +97,7 @@ class OrderAdmin(admin.ModelAdmin):
 
 
 @admin.register(Payment)
-class PaymentAdmin(admin.ModelAdmin):
+class PaymentAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     def save_model(self, request, obj, form, change):
         previous = self.get_object(request, str(obj.pk)) if change else None
         if obj.status == Payment.PaymentStatus.CONFIRMED and (
@@ -179,7 +180,7 @@ class PaymentAdmin(admin.ModelAdmin):
 
 
 @admin.register(PaymentCard)
-class PaymentCardAdmin(admin.ModelAdmin):
+class PaymentCardAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "bank_name",
@@ -206,7 +207,7 @@ class PaymentCardAdmin(admin.ModelAdmin):
 
 
 @admin.register(PaymentGateway)
-class PaymentGatewayAdmin(admin.ModelAdmin):
+class PaymentGatewayAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "name",
@@ -227,7 +228,7 @@ class PaymentGatewayAdmin(admin.ModelAdmin):
 
 
 @admin.register(CryptoCurrency)
-class CryptoCurrencyAdmin(admin.ModelAdmin):
+class CryptoCurrencyAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "brand",
         "name",
@@ -250,7 +251,7 @@ class CryptoCurrencyAdmin(admin.ModelAdmin):
 
 
 @admin.register(Wallet)
-class WalletAdmin(admin.ModelAdmin):
+class WalletAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     readonly_fields = ("balance", "challenge_frozen_balance")
     list_display = (
         "user",
@@ -274,7 +275,7 @@ class WalletAdmin(admin.ModelAdmin):
 
 
 @admin.register(WalletTransaction)
-class WalletTransactionAdmin(admin.ModelAdmin):
+class WalletTransactionAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "wallet",
         "transaction_type",
@@ -296,7 +297,7 @@ class WalletTransactionAdmin(admin.ModelAdmin):
 
 
 @admin.register(Coupon)
-class CouponAdmin(admin.ModelAdmin):
+class CouponAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "code",
         "brand",
@@ -331,7 +332,7 @@ class CouponAdmin(admin.ModelAdmin):
 
 
 @admin.register(CouponUsage)
-class CouponUsageAdmin(admin.ModelAdmin):
+class CouponUsageAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("coupon", "user", "order", "discount_amount", "used_at")
     list_filter = ("coupon", "user")
     search_fields = ("coupon__code", "user__username")
@@ -339,7 +340,7 @@ class CouponUsageAdmin(admin.ModelAdmin):
 
 
 @admin.register(CardTransferQuote)
-class CardTransferQuoteAdmin(admin.ModelAdmin):
+class CardTransferQuoteAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("order", "card", "base_amount", "expected_amount", "expires_at", "created_at")
     readonly_fields = ("order", "card", "base_amount", "expected_amount", "expires_at", "created_at")
     list_filter = ("card__brand", "created_at")
@@ -352,7 +353,7 @@ class CardTransferQuoteAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return super().has_delete_permission(request, obj)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -360,7 +361,7 @@ class CardTransferQuoteAdmin(admin.ModelAdmin):
 
 
 @admin.register(GiftVoucher)
-class GiftVoucherAdmin(admin.ModelAdmin):
+class GiftVoucherAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("order", "expires_at", "claimed_by", "claimed_at", "new_member_at_claim", "created_at")
     readonly_fields = ("order", "gift_link", "expires_at", "claimed_by", "claimed_at", "new_member_at_claim", "created_at")
     search_fields = ("order__order_number",)
@@ -379,7 +380,7 @@ class GiftVoucherAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return super().has_delete_permission(request, obj)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

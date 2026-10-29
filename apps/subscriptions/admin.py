@@ -4,6 +4,7 @@ Admin configuration for subscriptions app
 
 from django import forms
 from django.contrib import admin, messages
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 from django.db import transaction
 from django.utils import timezone
 from django.utils.html import format_html
@@ -61,7 +62,7 @@ class SubscriptionPlanAdminForm(forms.ModelForm):
 
 
 @admin.register(SubscriptionPlan)
-class SubscriptionPlanAdmin(admin.ModelAdmin):
+class SubscriptionPlanAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     form = SubscriptionPlanAdminForm
     list_display = (
         "name",
@@ -136,7 +137,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
 
 
 @admin.register(Subscription)
-class SubscriptionAdmin(admin.ModelAdmin):
+class SubscriptionAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "subscription_id",
         "brand",
@@ -257,7 +258,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
 
 
 @admin.register(ProviderRemoteSubscription)
-class ProviderRemoteSubscriptionAdmin(admin.ModelAdmin):
+class ProviderRemoteSubscriptionAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "subscription",
         "provider",
@@ -281,7 +282,7 @@ class ProviderRemoteSubscriptionAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return super().has_delete_permission(request, obj)
 
     def get_queryset(self, request):
         queryset = (
@@ -295,7 +296,7 @@ class ProviderRemoteSubscriptionAdmin(admin.ModelAdmin):
 
 
 @admin.register(SubscriptionUsage)
-class SubscriptionUsageAdmin(admin.ModelAdmin):
+class SubscriptionUsageAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "subscription",
         "date",
@@ -332,7 +333,7 @@ class SubscriptionUsageAdmin(admin.ModelAdmin):
 
 
 @admin.register(SubscriptionRenewal)
-class SubscriptionRenewalAdmin(admin.ModelAdmin):
+class SubscriptionRenewalAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "subscription",
         "renewal_type",
@@ -359,7 +360,7 @@ class SubscriptionRenewalAdmin(admin.ModelAdmin):
 
 
 @admin.register(SubscriptionNotification)
-class SubscriptionNotificationAdmin(admin.ModelAdmin):
+class SubscriptionNotificationAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_filter = ("notification_type", "is_sent", "subscription")
     search_fields = ("subscription__subscription_id", "message")
     date_hierarchy = "scheduled_for"
@@ -372,7 +373,7 @@ class SubscriptionNotificationAdmin(admin.ModelAdmin):
 
 
 @admin.register(SubscriptionClaim)
-class SubscriptionClaimAdmin(admin.ModelAdmin):
+class SubscriptionClaimAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "username",
         "user",
@@ -476,7 +477,7 @@ class SubscriptionClaimAdmin(admin.ModelAdmin):
 
 
 @admin.register(SubscriptionConfig)
-class SubscriptionConfigAdmin(admin.ModelAdmin):
+class SubscriptionConfigAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "subscription",
         "has_vless",
@@ -515,7 +516,7 @@ class SubscriptionConfigAdmin(admin.ModelAdmin):
 
 
 @admin.register(SubscriptionTransfer)
-class SubscriptionTransferAdmin(admin.ModelAdmin):
+class SubscriptionTransferAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "subscription",
         "from_user",

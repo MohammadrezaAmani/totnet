@@ -4,6 +4,7 @@ Admin configuration for accounts app
 
 from django import forms
 from django.contrib import admin, messages
+from apps.accounts.admin_delete import ForceDeleteAdminMixin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.urls import path
@@ -157,7 +158,7 @@ class AuditLogInline(admin.TabularInline):
 
 
 @admin.register(User)
-class UserAdmin(BaseUserAdmin):
+class UserAdmin(ForceDeleteAdminMixin, BaseUserAdmin):
     form = UserChangeForm
     add_form = UserCreationForm
 
@@ -394,7 +395,7 @@ class UserAdmin(BaseUserAdmin):
     export_users_csv.short_description = "Export selected users to CSV"
 
 @admin.register(UserProfile)
-class UserProfileAdmin(admin.ModelAdmin):
+class UserProfileAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "country",
@@ -415,7 +416,7 @@ class UserProfileAdmin(admin.ModelAdmin):
 
 
 @admin.register(UserSession)
-class UserSessionAdmin(admin.ModelAdmin):
+class UserSessionAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "platform",
@@ -439,7 +440,7 @@ class UserSessionAdmin(admin.ModelAdmin):
 
 
 @admin.register(AuditLog)
-class AuditLogAdmin(admin.ModelAdmin):
+class AuditLogAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "brand",
@@ -492,14 +493,14 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 
 @admin.register(Permission)
-class PermissionAdmin(admin.ModelAdmin):
+class PermissionAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("name", "codename", "permission_type", "resource")
     list_filter = ("permission_type", "resource")
     search_fields = ("name", "codename")
 
 
 @admin.register(Role)
-class RoleAdmin(admin.ModelAdmin):
+class RoleAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("name", "brand", "is_active", "permissions_count")
     list_filter = ("is_active", "brand")
     search_fields = ("name", "description")
@@ -512,7 +513,7 @@ class RoleAdmin(admin.ModelAdmin):
 
 
 @admin.register(UserRole)
-class UserRoleAdmin(admin.ModelAdmin):
+class UserRoleAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
     list_display = ("user", "role", "brand", "assigned_by", "is_active", "assigned_at")
     list_filter = ("is_active", "assigned_at", "brand")
     search_fields = ("user__username", "role__name", "brand__name")
