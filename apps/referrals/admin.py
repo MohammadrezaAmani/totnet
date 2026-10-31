@@ -3,6 +3,9 @@ Admin configuration for referrals app
 """
 
 from django.contrib import admin
+from django.db.models import Count
+from django.urls import reverse
+from urllib.parse import urlencode
 from apps.accounts.admin_delete import ForceDeleteAdminMixin
 from django.utils.html import format_html
 
@@ -15,6 +18,7 @@ from .models import (
     LoyaltyProgram,
     MarketingMaterial,
     Referral,
+    ReferralClick,
     ReferralLevel,
     ReferralLink,
     ReferralProgram,
@@ -141,11 +145,23 @@ class ReferralLinkAdmin(ScopedReferralAdmin):
         url = f"https://t.me/{obj.brand.bot_username.lstrip('@')}?start={obj.code}"
         return format_html('<a href="{}">{}</a>', url, url)
 
+    @admin.display(description="ورود یکتا", ordering="visit_total")
+    def unique_visits(self, obj):
+        return obj.visit_total
+
+    @admin.display(description="کاربران واردشده")
+    def visit_list(self, obj):
+        url = reverse("admin:referrals_referralclick_changelist")
+        url += "?" + urlencode({"link__id__exact": obj.pk})
+        return format_html('<a href="{}">مشاهده کاربران</a>', url)
+
     list_display = (
         "campaign_name",
         "code",
         "user",
         "brand",
+        "unique_visits",
+        "visit_list",
         "click_count",
         "conversion_count",
         "welcome_coupon",
@@ -161,12 +177,46 @@ class ReferralLinkAdmin(ScopedReferralAdmin):
         "created_at",
         "updated_at",
         "bot_link",
+        "visit_list",
     )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         if not request.user.is_superuser:
-            return qs.filter(brand__in=request.user.admin_brands.all())
+            qs = qs.filter(brand__in=request.user.admin_brands.all())
+        return qs.annotate(visit_total=Count("visits", distinct=True))
+
+
+@admin.register(ReferralClick)
+class ReferralClickAdmin(ScopedReferralAdmin):
+    """Browsable per-link visitor ledger for named and ownerless invite links."""
+
+    list_display = (
+        "visitor", "visitor_telegram_id", "link", "brand", "is_registration", "created_at",
+    )
+    list_display_links = ("visitor",)
+    list_select_related = ("visitor", "link", "brand")
+    list_filter = (
+        "is_registration", "brand", ("link", admin.RelatedOnlyFieldListFilter),
+    )
+    search_fields = (
+        "visitor__username", "visitor__full_name", "visitor__telegram_id",
+        "link__code", "link__campaign_name",
+    )
+    readonly_fields = ("link", "visitor", "brand", "is_registration", "created_at")
+    date_hierarchy = "created_at"
+
+    @admin.display(description="شناسه تلگرام", ordering="visitor__telegram_id")
+    def visitor_telegram_id(self, obj):
+        return obj.visitor.telegram_id
+
+    def has_add_permission(self, request):
+        return False
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            qs = qs.filter(brand__in=request.user.admin_brands.all())
         return qs
 
 

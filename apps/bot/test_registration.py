@@ -167,6 +167,21 @@ class RegistrationFlowTests(TestCase):
         self.assertEqual(self.link.click_count, 1)
         self.assertEqual(Referral.objects.filter(referee=user).count(), 1)
 
+    def test_ownerless_campaign_link_admits_a_new_user_in_invite_only_mode(self):
+        from apps.referrals.models import ReferralClick
+        campaign = ReferralLink.objects.create(
+            brand=self.brand, user=None, code="2fcb3d6b94ba4d66bc12",
+            campaign_name="Current users2",
+        )
+        self.feed(text="/start 2fcb3d6b94ba4d66bc12")
+        visitor = User.objects.get(brand=self.brand, telegram_id=2)
+        visit = ReferralClick.objects.get(link=campaign, visitor=visitor)
+        self.assertTrue(visit.is_registration)
+        self.assertIsNone(visitor.referred_by_id)
+        self.assertFalse(Referral.objects.filter(referee=visitor).exists())
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.click_count, 1)
+
     def test_referral_start_does_not_send_acknowledgement_to_invited_user(self):
         self.feed(text="/start VALID")
         sent_texts = [

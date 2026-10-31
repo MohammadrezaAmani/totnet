@@ -1,7 +1,7 @@
 """Brand-scoped admission for every Telegram entry point."""
 
 from aiogram import BaseMiddleware, types
-from aiogram.filters import CommandStart
+import re
 
 from django.db.models import Q
 
@@ -18,6 +18,28 @@ INVITE_REQUIRED_MESSAGE = (
 
 class InvitationRequired(Exception):
     pass
+
+
+async def extract_start_invitation(message: types.Message, bot) -> str | None:
+    """Read a Telegram /start deep-link without relying on filter middleware state.
+
+    This is run by an OUTER middleware (before CommandStart is evaluated by
+    the router). Keep bot mentions checked, so a link intended for another bot
+    never grants entry to this brand.
+    """
+    match = re.fullmatch(
+        r"/start(?:@(?P<mention>[A-Za-z0-9_]+))?(?:[ \t]+(?P<code>[A-Za-z0-9_-]{1,64}))?[ \t]*",
+        message.text or "",
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    mention = match.group("mention")
+    if mention:
+        identity = await bot.get_me()
+        if not identity.username or mention.casefold() != identity.username.casefold():
+            return None
+    return match.group("code")
 
 
 async def registration_allowed(brand_id: int, referral_code: str | None = None) -> bool:
@@ -76,9 +98,7 @@ class BrandAdmissionMiddleware(BaseMiddleware):
 
         code = None
         if isinstance(event, types.Message):
-            command = await CommandStart()(event, data["bot"])
-            if command:
-                code = (command["command"].args or "").strip() or None
+            code = await extract_start_invitation(event, data["bot"])
         if await registration_allowed(self.brand_id, code):
             return await handler(event, data)
 

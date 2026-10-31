@@ -28,6 +28,7 @@ from apps.referrals.models import (
     NotificationRule,
     NotificationTrigger,
     ReferralLink,
+    ReferralClick,
     UserChallenge,
 )
 from apps.referrals.scheduling import audience_users
@@ -129,6 +130,16 @@ class AdminControlMixin:
                 )
             elif section == "link":
                 await self.control_link(callback, int(parts[1]))
+            elif section == "linkvisits":
+                await self.control_link_visits(
+                    callback, int(parts[1]), int(parts[2]) if len(parts) > 2 else 1
+                )
+            elif section == "linkvisitor":
+                link_id, person_id = int(parts[1]), int(parts[2])
+                await ReferralLink.objects.aget(pk=link_id, brand=self.brand)
+                await self.control_user(
+                    callback, person_id, back=f"ac:linkvisits:{link_id}:{int(parts[3])}"
+                )
             elif section == "linknew":
                 await self.control_prompt(
                     callback,
@@ -488,10 +499,43 @@ class AdminControlMixin:
             callback,
             text,
             [
+                [button(f"👥 کاربران واردشده ({metrics['visits']})", f"linkvisits:{pk}:1")],
                 [button("ویرایش نام", f"linkedit:{pk}")],
                 [button("فعال / غیرفعال", f"linktoggle:{pk}")],
             ],
             "ac:links",
+        )
+
+    async def control_link_visits(self, callback, pk: int, page: int = 1):
+        """All unique visitors, not only reward-bearing referrals or buyers."""
+        link = await ReferralLink.objects.aget(pk=pk, brand=self.brand)
+        qs = (
+            ReferralClick.objects.filter(link_id=pk, brand=self.brand)
+            .select_related("visitor")
+            .order_by("-created_at", "-pk")
+        )
+        count = await qs.acount()
+        page = max(1, min(page, max(1, (count + 7) // 8)))
+        rows = []
+        async for visit in qs[(page - 1) * 8 : page * 8]:
+            person = visit.visitor
+            label = "🆕" if visit.is_registration else "👤"
+            rows.append([button(
+                f"{label} {person.full_name or person.username or person.telegram_id} ({person.telegram_id or person.pk})"[:62],
+                f"linkvisitor:{pk}:{person.pk}:{page}",
+            )])
+        if page > 1:
+            rows.append([button("⬅️ قبلی", f"linkvisits:{pk}:{page - 1}")])
+        if page * 8 < count:
+            rows.append([button("بعدی ➡️", f"linkvisits:{pk}:{page + 1}")])
+        await self.control_screen(
+            callback,
+            f"👥 کاربران واردشده از لینک {escape(link.campaign_name or link.code)}\n"
+            f"تعداد یکتا: {count} | صفحه {page} از {max(1, (count + 7) // 8)}\n"
+            "🆕 = عضویت جدید با این لینک | 👤 = کاربر قبلی\n"
+            "روی نام هر کاربر بزنید تا اطلاعاتش نمایش داده شود.",
+            rows,
+            back=f"ac:link:{pk}",
         )
 
     async def control_plans(self, callback, page=1):
@@ -759,7 +803,7 @@ class AdminControlMixin:
             rows += [[button("بعدی", f"users:{page + 1}")]]
         await self.control_screen(callback, f"👥 کاربران ربات: {count}", rows)
 
-    async def control_user(self, callback, pk):
+    async def control_user(self, callback, pk, back="ac:users"):
         u = await User.objects.aget(pk=pk, brand=self.brand)
         wallet = await Wallet.objects.filter(
             user=u, brand=self.brand, currency=self.brand.currency
@@ -778,7 +822,7 @@ class AdminControlMixin:
                 [button("فعال / مسدود", f"usertoggle:{pk}")],
                 [button("افزودن اعتبار با ثبت دفتر مالی", f"usercredit:{pk}")],
             ],
-            "ac:users",
+            back,
         )
 
     async def handle_control_message(self, message, user, state):
