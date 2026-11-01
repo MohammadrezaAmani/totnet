@@ -146,7 +146,7 @@ class ChallengesHandler(BaseHandler):
             """
             rows = [
                 [{"text": "👥 معرفی دوستان", "callback_data": "referral_system"}],
-                [{"text": "🏅 درجه پزشکی و امتیازات", "callback_data": "rewards"}],
+                [{"text": "🏅 مدرک پزشکی و امتیازات", "callback_data": "rewards"}],
                 [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
             ]
         elif challenge.status == UserChallenge.Status.DECLINED:

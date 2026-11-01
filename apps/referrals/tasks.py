@@ -97,6 +97,16 @@ def deliver_gamification_notification(self, notification_id):
             if notification.rule_id:
                 if not notification.rule.is_active:
                     return False
+                if notification.rule.kind == "profile_completion":
+                    profile = UserProfile.objects.filter(user_id=notification.user_id).first()
+                    user = notification.user
+                    if profile and (
+                        profile.profile_reward_granted_at or (
+                            user.full_name and user.birth_date and user.phone_number
+                            and profile.living_location and profile.gender
+                        )
+                    ):
+                        return False
                 from .scheduling import audience_users
                 if not audience_users(notification.brand_id, notification.rule.audience).filter(pk=notification.user_id).exists():
                     return False
@@ -351,22 +361,103 @@ def _queue_confirmed_referral_purchase(order):
                 metadata={"order_id": order.pk, "referee_id": order.user_id},
             ) or queued
 
-    gift_inviter = _claimed_gift_referral_target(order)
-    if gift_inviter and not _already_delivered_legacy_reward(order, gift_inviter.pk):
-        queued = _queue_once(
-            user=gift_inviter,
-            brand_id=order.brand_id,
-            notification_type=GamificationNotification.NotificationType.REFERRAL_PURCHASE,
-            dedupe_key=f"gift-claim-referral:{order.pk}",
-            text=(
-                "کاربری که برایشان اشتراک خرید کرده بودید وارد ربات شد و "
-                "امتیاز این معرفی برای شما ثبت شد"
-            ),
-            buttons_data=[[{"text": "🏅 امتیازات معرفی", "callback_data": "rewards"}]],
-            metadata={"order_id": order.pk, "referee_id": order.recipient_id},
-        ) or queued
+    # Gift handover has a dedicated task, which determines reward eligibility
+    # before notifying the purchaser. Never send a second generic pill alert.
     return queued
 
+
+
+def _queue_gift_transfer_notice(order):
+    """Notify the purchaser once the gift is owned by the recipient."""
+    if order.order_type != Order.OrderType.GIFT or not order.recipient_id:
+        return False
+    from apps.orders.models import GiftVoucher
+    gift = GiftVoucher.objects.filter(order_id=order.pk, claimed_by_id=order.recipient_id).first()
+    if not gift or not Subscription.objects.filter(
+        order_id=order.pk, owner_id=order.recipient_id, is_gift=True
+    ).exists():
+        return False
+    reward = ReferralReward.objects.filter(
+        order_id=order.pk, user_id=order.user_id,
+        reward_type="normal_point", status=ReferralReward.RewardStatus.PROCESSED,
+        amount=Decimal("1"),
+    ).exists()
+    reward_line = (
+        "یک 💊 بابت این معرفی موفق دریافت کردید.\n"
+        if reward else "امتیاز معرفی برای این ورود ثبت نشده است.\n"
+    )
+    from apps.accounts.models import User
+    buyer = User.objects.filter(pk=order.user_id, brand_id=order.brand_id).first()
+    if not buyer:
+        return False
+    return _queue_once(
+        user=buyer,
+        brand_id=order.brand_id,
+        notification_type=GamificationNotification.NotificationType.REFERRAL_PURCHASE,
+        dedupe_key=f"gift-claim-referral:{order.pk}",
+        text=(
+            "🎁 کاربری که برایش اشتراک خرید کرده بودید وارد ربات شد و پروفایلش را تکمیل کرد.\n"
+            + reward_line
+            + "اشتراک اکنون برای ایشان ثبت شده و از فهرست اشتراک‌های شما حذف شده است."
+        ),
+        buttons_data=[[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}]],
+        metadata={"order_id": order.pk, "referee_id": order.recipient_id,
+                  "event": "gift_referral_handover"},
+    )
+
+
+@shared_task(bind=True, max_retries=4, default_retry_delay=60)
+def notify_gift_transfer(self, order_id: int):
+    """Idempotently award an eligible gifted referral then confirm transfer."""
+    from apps.orders.models import GiftVoucher
+    order = Order.objects.filter(pk=order_id).first()
+    if not order or order.order_type != Order.OrderType.GIFT or not order.recipient_id:
+        return False
+    if GiftVoucher.objects.filter(
+        order_id=order.pk, claimed_by_id=order.recipient_id,
+        new_member_at_claim=True,
+    ).exists():
+        from .services import award_level_one_referral_for_payment
+        payment_id = (Payment.objects.filter(
+            order_id=order.pk, status=Payment.PaymentStatus.CONFIRMED
+        ).order_by("-created_at").values_list("payment_id", flat=True).first())
+        if payment_id:
+            try:
+                award_level_one_referral_for_payment(payment_id=str(payment_id))
+            except (RewardConfigurationError, ChallengeError, WalletOperationError) as exc:
+                if self.request.retries < self.max_retries:
+                    raise self.retry(exc=exc)
+                logger.warning("Gift %s reward unavailable: %s", order.pk, type(exc).__name__)
+    return _queue_gift_transfer_notice(order)
+
+
+
+@shared_task
+def recover_missing_gift_transfer_notices(limit: int = 200):
+    """Recover transfer notices after a worker/broker outage without duplicate sends."""
+    from apps.orders.models import GiftVoucher
+    since = timezone.now() - timedelta(days=30)
+    candidates = (GiftVoucher.objects.filter(
+        order__recipient__isnull=False, claimed_at__gte=since,
+        order__brand__status="active",
+    ).values_list("order_id", "order__recipient_id").order_by("claimed_at")[:limit])
+    queued = 0
+    for order_pk, recipient_id in candidates:
+        if GamificationNotification.objects.filter(
+            dedupe_key=f"gift-claim-referral:{order_pk}"
+        ).exists():
+            continue
+        if not Subscription.objects.filter(
+            order_id=order_pk, owner_id=recipient_id,
+            is_gift=True,
+        ).exists():
+            continue
+        try:
+            notify_gift_transfer.delay(order_pk)
+            queued += 1
+        except Exception:
+            logger.exception("Could not enqueue gift transfer recovery for %s", order_pk)
+    return queued
 
 def _queue_referral_purchase_for_payment(payment_id: str):
     payment = Payment.objects.select_related("order").filter(payment_id=payment_id).first()

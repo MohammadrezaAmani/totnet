@@ -35,18 +35,26 @@ logger = logging.getLogger(__name__)
 class SubscriptionHandler(BaseHandler):
     """Handle subscription management and delivery"""
 
+    @staticmethod
+    def visible_to_user(user):
+        """Gift accounts are visible to their current owner, never an old buyer.
+
+        Non-gift subscriptions also retain the pre-existing purchaser view.
+        """
+        return Q(owner=user) | Q(user=user, is_gift=False)
+
     async def show_my_subscriptions(self, callback: types.CallbackQuery, page: int = 1):
         """List subscriptions; selecting one opens its details (not all renewal plans)."""
         user, _ = await self.get_or_create_user(callback.from_user)
-        queryset = Subscription.objects.filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand).exclude(hidden_for_users__user=user)
+        queryset = Subscription.objects.filter(self.visible_to_user(user), brand=self.brand).exclude(hidden_for_users__user=user)
         total = await queryset.acount()
         per_page = 8
         last_page = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, last_page))
         subscriptions = []
         async for sub in (
-            Subscription.objects.filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand)
-            .select_related("plan", "owner", "user", "vpn_provider", "remote_account")
+            Subscription.objects.filter(self.visible_to_user(user), brand=self.brand)
+            .select_related("plan", "owner", "user", "vpn_provider", "remote_account", "order")
             .exclude(hidden_for_users__user=user)
             .order_by("-created_at")[(page - 1) * per_page:page * per_page]
         ):
@@ -76,6 +84,8 @@ class SubscriptionHandler(BaseHandler):
                         if sub.plan.traffic_limit_gb is not None else "—"
                     )
                 label = f"{service_type} {volume} {sub.plan.max_users}کاربر _ {sub.display_name or username}"
+                if sub.is_gift and sub.order.recipient_id is None:
+                    label = f"🎁 اشتراک دیگری · {label} (در انتظار دریافت)"
                 expired = is_subscription_expired(sub)
                 if expired:
                     label = f"{label} (منقضی شده · تمدید/حذف)"
@@ -149,7 +159,7 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         queryset = Subscription.objects.filter(
             owner=user, brand=self.brand
-        ).exclude(is_gift=True, order__recipient__isnull=True).select_related(
+        ).select_related(
             "plan", "vpn_provider", "owner", "user"
         )
         await self._show_subscription_list(
@@ -227,18 +237,58 @@ class SubscriptionHandler(BaseHandler):
     async def show_renewal_details(
         self, callback: types.CallbackQuery, subscription_id: int, page: int = 1
     ):
-        """Continue checkout using this subscription's original plan only."""
-        from .purchase import PurchaseHandler
-
-        await PurchaseHandler(self.bot, self.brand).repurchase_subscription(
-            callback, subscription_id
+        """Explain renewal choices without creating a pending order."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        subscription = await (
+            Subscription.objects.select_related("plan", "order")
+            .filter(self.visible_to_user(user), brand=self.brand, pk=subscription_id)
+            .exclude(hidden_for_users__user=user)
+            .afirst()
         )
+        if subscription is None:
+            await callback.answer("اشتراک یافت نشد.", show_alert=True)
+            return
+        if subscription.is_gift and subscription.order.recipient_id is None:
+            await callback.answer("این اشتراک هدیه هنوز توسط گیرنده دریافت نشده است.", show_alert=True)
+            return
+        plan = subscription.plan
+        category = {
+            SubscriptionPlan.ServiceCategory.NORMAL: "نرمال",
+            SubscriptionPlan.ServiceCategory.ROYAL: "رویال",
+            SubscriptionPlan.ServiceCategory.IRAN_IP: "آی‌پی ایران",
+        }.get(plan.service_category, "سرویس")
+        volume = "نامحدود" if plan.plan_type == SubscriptionPlan.PlanType.UNLIMITED else (
+            f"{number(plan.traffic_limit_gb)}گ" if plan.traffic_limit_gb is not None else "اشتراک"
+        )
+        duration = f"{number(plan.duration_value)}ماهه" if plan.duration_unit == "months" else (
+            f"{number(plan.duration_value)}{plan.get_duration_unit_display()}"
+            if plan.duration_value else ""
+        )
+        label = f"{volume} {category} {number(plan.max_users)}کاربر {duration}".strip()
+        label = label.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+        credit = await self.purchase_credit(user, plan.currency)
+        due = self.payable_plan_price(plan, credit)
+        text = (
+            "🔄 <b>تمدید اشتراک</b>\n\n"
+            "همیشه قبل از اتمام تایم یا حجم اشتراک اقدام به تمدید کنید تا اشتراک بعدی برایتان رزرو شود.\n\n"
+            "از امتیازات نقد خود برای خرید و تمدید آزادانه‌تر اشتراک خود استفاده کنید.\n\n"
+            f"💰 مبلغ پس از کسر امتیازات نقد: {self.format_price(due, plan.currency)}"
+        )
+        keyboard = self.create_keyboard([
+            [{"text": "🛒 مشاهده سایر اشتراک‌ها", "callback_data": "purchase_subscription", "style": "success"}],
+            [{"text": f"🔄 تمدید همین اشتراک ({label})", "callback_data": f"repurchase_subscription_{subscription.pk}"}],
+            [{"text": "🔙 بازگشت", "callback_data": f"subscription_details_{subscription.pk}"}],
+        ])
+        await self.edit_message_with_keyboard(
+            callback.message.chat.id, callback.message.message_id, text, keyboard
+        )
+        await callback.answer()
 
     async def start_rename_subscription(self, callback, subscription_id: int):
         from apps.bot.models import BotState
         user, _ = await self.get_or_create_user(callback.from_user)
         allowed = await Subscription.objects.filter(
-            (Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand, pk=subscription_id
+            self.visible_to_user(user), brand=self.brand, pk=subscription_id
         ).aexists()
         if not allowed:
             await callback.answer("❌ اشتراک پیدا نشد.", show_alert=True)
@@ -262,7 +312,7 @@ class SubscriptionHandler(BaseHandler):
             return
         subscription_id = (state.state_data or {}).get("subscription_id")
         count = await Subscription.objects.filter(
-            (Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand, pk=subscription_id
+            self.visible_to_user(user), brand=self.brand, pk=subscription_id
         ).aupdate(display_name=name)
         if not count:
             await message.reply("❌ این اشتراک در دسترس نیست.")
@@ -286,8 +336,8 @@ class SubscriptionHandler(BaseHandler):
 
         try:
             subscription = (
-                await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user", "remote_account")
-                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
+                await Subscription.objects.select_related("plan", "vpn_provider", "owner", "user", "remote_account", "order")
+                .filter(self.visible_to_user(user))
                 .exclude(hidden_for_users__user=user)
                 .aget(id=subscription_id, brand=self.brand)
             )
@@ -327,13 +377,17 @@ class SubscriptionHandler(BaseHandler):
                     ],
                 ]
             )
-        if is_subscription_expired(subscription):
+        unclaimed_gift = subscription.is_gift and subscription.order.recipient_id is None
+        if unclaimed_gift:
+            text += "\n\n🎁 اشتراک هدیه در انتظار ورود و تکمیل پروفایل گیرنده است."
+        if is_subscription_expired(subscription) and not unclaimed_gift:
             keyboard_buttons.append([
                 {"text": "🔄 تمدید", "callback_data": f"renewal_details_{subscription_id}"},
                 {"text": "🗑 حذف", "callback_data": f"hide_subscription_{subscription_id}",
                  "style": "danger"},
             ])
-        if subscription.status != Subscription.SubscriptionStatus.CANCELLED and not is_subscription_expired(subscription):
+        if (not unclaimed_gift and subscription.status != Subscription.SubscriptionStatus.CANCELLED
+                and not is_subscription_expired(subscription)):
             keyboard_buttons.append(
                 [
                     {
@@ -358,7 +412,7 @@ class SubscriptionHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         subscription = await (
             Subscription.objects.select_related("vpn_provider", "remote_account")
-            .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)), brand=self.brand, pk=subscription_id)
+            .filter(self.visible_to_user(user), brand=self.brand, pk=subscription_id)
             .afirst()
         )
         if subscription is None or not is_subscription_expired(subscription):
@@ -378,7 +432,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("vpn_provider", "plan")
-                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
+                .filter(self.visible_to_user(user))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -597,7 +651,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
+                .filter(self.visible_to_user(user))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -679,7 +733,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
+                .filter(self.visible_to_user(user))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -725,7 +779,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
+                .filter(self.visible_to_user(user))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,
@@ -805,7 +859,7 @@ class SubscriptionHandler(BaseHandler):
         try:
             subscription = (
                 await Subscription.objects.select_related("plan", "vpn_provider")
-                .filter((Q(user=user, is_gift=False) | Q(owner=user, is_gift=False) | Q(owner=user, is_gift=True, order__recipient=user)))
+                .filter(self.visible_to_user(user))
                 .aget(
                     id=subscription_id,
                     brand=self.brand,

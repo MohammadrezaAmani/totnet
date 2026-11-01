@@ -175,7 +175,7 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
     subscription = Subscription.objects.select_for_update().filter(order=order).first()
     if subscription:
         subscription.owner = user
-        subscription.display_name = (user.full_name or user.username)[:100]
+        subscription.display_name = (user.full_name or user.username)[:40]
         subscription.save(update_fields=['owner', 'display_name', 'updated_at'])
     else:
         provider = order.plan.vpn_provider if order.plan.vpn_provider_id else VPNProvider.objects.filter(
@@ -200,13 +200,11 @@ def claim_gift(*, token: str, brand_id: int, user_id: int, newly_registered: boo
         transaction.on_commit(
             lambda subscription_pk=subscription.pk: _enqueue_order_provisioning(subscription_pk)
         )
-    payment_id = (Payment.objects.filter(order=order, status=Payment.PaymentStatus.CONFIRMED)
-                  .order_by('-created_at').values_list('payment_id', flat=True).first())
-    if payment_id and gift.new_member_at_claim:
-        from apps.referrals.services import _enqueue_claimed_gift_reward
-        transaction.on_commit(
-            lambda paid_id=payment_id: _enqueue_claimed_gift_reward(paid_id)
-        )
+    # Publish a single handover notification. The task evaluates the actual
+    # reward ledger before mentioning a pill, including for an existing user
+    # (whose transfer should be confirmed without inventing a referral reward).
+    from apps.referrals.tasks import notify_gift_transfer
+    transaction.on_commit(lambda order_pk=order.pk: notify_gift_transfer.delay(order_pk))
     return order
 
 

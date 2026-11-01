@@ -26,7 +26,7 @@ class StatsHandler(BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
 
         subscription_count = await Subscription.objects.filter(
-            (Q(user=user) | Q(owner=user)), brand=self.brand, status="active"
+            (Q(user=user, is_gift=False) | Q(owner=user)), brand=self.brand, status="active"
         ).acount()
         rewards = await reward_summary(user_id=user.pk, brand_id=self.brand.pk)
         referred_by = (
@@ -84,7 +84,7 @@ class StatsHandler(BaseHandler):
 
         subscriptions = []
         async for subscription in Subscription.objects.filter(
-            (Q(user=user) | Q(owner=user)), brand=self.brand
+            (Q(user=user, is_gift=False) | Q(owner=user)), brand=self.brand
         ):
             subscriptions.append(subscription)
 
@@ -160,7 +160,7 @@ class StatsHandler(BaseHandler):
 
         subscriptions = []
         async for subscription in Subscription.objects.filter(
-            (Q(user=user) | Q(owner=user)), brand=self.brand
+            (Q(user=user, is_gift=False) | Q(owner=user)), brand=self.brand
         ):
             subscriptions.append(subscription)
 

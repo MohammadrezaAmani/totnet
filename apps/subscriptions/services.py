@@ -104,7 +104,7 @@ async def provision_order_subscription(order_id: int) -> Subscription | None:
             vpn_user_email=vpn_email,
             owner=order.recipient or order.user,
             is_gift=order.order_type == Order.OrderType.GIFT,
-            display_name=(f"{order.user.full_name or order.user.username}_others"[:100]
+            display_name=(f"{(order.user.full_name or order.user.username)[:33]}_others"[:40]
                           if order.order_type == Order.OrderType.GIFT and not order.recipient_id else ""),
             starts_at=start_date,
             expires_at=end_date,

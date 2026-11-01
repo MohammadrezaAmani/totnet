@@ -53,7 +53,7 @@ class ProfileHandler(BaseHandler):
         now = timezone.now()
         subscription_count = await (
             Subscription.objects.filter(
-                (Q(user=user) | Q(owner=user)),
+                (Q(user=user, is_gift=False) | Q(owner=user)),
                 brand=self.brand,
                 status=Subscription.SubscriptionStatus.ACTIVE,
             )
@@ -257,10 +257,10 @@ class ProfileHandler(BaseHandler):
             profile.save(update_fields=["devices", "device_type", "updated_at"])
 
     FIELD_PROMPTS = {
-        "full_name": "👨‍💼 نام کامل خود را ارسال کنید:",
-        "birth_date": "🎂 تاریخ تولد\nبرای یادآوری روز تولدتان\n\nتاریخ را به شکل سال/ماه/روز وارد کنید، مثلاً ۱۳۷۶/۰۹/۱۱. سال حتماً اول باشد.",
-        "phone": "📱 شماره تلفن\nجهت دسترسی داشتن به شما در صورت قطعی اینترنت و اطلاع‌رسانی\n\nشماره تلفن همراه خود را ارسال کنید:",
-        "locations": "📍 استان محل زندگی خود را وارد کنید تا در صورت قطعی یا اختلال اینترنت در استان شما اطلاع‌رسانی کنیم:",
+        "full_name": "👤 نام و نام خانوادگی خود را وارد کنید:",
+        "birth_date": "🎂 تاریخ تولدتان را به صورت سال/ماه/روز وارد کنید.\nمثال: ۱۳۷۶/۰۹/۱۱",
+        "phone": "📱 شماره موبایل خود را برای دریافت اطلاعیه‌های ضروری سرویس وارد کنید.\nمثال: ۰۹۱۲۳۴۵۶۷۸۹",
+        "locations": "📍 نام استان محل زندگی خود را وارد کنید تا اطلاعیه‌های مربوط به اختلالات منطقه‌ای را دریافت کنید:",
     }
     COMPLETION_FIELDS = ("birth_date", "phone", "locations")
 

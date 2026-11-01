@@ -42,11 +42,7 @@ class SubscriptionHiddifyHandler(BaseHandler):
     @staticmethod
     def _accessible_subscription_filter(user):
         """A paid gift belongs to its recipient only after a completed handover."""
-        return (
-            Q(user=user, is_gift=False)
-            | Q(owner=user, is_gift=False)
-            | Q(owner=user, is_gift=True, order__recipient=user)
-        )
+        return Q(user=user, is_gift=False) | Q(owner=user)
 
     async def get_hiddify_provider(self) -> Optional[HiddifyProvider]:
         """Get Hiddify provider instance for this brand"""

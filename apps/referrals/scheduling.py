@@ -173,7 +173,7 @@ def run_notification_rules(limit=500):
                 ):
                     continue
             if (
-                rule.kind != "custom"
+                rule.kind not in {"custom", NotificationRule.Kind.PROFILE_COMPLETION}
                 and GamificationNotification.objects.filter(
                     user=user,
                     brand_id=rule.brand_id,
@@ -197,7 +197,12 @@ def run_notification_rules(limit=500):
                 from apps.accounts.models import UserProfile
 
                 profile, _ = UserProfile.objects.get_or_create(user=user)
-                if profile.profile_reward_granted_at:
+                # A completed profile may not have received a pill (for example,
+                # where rewards are disabled). Do not keep nagging that user.
+                if profile.profile_reward_granted_at or (
+                    user.full_name and user.birth_date and user.phone_number
+                    and profile.living_location and profile.gender
+                ):
                     continue
             action = rule.button_action or {
                 "survey": "service_survey_start",

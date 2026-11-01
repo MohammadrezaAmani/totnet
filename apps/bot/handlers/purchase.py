@@ -477,12 +477,16 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         user, _ = await self.get_or_create_user(callback.from_user)
         try:
             subscription = (
-                await Subscription.objects.select_related("plan", "owner", "user")
-                .filter(Q(user=user) | Q(owner=user), brand=self.brand)
+                await Subscription.objects.select_related("plan", "owner", "user", "order")
+                .filter(Q(user=user, is_gift=False) | Q(owner=user), brand=self.brand)
                 .aget(pk=subscription_id)
             )
         except Subscription.DoesNotExist:
             await callback.answer("❌ اشتراک یافت نشد.", show_alert=True)
+            return
+
+        if subscription.is_gift and not subscription.order.recipient_id:
+            await callback.answer("این اشتراک هدیه هنوز توسط گیرنده دریافت نشده است.", show_alert=True)
             return
 
         # Renewal never selects a different plan, including from stale callbacks.
@@ -697,9 +701,10 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             hours = self.brand.gift_expiry_hours
             text = (
                 "🎁 <b>خرید برای دیگران</b>\n"
-                "بعد از تایید واریز،لینک مخصوص این خرید برای شما ارسال میشود.\n"
-                f"اگر کاربر نهایی این اشتراک تا {hours}ساعت آینده با این لینک وارد ربات شده و اشتراکش را ثبت کند،\n"
-                "در صورت واجد شرایط بودن معرفی، امتیاز طبق قوانین محاسبه می‌شود.\n\n"
+                "بعد از تأیید پرداخت، مشخصات اشتراک و لینک ورود اختصاصی گیرنده برای شما ارسال می‌شود.\n"
+                f"گیرنده تا {hours} ساعت فرصت دارد با لینک وارد ربات شود و پروفایلش را تکمیل کند.\n"
+                "پس از تکمیل پروفایل، اشتراک از حساب شما به حساب گیرنده منتقل می‌شود. "
+                "پاداش معرفی در صورت احراز شرایط ثبت خواهد شد.\n\n"
             ) + text
         await self.update_user_state(
             user,
@@ -1235,8 +1240,8 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         if order.order_type == Order.OrderType.GIFT and not order.recipient_id:
             text = (
                 "🎁 رسید خرید برای دیگران ثبت شد\n\n"
-                "تا زمان تایید تراکنش و ارسال اشتراک\n"
-                "میتوانید لینک نصب برنامه و توضیحات کار با برنامه را به کاربر نهایی منتقل کنید"
+                "پس از تأیید پرداخت، اطلاعات اشتراک خریداری‌شده و لینک اختصاصی ورود کاربر نهایی برای شما ارسال می‌شود.\n"
+                "تا آن زمان می‌توانید لینک دانلود برنامه و آموزش‌های آکادمی را برای گیرنده بفرستید."
             )
             gift_help = (
                 UsefulContent.Category.DOWNLOADS,
@@ -1245,9 +1250,9 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             )
             keyboard = self.create_keyboard([
                 [{"text": UsefulContentHandler.CATEGORY_LABELS[key],
-                  "callback_data": f"useful_category_{key}"}]
+                  "callback_data": f"useful_category_{key}", "style": "success"}]
                 for key in gift_help
-            ] + [[{"text": "🏠 منوی اصلی", "callback_data": "main_menu"}]])
+            ] + [[{"text": "🏠 منوی اصلی", "callback_data": "main_menu", "style": "success"}]])
         else:
             text = (
                 f"✅ رسید دریافت شد.\n🕐 تاریخ و ساعت ثبت: <code>{at}</code>\n"

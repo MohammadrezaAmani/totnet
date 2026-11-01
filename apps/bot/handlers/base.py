@@ -261,7 +261,7 @@ class BaseHandler:
                 {"text": "👤 پروفایل من", "callback_data": "my_profile"},
             ],
             [
-                {"text": "🏅 درجه پزشکی و امتیازات", "callback_data": "rewards"},
+                {"text": "🏅 مدرک پزشکی و امتیازات", "callback_data": "rewards"},
                 {"text": "👥 معرفی دوستان", "callback_data": "referral_system"},
             ],
             [

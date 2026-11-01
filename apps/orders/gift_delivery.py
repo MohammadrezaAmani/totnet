@@ -6,13 +6,10 @@ from html import escape
 from apps.orders.checkout_links import paid_gift_link
 from apps.orders.models import GiftVoucher, Order
 from apps.subscriptions.models import Subscription
-from apps.subscriptions.presentation import compact_plan_specs, connectix_account_message
+from apps.subscriptions.presentation import connectix_account_message
 from utils.jalali import jalali_date
 
 logger = logging.getLogger(__name__)
-
-
-SERVICE_NAMES = {"normal": "نرمال", "royal": "رویال", "iran_ip": "آی‌پی ایران"}
 
 
 def queue_ready_gift_details(*, order_id: int, recipient_id: int | None = None) -> bool:
@@ -26,7 +23,11 @@ def queue_ready_gift_details(*, order_id: int, recipient_id: int | None = None) 
         return False
     subscription = Subscription.objects.filter(order=order, status=Subscription.SubscriptionStatus.ACTIVE).first()
     voucher = GiftVoucher.objects.filter(order=order).first()
-    if not subscription or not voucher or not subscription.subscription_url:
+    if not subscription or not voucher:
+        return False
+    # Connectix accounts may have username/password but no subscription URL.
+    # Do not withhold a successfully provisioned account from the purchaser.
+    if not (subscription.subscription_url or (subscription.connectix_username and subscription.connectix_password)):
         return False
     from apps.referrals.tasks import _queue_once
 
@@ -34,25 +35,25 @@ def queue_ready_gift_details(*, order_id: int, recipient_id: int | None = None) 
     if target is None or (recipient_id is not None and target.pk != recipient_id):
         return False
     is_buyer = recipient_id is None
-    service = SERVICE_NAMES.get(order.plan.service_category, order.plan.get_service_category_display())
-    lines = [
-        "🎁 <b>لینک ورود برای دریافت اشتراک خریداری‌شده</b>" if is_buyer else "🎁 <b>اطلاعات اشتراک شما</b>",
-        "",
-        f"🩺 نوع سرویس: {escape(service)}",
-        f"📋 نوع اشتراک: {escape(compact_plan_specs(order.plan))}",
-    ]
-    if not is_buyer:
-        lines = [connectix_account_message(subscription)]
+    # Buyers receive actual credentials AND the voucher link; recipients
+    # receive the exact same canonical account-details template.
+    lines = [connectix_account_message(subscription)]
     if is_buyer:
+        lines.extend(("", "🎁 <b>لینک ورود مخصوص گیرنده</b>"))
         gift_link = paid_gift_link(voucher)
         if gift_link:
-            lines.extend(("", "🎁 لینک ثبت اشتراک توسط کاربر نهایی:", escape(gift_link),
-                          f"⏳ مهلت ثبت: {jalali_date(voucher.expires_at, time=True)}"))
+            lines.extend(("", "🔗 لینک اختصاصی ورود کاربر نهایی:", escape(gift_link),
+                          f"⏳ مهلت ورود: {jalali_date(voucher.expires_at, time=True)}",
+                          "ابتدا گیرنده باید وارد ربات شود و پروفایل خود را تکمیل کند. "
+                          "پس از آن اشتراک به نام او ثبت می‌شود."))
         else:
             logger.error("Gift %s ready but bot username is not valid", order.pk)
 
     buttons = (
-        [[{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"}]]
+        [
+            [{"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions", "style": "success"}],
+            [{"text": "📖 آکادمی", "callback_data": "useful_category_install"}],
+        ]
         if is_buyer else [
             [{"text": "✏️ نام‌گذاری این اشتراک", "callback_data": f"rename_subscription_{subscription.pk}"}],
             [{"text": "📥 دریافت اکانت / QR", "callback_data": f"get_config_{subscription.pk}"}],
