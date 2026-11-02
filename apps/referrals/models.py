@@ -1010,6 +1010,7 @@ class GamificationNotification(models.Model):
         CHALLENGE_OFFER = "challenge_offer", "Challenge offer"
         CHALLENGE_REMINDER = "challenge_reminder", "Challenge reminder"
         EXPIRY_5D = "expiry_5d", "Subscription expiry 5d"
+        SUBSCRIPTION_LOW = "subscription_low", "Subscription low time or traffic"
         REFERRAL_REWARD = "referral_reward", "Referral reward"
         REFERRAL_PURCHASE = "referral_purchase", "Confirmed referred purchase"
         PROFILE_COMPLETION = "profile_completion", "Profile completion reminder"

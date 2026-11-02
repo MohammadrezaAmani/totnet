@@ -233,3 +233,11 @@ def provision_paid_order(order_pk: int):
             )
         )
     return False
+
+
+@shared_task(name="apps.subscriptions.tasks.check_subscription_low_balance")
+def check_subscription_low_balance(limit: int = 500):
+    """Scheduled low-balance alerts, across brands and service categories."""
+    from .reminders import scan_subscription_warnings
+
+    return scan_subscription_warnings(limit=limit)

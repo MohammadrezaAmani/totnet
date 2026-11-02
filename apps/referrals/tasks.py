@@ -85,6 +85,30 @@ def deliver_gamification_notification(self, notification_id):
             metadata = dict(notification.metadata or {})
             if notification.sent_at or metadata.get("delivery_abandoned"):
                 return False
+            # Retired legacy reminder: don't send a 5-day alert in addition to
+            # the consolidated 6-day/10% message, even if already queued.
+            if notification.notification_type == GamificationNotification.NotificationType.EXPIRY_5D:
+                metadata["delivery_abandoned"] = True
+                notification.metadata = metadata
+                notification.save(update_fields=["metadata"])
+                return False
+            if notification.notification_type == GamificationNotification.NotificationType.SUBSCRIPTION_LOW:
+                from apps.subscriptions.models import Subscription
+                from apps.subscriptions.reminders import warning_cycle, warning_reason
+                subscription = (
+                    Subscription.objects.select_related("vpn_provider", "remote_account")
+                    .filter(pk=metadata.get("subscription_id"), owner_id=notification.user_id)
+                    .first()
+                )
+                if (
+                    subscription is None
+                    or warning_cycle(subscription) != metadata.get("warning_cycle")
+                    or warning_reason(subscription) is None
+                ):
+                    metadata["delivery_abandoned"] = True
+                    notification.metadata = metadata
+                    notification.save(update_fields=["metadata"])
+                    return False
             payload = metadata.get("delivery_payload")
             from apps.accounts.models import UserProfile
             opted_out = UserProfile.objects.filter(user_id=notification.user_id, notification_enabled=False).exists()
@@ -203,6 +227,10 @@ def _queue_once(
             )
             if not created and notification.sent_at is not None:
                 return False
+            if not created and notification_type == GamificationNotification.NotificationType.SUBSCRIPTION_LOW:
+                # The earliest detected threshold owns the message. A later
+                # threshold must not replace its content while delivery retries.
+                return _queue_delivery(notification)
 
             notification.metadata = {
                 **(notification.metadata or {}),
@@ -868,43 +896,6 @@ def run_gamification_notifications(limit: int = 500):
         ):
             counters["challenge_reminder"] += 1
             if counters["challenge_reminder"] >= limit:
-                break
-
-    # Five-day subscription expiry reminder, once per concrete expiry timestamp.
-    subscriptions = (
-        Subscription.objects.filter(
-            status=Subscription.SubscriptionStatus.ACTIVE,
-            expires_at__gt=now + timedelta(days=4),
-            expires_at__lte=now + timedelta(days=5),
-            owner__telegram_id__isnull=False,
-        )
-        .exclude(owner__telegram_id=0)
-        .select_related("owner")
-    )
-    for subscription in subscriptions.iterator(chunk_size=200):
-        key = f"expiry-5d:{subscription.pk}:{subscription.expires_at.isoformat()}"
-        if _queue_once(
-            user=subscription.owner,
-            brand_id=subscription.brand_id,
-            notification_type=GamificationNotification.NotificationType.EXPIRY_5D,
-            dedupe_key=key,
-            text=(
-                "⏰ از اشتراک شما ۵ روز باقیمانده است، با معرفی فقط چند نفر "
-                "کاهش دائمی در هزینه‌های اینترنتتون خواهید داشت."
-            ),
-            buttons_data=[
-                [
-                    {"text": "📱 اشتراک‌های من", "callback_data": "my_subscriptions"},
-                    {"text": "👥 معرفی دوستان", "callback_data": "referral_system"},
-                ]
-            ],
-            metadata={
-                "subscription_id": subscription.pk,
-                "expires_at": subscription.expires_at.isoformat(),
-            },
-        ):
-            counters["expiry"] += 1
-            if counters["expiry"] >= limit:
                 break
 
     return counters

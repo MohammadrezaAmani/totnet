@@ -71,6 +71,10 @@ app.conf.beat_schedule = {
         "task": "apps.referrals.tasks.recover_missing_referrer_purchase_notifications",
         "schedule": 300.0,
     },
+    "check-subscription-low-balance": {
+        "task": "apps.subscriptions.tasks.check_subscription_low_balance",
+        "schedule": 300.0,
+    },
     "run-gamification-notifications": {
         "task": "apps.referrals.tasks.run_gamification_notifications",
         "schedule": 60.0,
