@@ -219,9 +219,9 @@ class Command(BaseCommand):
                 if uses_toman_amounts:
                     for target, fee, display_order in (
                         (1, Decimal("50000"), 1),
-                        (3, Decimal("150000"), 2),
-                        (5, Decimal("250000"), 3),
-                        (8, Decimal("350000"), 4),
+                        (3, Decimal("130000"), 2),
+                        (5, Decimal("200000"), 3),
+                        (8, Decimal("300000"), 4),
                     ):
                         ChallengeTier.objects.get_or_create(
                             program=challenge,

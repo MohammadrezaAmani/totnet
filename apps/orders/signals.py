@@ -148,10 +148,23 @@ def payment_post_save(sender, instance, created, **kwargs):
     if not created and previous == instance.status:
         return
 
+    if instance.status == Payment.PaymentStatus.FAILED:
+        def cleanup_rejected_receipts(payment_id=instance.pk):
+            try:
+                from apps.orders.tasks import delete_confirmed_admin_receipts
+                delete_confirmed_admin_receipts.delay(payment_id)
+            except Exception:
+                logger.exception("Could not queue rejected receipt cleanup for %s", payment_id)
+        transaction.on_commit(cleanup_rejected_receipts)
+
     # ---------------------------------------------------------------
     # Payment Confirmed
     # ---------------------------------------------------------------
     if instance.status == Payment.PaymentStatus.CONFIRMED:
+        from apps.referrals.models import UserChallenge
+        if UserChallenge.objects.filter(entry_payment_id=instance.pk).exists():
+            from apps.referrals.gamification import activate_challenge_from_payment
+            activate_challenge_from_payment(payment_id=instance.pk)
         # Includes approvals via Telegram, Django Admin and other verified paths.
         # Never delete before the payment status has committed successfully.
         def cleanup_admin_receipts(payment_id=instance.pk):
@@ -162,6 +175,13 @@ def payment_post_save(sender, instance, created, **kwargs):
                 logger.exception("Could not enqueue receipt cleanup for payment %s", payment_id)
 
         transaction.on_commit(cleanup_admin_receipts)
+        def notify_channel(payment_id=instance.pk):
+            try:
+                from apps.bot.operational import queue_confirmed_payment_event
+                queue_confirmed_payment_event(payment_id=payment_id)
+            except Exception:
+                logger.exception("Could not queue channel payment event %s", payment_id)
+        transaction.on_commit(notify_channel)
         if instance.order:
             order = instance.order
             confirmed_total = Payment.objects.filter(
@@ -261,14 +281,6 @@ def payment_post_save(sender, instance, created, **kwargs):
                                 brand_id=brand_id,
                                 user_ids=[telegram_id],
                                 text="پرداخت شما تأیید شد و سفارش برای فعال‌سازی اشتراک ثبت شد.",
-                                buttons_data=[
-                                    [
-                                        {
-                                            "text": "📱 اشتراک‌های من",
-                                            "callback_data": "my_subscriptions",
-                                        }
-                                    ],
-                                ],
                                 delete_after_seconds=60,
                             )
                         )
@@ -295,9 +307,6 @@ def payment_post_save(sender, instance, created, **kwargs):
                         brand_id=brand_id,
                         user_ids=[telegram_id],
                         text="پرداختی کیف پول شما تایید شد.",
-                        buttons_data=[
-                            [{"text": "کیف پول من", "callback_data": "wallet"}]
-                        ],
                         delete_after_seconds=60,
                     )
                 )
@@ -323,7 +332,7 @@ def payment_post_save(sender, instance, created, **kwargs):
                 broadcast_message(
                     brand_id=brand_id,
                     user_ids=[telegram_id],
-                    text="Your payment failed.",
+                    text="پرداخت شما تأیید نشد.",
                 )
             )
         )

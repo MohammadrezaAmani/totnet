@@ -772,6 +772,7 @@ class WalletHandler(BaseHandler):
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
 
         notified = await self._notify_admin_receipt(wallet, payment, file_id)
+        await self._remove_user_input(message)
         if not notified:
             await self.send_message_with_keyboard(
                 message.chat.id,
@@ -783,11 +784,18 @@ class WalletHandler(BaseHandler):
         self, wallet: Wallet, payment: Payment, file_id: str
     ) -> bool:
         """ارسال رسید به ادمین برای تأیید/رد"""
+        from apps.accounts.models import User
+        identity = await User.objects.filter(pk=payment.user_id).values(
+            "telegram_id", "referred_by__telegram_id",
+        ).afirst()
+        numeric_id = identity["telegram_id"] if identity else None
+        referrer_id = identity["referred_by__telegram_id"] if identity else None
         admin_text = (
-            f"🧾شارژ کیف پول\n"
-            f"سفارش: {payment.amount}\n"
+            "🧾 <b>شارژ کیف پول</b>\n"
             f"مبلغ: {self.format_price(payment.amount, payment.currency)}\n"
-            f"payment_id: {payment.id}"
+            f"آیدی عددی واریزکننده: <a href=\"tg://user?id={numeric_id}\">{numeric_id}</a>\n"
+            f"آیدی عددی معرف: {referrer_id or 'ندارد'}\n"
+            f"شناسه پرداخت: <code>{payment.payment_id}</code>"
         )
         admin_kb = self.create_keyboard(
             [
@@ -807,13 +815,20 @@ class WalletHandler(BaseHandler):
         notified = 0
         async for user in self.get_brand_admin_recipients():
             try:
-                await self.bot.send_photo(
+                sent = await self.bot.send_photo(
                     chat_id=user.telegram_id,
                     photo=file_id,
                     caption=admin_text,
+                    parse_mode="HTML",
                     reply_markup=admin_kb,
                 )
                 notified += 1
+                from apps.orders.models import AdminReceiptMessage
+                if isinstance(getattr(sent, "message_id", None), int):
+                    await AdminReceiptMessage.objects.aget_or_create(
+                        payment=payment, chat_id=user.telegram_id,
+                        message_id=sent.message_id,
+                    )
             except Exception:
                 logger.exception(
                     "Failed to send wallet receipt notification to admin %s", user.pk
@@ -833,73 +848,48 @@ class WalletHandler(BaseHandler):
             )
         return notified > 0
 
-    async def admin_confirm_payment(
-        self,
-        callback: types.CallbackQuery,
-        payment_id: int,
-    ):
-        """Confirm payment."""
-
+    async def admin_confirm_payment(self, callback: types.CallbackQuery, payment_id: int):
         user, _ = await self.get_or_create_user(callback.from_user, use_cache=False)
         if not await self.has_admin_access(user):
             await callback.answer("⛔ دسترسی ادمین ندارید.", show_alert=True)
             return
-
+        from apps.orders.approval import ReceiptReviewError, review_direct_deposit
         try:
-            payment = await Payment.objects.aget(id=int(payment_id), brand=self.brand)
-        except Payment.DoesNotExist:
-            await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
+            await sync_to_async(review_direct_deposit, thread_sensitive=True)(
+                payment_id=payment_id, brand_id=self.brand.pk, reviewer_id=user.pk,
+                approve=True,
+            )
+        except ReceiptReviewError as exc:
+            await callback.answer(str(exc), show_alert=True)
             return
-        if payment.status not in (
-            Payment.PaymentStatus.PENDING,
-            Payment.PaymentStatus.AWAITING_CONFIRMATION,
-        ) or not payment.wallet_id:
-            await callback.answer("❌ این پرداخت قابل تأیید نیست.", show_alert=True)
-            return
-        payment.status = Payment.PaymentStatus.CONFIRMED
-        payment.verified_by = user
-        payment.verified_at = timezone.now()
-        await payment.asave(
-            update_fields=["status", "verified_by", "verified_at", "updated_at"]
-        )
-
-        await callback.message.edit_reply_markup(reply_markup=None)
+        from aiogram.exceptions import TelegramBadRequest
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass  # The receipt might already have been deleted by the cleanup worker.
         await callback.answer("✅ پرداخت تأیید شد.")
 
-    async def admin_reject_payment(
-        self,
-        callback: types.CallbackQuery,
-        payment_id: int,
-    ):
-        """Reject payment."""
-
+    async def admin_reject_payment(self, callback: types.CallbackQuery, payment_id: int):
         user, _ = await self.get_or_create_user(callback.from_user, use_cache=False)
         if not await self.has_admin_access(user):
             await callback.answer("⛔ دسترسی ادمین ندارید.", show_alert=True)
             return
-
+        from apps.orders.approval import ReceiptReviewError, review_direct_deposit
         try:
-            payment = await Payment.objects.aget(id=int(payment_id), brand=self.brand)
-        except Payment.DoesNotExist:
-            await callback.answer("❌ پرداخت یافت نشد.", show_alert=True)
+            await sync_to_async(review_direct_deposit, thread_sensitive=True)(
+                payment_id=payment_id, brand_id=self.brand.pk, reviewer_id=user.pk,
+                approve=False,
+            )
+        except ReceiptReviewError as exc:
+            await callback.answer(str(exc), show_alert=True)
             return
-
-        if payment.status not in (
-            Payment.PaymentStatus.PENDING,
-            Payment.PaymentStatus.AWAITING_CONFIRMATION,
-        ) or not payment.wallet_id:
-            await callback.answer("❌ این پرداخت قابل رد نیست.", show_alert=True)
-            return
-
-        payment.status = Payment.PaymentStatus.FAILED
-        payment.verified_by = user
-        payment.verified_at = timezone.now()
-        await payment.asave(
-            update_fields=["status", "verified_by", "verified_at", "updated_at"]
-        )
-
-        await callback.message.edit_reply_markup(reply_markup=None)
+        from aiogram.exceptions import TelegramBadRequest
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
         await callback.answer("❌ پرداخت رد شد.")
+
     # ==================== Gateway Payment Methods ====================
 
     async def show_gateway_payment(self, callback: types.CallbackQuery, amount: float):

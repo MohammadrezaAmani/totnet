@@ -173,3 +173,19 @@ class BehaviorEvent(models.Model):
         db_table = "bot_behavior_events"
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["brand", "event", "created_at"]), models.Index(fields=["user", "created_at"])]
+
+
+class OperationalNotice(models.Model):
+    brand = models.ForeignKey("brands.Brand", on_delete=models.CASCADE,
+                              related_name="operational_notices")
+    dedupe_key = models.CharField(max_length=200, unique=True)
+    text = models.TextField()
+    telegram_message_id = models.BigIntegerField(null=True, blank=True)
+    delivery_claimed_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "bot_operational_notices"
+        ordering = ("created_at", "pk")
+        indexes = [models.Index(fields=["sent_at", "created_at"], name="ops_notice_pending_idx")]

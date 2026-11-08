@@ -115,7 +115,7 @@ def deliver_gamification_notification(self, notification_id):
             # A purchased gift handover is a transactional fulfillment notice,
             # not opt-in marketing. The buyer must still receive the unique
             # voucher even when promotional notifications are disabled.
-            transactional = metadata.get("event") in {"gift_handover", "gift_referral_handover", "gift_unclaimed_reminder"}
+            transactional = metadata.get("event") in {"gift_handover", "gift_referral_handover", "gift_unclaimed_reminder", "challenge_started", "challenge_settled"}
             if (opted_out and not transactional) or not notification.user.is_active:
                 return False
             if notification.rule_id:
@@ -133,6 +133,18 @@ def deliver_gamification_notification(self, notification_id):
                         return False
                 from .scheduling import audience_users
                 if not audience_users(notification.brand_id, notification.rule.audience).filter(pk=notification.user_id).exists():
+                    return False
+            if metadata.get("event") == "gift_unclaimed_reminder":
+                from apps.orders.models import GiftVoucher
+                if not GiftVoucher.objects.filter(
+                    pk=metadata.get("gift_voucher_id"),
+                    claimed_by__isnull=True,
+                    order__recipient__isnull=True,
+                    expires_at__gt=timezone.now(),
+                ).exists():
+                    metadata["delivery_abandoned"] = True
+                    notification.metadata = metadata
+                    notification.save(update_fields=["metadata"])
                     return False
             if notification.notification_type == "challenge_offer":
                 challenge_id = metadata.get("challenge_id")
@@ -311,9 +323,8 @@ def _already_delivered_legacy_reward(order, user_id):
 def _earned_pill_purchase_message(*, order, referrer):
     """Render the pill alert only for an actually processed point for this order.
 
-    Rank the awarded point in the original reward ledger, not the current open
-    pill box: after the third point is cashed out, its historical position must
-    still yield zero remaining, even when the notification is recovered later.
+    Rank by the time a point entered the ordinary box, including already
+    cashed-out points, so delayed delivery reports the original position.
     """
     reward = (
         ReferralReward.objects.filter(
@@ -323,13 +334,17 @@ def _earned_pill_purchase_message(*, order, referrer):
             reward_type="normal_point",
             status=ReferralReward.RewardStatus.PROCESSED,
             amount=Decimal("1"),
+            # Challenge pills are announced by the challenge-settlement notice.
+            # They are not a separate ordinary purchase notification.
+            challenge_event__isnull=True,
         )
-        .order_by("created_at", "pk")
+        .order_by("pk")
         .first()
     )
     if reward is None:
         return None
 
+    placed_at = reward.processed_at or reward.created_at
     awarded_count = (
         ReferralReward.objects.filter(
             user_id=referrer.pk,
@@ -337,9 +352,10 @@ def _earned_pill_purchase_message(*, order, referrer):
             reward_type__in=["normal_point", "profile_point"],
             status=ReferralReward.RewardStatus.PROCESSED,
         )
+        .annotate(placed_at=Coalesce("processed_at", "created_at"))
         .filter(
-            Q(created_at__lt=reward.created_at)
-            | Q(created_at=reward.created_at, pk__lte=reward.pk)
+            Q(placed_at__lt=placed_at)
+            | Q(placed_at=placed_at, pk__lte=reward.pk)
         )
         .count()
     )
@@ -793,6 +809,54 @@ def _first_purchase_pairs(
             break
 
 
+def reconcile_confirmed_challenge_purchases(*, challenge_id: int) -> int:
+    """Finish verified in-window purchase rewards before the expiry settlement.
+
+    Payment callbacks can be processed after the seven-day window, so the
+    settlement runner must not assume the asynchronous rewards queue is drained.
+    """
+    challenge = UserChallenge.objects.filter(
+        pk=challenge_id, status=UserChallenge.Status.ACTIVE,
+    ).first()
+    if not challenge or not challenge.starts_at or not challenge.ends_at:
+        return 0
+    referee_ids = Referral.objects.filter(
+        brand_id=challenge.brand_id,
+        referrer_id=challenge.user_id,
+        created_at__gte=challenge.starts_at,
+        created_at__lte=challenge.ends_at,
+    ).values_list("referee_id", flat=True)
+    confirmed = Q(payments__status=Payment.PaymentStatus.CONFIRMED)
+    eligible_orders = (Order.objects.filter(
+        brand_id=challenge.brand_id, user_id__in=referee_ids,
+        final_price__gt=0,
+        status__in=(Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
+                    Order.OrderStatus.COMPLETED),
+    ).exclude(order_type=Order.OrderType.GIFT)
+     .annotate(
+        confirmed_total=Sum("payments__amount", filter=confirmed),
+        paid_at=Max(Coalesce("payments__verified_at", "payments__created_at"),
+                    filter=confirmed),
+     ).filter(confirmed_total__gte=F("final_price"),
+              paid_at__gte=challenge.starts_at, paid_at__lte=challenge.ends_at)
+     .order_by("paid_at", "pk"))
+    recovered = 0
+    for order in eligible_orders.iterator(chunk_size=200):
+        # Idempotent if the original Celery reward job already won the race.
+        if not UserChallenge.objects.filter(
+            pk=challenge_id, status=UserChallenge.Status.ACTIVE,
+        ).exists():
+            break
+        payment = Payment.objects.filter(
+            order_id=order.pk, status=Payment.PaymentStatus.CONFIRMED,
+        ).order_by("-verified_at", "-created_at", "-pk").first()
+        if payment is not None:
+            recovered += int(award_level_one_referral_for_payment(
+                payment_id=str(payment.payment_id)
+            ) > 0)
+    return recovered
+
+
 @shared_task
 def run_gamification_notifications(limit: int = 500):
     """Drive survey/referral/challenge/expiry notifications and challenge settlement."""
@@ -861,15 +925,17 @@ def run_gamification_notifications(limit: int = 500):
             if queued >= limit:
                 break
 
-    # Settle expired challenges before sending any more reminders.
+    # Reconcile delayed paid orders before deciding whether an expired
+    # challenge met its target. Do not settle on a reconciliation failure.
     for challenge in UserChallenge.objects.filter(
         status=UserChallenge.Status.ACTIVE, ends_at__lte=now
     ).values_list("pk", flat=True)[:limit]:
         try:
+            reconcile_confirmed_challenge_purchases(challenge_id=challenge)
             settle_challenge(challenge_id=challenge)
             counters["settled"] += 1
-        except ChallengeError:
-            logger.exception("Could not settle expired challenge %s", challenge)
+        except Exception:
+            logger.exception("Could not reconcile or settle expired challenge %s", challenge)
 
     # 5/3/1 day reminders while active.
     active = UserChallenge.objects.filter(

@@ -75,6 +75,10 @@ app.conf.beat_schedule = {
         "task": "apps.subscriptions.tasks.check_subscription_low_balance",
         "schedule": 300.0,
     },
+    "recover-operational-notices": {
+        "task": "apps.bot.tasks.recover_operational_notices",
+        "schedule": 300.0,
+    },
     "run-gamification-notifications": {
         "task": "apps.referrals.tasks.run_gamification_notifications",
         "schedule": 60.0,

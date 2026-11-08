@@ -10,7 +10,7 @@ from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.urls import path
 from django.http import HttpResponseForbidden
 from .admin_export import ActiveSubscriptionFilter, ActiveServiceFilter, export_customers
-from django.db.models import OuterRef, Subquery
+from django.db.models import Exists, F, OuterRef, Q, Subquery, Sum
 
 from apps.referrals.models import RewardAccount
 from .models import AuditLog, Permission, Role, User, UserProfile, UserRole, UserSession
@@ -157,6 +157,60 @@ class AuditLogInline(admin.TabularInline):
         return super().get_queryset(request).order_by("-timestamp")
 
 
+class PurchaseHistoryFilter(admin.SimpleListFilter):
+    title = "سابقه خرید"
+    parameter_name = "purchase_history"
+
+    def lookups(self, request, model_admin):
+        return (("none", "بدون خرید موفق"), ("paid", "حداقل یک خرید موفق"))
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value not in {"none", "paid"}:
+            return queryset
+        from apps.orders.models import Order, Payment
+        paid_orders = Order.objects.filter(
+            user_id=OuterRef("pk"), brand_id=OuterRef("brand_id"),
+            status__in=(Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
+                        Order.OrderStatus.COMPLETED),
+        ).exclude(order_type=Order.OrderType.REWARD_REDEMPTION).annotate(
+            paid_total=Sum("payments__amount", filter=Q(payments__status=Payment.PaymentStatus.CONFIRMED))
+        ).filter(final_price__gt=0, paid_total__gte=F("final_price"))
+        return queryset.alias(has_paid_order=Exists(paid_orders)).filter(has_paid_order=(value == "paid"))
+
+
+class ProfileProgressFilter(admin.SimpleListFilter):
+    title = "وضعیت پروفایل"
+    parameter_name = "profile_progress"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("incomplete", "اطلاعات اولیه ناقص"),
+            ("initial", "اطلاعات اولیه کامل / پروفایل ناقص"),
+            ("complete", "پروفایل کامل"),
+        )
+
+    def queryset(self, request, queryset):
+        stage = self.value()
+        if stage not in {"incomplete", "initial", "complete"}:
+            return queryset
+        profiles = UserProfile.objects.filter(user_id=OuterRef("pk"))
+        has_device = Exists(profiles.filter(
+            Q(devices__0__isnull=False) | (Q(device_type__isnull=False) & ~Q(device_type=""))
+        ))
+        fully_completed = Exists(profiles.filter(
+            ~Q(living_location=""), ~Q(gender=""),
+        ))
+        queryset = queryset.alias(has_device=has_device, has_full_profile=fully_completed)
+        initial = (Q(full_name__isnull=False) & ~Q(full_name="") &
+                   Q(phone_number__isnull=False) & ~Q(phone_number="") & Q(has_device=True))
+        if stage == "incomplete":
+            return queryset.exclude(initial)
+        if stage == "initial":
+            return queryset.filter(initial).filter(Q(birth_date__isnull=True) | Q(has_full_profile=False))
+        return queryset.filter(initial, birth_date__isnull=False, has_full_profile=True)
+
+
 @admin.register(User)
 class UserAdmin(ForceDeleteAdminMixin, BaseUserAdmin):
     form = UserChangeForm
@@ -178,6 +232,8 @@ class UserAdmin(ForceDeleteAdminMixin, BaseUserAdmin):
     list_filter = (
         ActiveSubscriptionFilter,
         ActiveServiceFilter,
+        PurchaseHistoryFilter,
+        ProfileProgressFilter,
         "user_type",
         "brand",
         "is_active",

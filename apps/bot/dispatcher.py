@@ -287,6 +287,9 @@ class MultiBrandDispatcher:
                 step = (state.state_data or {}).get("step")
                 action = (state.state_data or {}).get("action")
 
+                if action == "challenge_entry" and step == "waiting_receipt":
+                    await message.reply("لطفاً عکس رسید واریز را ارسال کنید.")
+                    return
                 if action == "wallet_charge" and step == "waiting_receipt":
                     await message.reply("❌ لطفاً عکس رسید پرداخت را ارسال کنید.")
                     return
@@ -366,6 +369,9 @@ class MultiBrandDispatcher:
             action = (state.state_data or {}).get("action")
             if state.current_state == BotState.StateType.PAYMENT_PROCESS:
 
+                if action == "challenge_entry" and step == PurchaseStep.WAITING_RECEIPT:
+                    await handlers["challenges"].handle_receipt_photo(message, user, state)
+                    return
                 if action == "wallet_charge" and step == PurchaseStep.WAITING_RECEIPT:
                     await handlers["wallet"].handle_receipt_photo(message, user, state)
                     return
@@ -504,6 +510,10 @@ class MultiBrandDispatcher:
             ]:
                 await handlers["referrals"].show_referral_menu(callback)
 
+            elif data.startswith("browse_renewal_plans_"):
+                await handlers["purchase"].show_subscription_plans(
+                    callback, source_subscription_id=int(data.removeprefix("browse_renewal_plans_"))
+                )
             elif data == "purchase_subscription":
                 await handlers["purchase"].show_subscription_plans(callback)
             elif data.startswith("cancel_purchase_"):
@@ -735,6 +745,15 @@ class MultiBrandDispatcher:
                     await callback.answer("❌ درخواست نامعتبر است.", show_alert=True)
                 else:
                     await handlers["subscriptions"].show_subscription_claim(callback, claim_id)
+            elif data.startswith("renewal_checkout_"):
+                payload = data.removeprefix("renewal_checkout_").rsplit("_", 1)
+                if len(payload) != 2 or not payload[0].isdecimal() or payload[1] not in {"credit", "nocredit"}:
+                    await callback.answer("درخواست نامعتبر است.", show_alert=True)
+                else:
+                    await handlers["purchase"].purchase_plan_for_subscription(
+                        callback, subscription_id=int(payload[0]), plan_id=None,
+                        use_wallet_credit=(payload[1] == "credit"),
+                    )
             elif data.startswith("repurchase_subscription_"):
                 sub_id = int(data.removeprefix("repurchase_subscription_"))
                 await handlers["purchase"].repurchase_subscription(callback, sub_id)
@@ -930,13 +949,27 @@ class MultiBrandDispatcher:
                     await callback.answer("سطح چالش نامعتبر است.", show_alert=True)
                 else:
                     await handlers["challenges"].select_tier(callback, tier_id)
+            elif data.startswith("challenge_page_"):
+                payload = data.removeprefix("challenge_page_").split("_")
+                if len(payload) == 2 and all(piece.isdecimal() for piece in payload):
+                    await handlers["challenges"].show_challenge_page(callback, int(payload[0]), int(payload[1]))
+                else:
+                    await callback.answer("درخواست نامعتبر است.", show_alert=True)
+            elif data.startswith("challenge_terms_"):
+                await handlers["challenges"].show_challenge_terms(callback, int(data.removeprefix("challenge_terms_")))
+            elif data.startswith("challenge_card_"):
+                payload = data.removeprefix("challenge_card_").split("_")
+                if len(payload) == 2 and all(piece.isdecimal() for piece in payload):
+                    await handlers["challenges"].show_challenge_card(callback, int(payload[0]), int(payload[1]))
+                else:
+                    await callback.answer("درخواست نامعتبر است.", show_alert=True)
             elif data.startswith("challenge_pay_"):
                 try:
                     challenge_id = int(data.removeprefix("challenge_pay_"))
                 except ValueError:
                     await callback.answer("چالش نامعتبر است.", show_alert=True)
                 else:
-                    await handlers["challenges"].pay_challenge(callback, challenge_id)
+                    await handlers["challenges"].show_challenge_payment(callback, challenge_id)
             elif data == "service_survey_start":
                 await handlers["survey"].start(callback)
             elif data.startswith("survey_rate_"):

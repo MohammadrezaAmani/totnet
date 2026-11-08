@@ -43,7 +43,9 @@ def delete_confirmed_admin_receipts(self, payment_id: int):
     from django.utils import timezone
 
     payment = Payment.objects.select_related("brand").filter(pk=payment_id).first()
-    if not payment or payment.status != Payment.PaymentStatus.CONFIRMED:
+    if not payment or payment.status not in {
+        Payment.PaymentStatus.CONFIRMED, Payment.PaymentStatus.FAILED,
+    }:
         return 0
 
     token = payment.brand.bot_token
@@ -90,7 +92,7 @@ def recover_confirmed_admin_receipt_deletions():
     ids = (AdminReceiptMessage.objects.filter(
         deleted_at__isnull=True,
         created_at__gte=timezone.now() - timedelta(hours=47),
-        payment__status=Payment.PaymentStatus.CONFIRMED,
+        payment__status__in=[Payment.PaymentStatus.CONFIRMED, Payment.PaymentStatus.FAILED],
     ).values_list("payment_id", flat=True).distinct()[:100])
     count = 0
     for payment_id in ids:

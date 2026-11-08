@@ -157,12 +157,26 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, keyboard)
         await callback.answer()
 
-    async def show_subscription_plans(self, callback: types.CallbackQuery):
+    async def show_subscription_plans(
+        self, callback: types.CallbackQuery, source_subscription_id: int | None = None
+    ):
         """Show the XMind purchase landing page."""
         user, _ = await self.get_or_create_user(callback.from_user)
+        if source_subscription_id is not None:
+            can_browse = await Subscription.objects.filter(
+                Q(user=user, is_gift=False) | Q(owner=user),
+                brand=self.brand, pk=source_subscription_id,
+            ).aexists()
+            if not can_browse:
+                await callback.answer("اشتراک پیدا نشد.", show_alert=True)
+                return
+        else:
+            state = await self.get_user_state(user)
+            source_subscription_id = (state.state_data or {}).get("renewal_browse_source")
         await self.update_user_state(
             user, BotState.StateType.PURCHASE_FLOW, {
                 "step": "service_selection", "plan_picker": None, "special_offers": False,
+                "renewal_browse_source": source_subscription_id,
             }
         )
 
@@ -178,7 +192,10 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
         buttons = [services[index:index + 2] for index in range(0, len(services), 2)]
         buttons.extend([
             [{"text": "📖 راهنمای انتخاب سرویس", "callback_data": "service_guide"}],
-            [{"text": "🔙 بازگشت", "callback_data": "main_menu"}],
+            [{"text": "🔙 بازگشت", "callback_data": (
+                f"renewal_details_{source_subscription_id}" if source_subscription_id
+                else "main_menu"
+            )}],
         ])
         keyboard = self.create_keyboard(buttons)
         await self.edit_message_with_keyboard(
@@ -461,10 +478,40 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
     async def repurchase_subscription(
         self, callback: types.CallbackQuery, subscription_id: int
     ):
-        """Buy the current plan again for the same subscription owner."""
-        await self.purchase_plan_for_subscription(
-            callback, subscription_id=subscription_id, plan_id=None
+        """Quote the current plan and let the buyer choose whether to use cash credit."""
+        user, _ = await self.get_or_create_user(callback.from_user)
+        subscription = await Subscription.objects.select_related("plan", "order").filter(
+            Q(user=user, is_gift=False) | Q(owner=user),
+            brand=self.brand, pk=subscription_id,
+        ).afirst()
+        if subscription is None:
+            await callback.answer("اشتراک پیدا نشد.", show_alert=True)
+            return
+        if subscription.is_gift and not subscription.order.recipient_id:
+            await callback.answer("این اشتراک هدیه هنوز دریافت نشده است.", show_alert=True)
+            return
+        plan = subscription.plan
+        if not plan.is_active or not plan.is_visible or not await is_plan_visible_in_bot(plan, self.brand.pk):
+            await callback.answer("این پلن دیگر فعال نیست.", show_alert=True)
+            return
+        if temporary_duration_blocked(plan):
+            await callback.answer(TEMPORARILY_UNAVAILABLE_TEXT, show_alert=True)
+            return
+        credit = min(max(await self.purchase_credit(user, plan.currency), 0), plan.discounted_price)
+        payable = max(plan.discounted_price - credit, 0)
+        text = (
+            "🔄 <b>تمدید همین اشتراک</b>\n\n"
+            f"📋 {compact_plan_specs(plan)}\n"
+            f"💰 قیمت اشتراک: {self.format_price(plan.discounted_price, plan.currency)}\n"
+            f"💰 مبلغ پس از کسر امتیازات نقد: {self.format_price(payable, plan.currency)}"
         )
+        keyboard = self.create_keyboard([
+            [{"text": "✅ خرید با امتیازات نقد", "callback_data": f"renewal_checkout_{subscription.pk}_credit"}],
+            [{"text": "💰 خرید بدون استفاده از امتیازات", "callback_data": f"renewal_checkout_{subscription.pk}_nocredit"}],
+            [{"text": "🔙 بازگشت", "callback_data": f"renewal_details_{subscription.pk}"}],
+        ])
+        await self.edit_message_with_keyboard(callback.message.chat.id, callback.message.message_id, text, keyboard)
+        await callback.answer()
 
     async def purchase_plan_for_subscription(
         self,
@@ -533,7 +580,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             recipient=recipient,
             plan=plan,
             order_type=(
-                Order.OrderType.GIFT if recipient else Order.OrderType.NEW_SUBSCRIPTION
+                Order.OrderType.GIFT if recipient else Order.OrderType.RENEWAL
             ),
             original_price=plan.price,
             discount_amount=plan.price - plan.discounted_price,
@@ -1270,6 +1317,7 @@ class PurchaseHandler(PlanPickerMixin, BaseHandler):
             ])
         await self.send_message_with_keyboard(message.chat.id, text, keyboard)
         notified = await self._notify_admin_receipt(order, payment, file_id)
+        await self._remove_user_input(message)
         if not notified:
             logger.error(
                 "Payment receipt %s persisted without successful Telegram admin notification; "

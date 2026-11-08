@@ -188,6 +188,26 @@ class CheckoutLinksTests(TestCase):
                        user_id=self.existing.pk, newly_registered=False)
         self.assertEqual(Subscription.objects.get(order=order).owner_id, self.buyer.pk)
 
+    def test_unclaimed_reminder_does_not_repeat_after_gift_link_was_used(self):
+        from apps.orders.tasks import remind_unclaimed_paid_gifts
+        order, voucher = self.paid_gift()
+        GiftVoucher.objects.filter(pk=voucher.pk).update(
+            created_at=timezone.now() - timedelta(hours=25),
+        )
+        with patch('apps.referrals.tasks._queue_once', return_value=True) as queue:
+            self.assertEqual(remind_unclaimed_paid_gifts.run(), 1)
+            queue.assert_called_once()
+            self.assertEqual(queue.call_args.kwargs['dedupe_key'],
+                             f'gift-unclaimed-reminder:{voucher.pk}')
+        with patch('apps.referrals.tasks._queue_once', return_value=True) as queue:
+            claim_gift(token=voucher.token, brand_id=self.brand.pk,
+                       user_id=self.existing.pk, newly_registered=False)
+            self.assertEqual(remind_unclaimed_paid_gifts.run(), 0)
+            queue.assert_not_called()
+        voucher.refresh_from_db()
+        self.assertEqual(voucher.claimed_by_id, self.existing.pk)
+        self.assertIsNotNone(voucher.claimed_at)
+
     def test_unpaid_gift_has_no_link(self):
         order = self.order(kind=Order.OrderType.GIFT)
         self.assertIsNone(issue_paid_gift(order_id=order.pk))

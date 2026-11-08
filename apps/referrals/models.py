@@ -836,6 +836,8 @@ class ChallengeProgram(models.Model):
     )
     duration_days = models.PositiveSmallIntegerField(default=7)
     reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=13)
+    success_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=2)
+    failure_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=0.5)
     require_referral_join_during_challenge = models.BooleanField(
         default=True,
         help_text=(
@@ -864,6 +866,8 @@ class ChallengeProgram(models.Model):
             errors["reward_percent"] = (
                 "Challenge reward percent must be greater than 0 and at most 100."
             )
+        if self.success_multiplier <= 0 or self.failure_multiplier < 0:
+            errors["success_multiplier"] = "Challenge multipliers must be valid."
         if errors:
             raise ValidationError(errors)
 
@@ -943,6 +947,10 @@ class UserChallenge(models.Model):
     declined_at = models.DateTimeField(null=True, blank=True)
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
+    entry_payment = models.OneToOneField(
+        "orders.Payment", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="entry_challenge",
+    )
     entry_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     target_referrals = models.PositiveSmallIntegerField(default=0)
     reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
@@ -988,6 +996,7 @@ class ChallengeReferralEvent(models.Model):
         related_name="challenge_event",
     )
     reward_value = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    fallback_reward_value = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1103,6 +1112,11 @@ class NotificationRule(models.Model):
         ROYAL = "royal", "اشتراک رویال فعال"
         NORMAL = "normal", "اشتراک نرمال فعال"
         IRAN_IP = "iran_ip", "اشتراک آی‌پی ایران فعال"
+        NEVER_PAID = "never_paid", "بدون خرید موفق"
+        PAID = "paid", "دارای خرید موفق"
+        PROFILE_INCOMPLETE = "profile_incomplete", "اطلاعات اولیه ناقص"
+        PROFILE_INITIAL = "profile_initial", "اطلاعات اولیه کامل / پروفایل ناقص"
+        PROFILE_COMPLETE = "profile_complete", "پروفایل کامل"
 
     brand = models.ForeignKey(
         "brands.Brand", on_delete=models.CASCADE, related_name="notification_rules"

@@ -607,7 +607,7 @@ class ChallengeTierInline(admin.TabularInline):
 
 @admin.register(ChallengeProgram)
 class ChallengeProgramAdmin(ScopedReferralAdmin):
-    exclude = ("offer_delay_days",)
+    exclude = ("offer_delay_days", "reward_percent")
     inlines = (ChallengeTierInline,)
     list_display = (
         "brand",
@@ -616,7 +616,8 @@ class ChallengeProgramAdmin(ScopedReferralAdmin):
         "offer_trigger",
         "offer_delay_minutes",
         "duration_days",
-        "reward_percent",
+        "success_multiplier",
+        "failure_multiplier",
         "require_referral_join_during_challenge",
     )
     list_filter = ("is_active", "brand")

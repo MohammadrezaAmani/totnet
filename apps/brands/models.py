@@ -39,9 +39,9 @@ class Brand(models.Model):
         help_text="با فعال شدن این گزینه، کاربران جدید فقط با لینک دعوت فعال همین برند وارد می‌شوند. کاربران موجود محدودیتی ندارند.",
     )
     gift_expiry_hours = models.PositiveIntegerField(
-        "مهلت استفاده از هدیه (ساعت)", default=48,
+        "مهلت استفاده از هدیه (ساعت)", default=72,
         validators=[MinValueValidator(1), MaxValueValidator(720)],
-        help_text="پیش‌فرض ۴۸ ساعت پس از تأیید کامل پرداخت؛ حداکثر ۷۲۰ ساعت.",
+        help_text="پیش‌فرض ۷۲ ساعت پس از تأیید کامل پرداخت؛ حداکثر ۷۲۰ ساعت.",
     )
     show_free_plans = models.BooleanField(
         "نمایش پلن‌های رایگان در ربات",
@@ -101,6 +101,10 @@ class BrandConfiguration(models.Model):
     max_subscriptions_per_user = models.PositiveIntegerField(default=10)
     max_referrals_per_day = models.PositiveIntegerField(default=100)
 
+    operations_channel_id = models.CharField(
+        "کانال رویدادهای روزانه تلگرام", max_length=100, blank=True,
+        help_text="شناسه عددی کانال یا نام کاربری @channel؛ ربات باید در کانال ادمین باشد.",
+    )
     custom_fields = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

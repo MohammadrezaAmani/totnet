@@ -120,6 +120,7 @@ class BrandConfigurationAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
         "wallet_system_enabled",
         "support_system_enabled",
         "analytics_enabled",
+        "operations_channel_id",
     )
     list_filter = (
         "referral_system_enabled",

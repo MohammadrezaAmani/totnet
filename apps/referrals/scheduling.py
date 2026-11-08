@@ -35,10 +35,39 @@ def audience_users(brand_id, audience="all"):
     users = users.filter(
         Q(profile__isnull=True) | Q(profile__notification_enabled=True)
     )
-    if audience != "all":
-        users = users.annotate(matches_audience=Exists(subscriptions)).filter(
+    if audience in {"active", "inactive", "royal", "normal", "iran_ip"}:
+        return users.alias(matches_audience=Exists(subscriptions)).filter(
             matches_audience=audience != "inactive"
         )
+    if audience in {"never_paid", "paid"}:
+        paid = (Order.objects.filter(
+            brand_id=brand_id, user_id=OuterRef("pk"), final_price__gt=0,
+            status__in=(Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
+                        Order.OrderStatus.COMPLETED),
+        ).exclude(order_type=Order.OrderType.REWARD_REDEMPTION)
+            .annotate(confirmed_total=Sum(
+                "payments__amount",
+                filter=Q(payments__status=Payment.PaymentStatus.CONFIRMED),
+            ))
+            .filter(confirmed_total__gte=F("final_price")))
+        return users.alias(has_purchase=Exists(paid)).filter(
+            has_purchase=(audience == "paid")
+        )
+    if audience in {"profile_incomplete", "profile_initial", "profile_complete"}:
+        from apps.accounts.models import UserProfile
+        profiles = UserProfile.objects.filter(user_id=OuterRef("pk"))
+        has_device = Exists(profiles.filter(
+            Q(devices__0__isnull=False) | (Q(device_type__isnull=False) & ~Q(device_type=""))
+        ))
+        complete = Exists(profiles.filter(~Q(living_location=""), ~Q(gender="")))
+        users = users.alias(has_device=has_device, full_profile=complete)
+        initial = (Q(full_name__isnull=False) & ~Q(full_name="") &
+                   Q(phone_number__isnull=False) & ~Q(phone_number="") & Q(has_device=True))
+        if audience == "profile_incomplete":
+            return users.exclude(initial)
+        if audience == "profile_initial":
+            return users.filter(initial).filter(Q(birth_date__isnull=True) | Q(full_profile=False))
+        return users.filter(initial, birth_date__isnull=False, full_profile=True)
     return users
 
 

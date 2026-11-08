@@ -266,16 +266,13 @@ class SubscriptionHandler(BaseHandler):
         )
         label = f"{volume} {category} {number(plan.max_users)}کاربر {duration}".strip()
         label = label.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
-        credit = await self.purchase_credit(user, plan.currency)
-        due = self.payable_plan_price(plan, credit)
         text = (
             "🔄 <b>تمدید اشتراک</b>\n\n"
             "همیشه قبل از اتمام تایم یا حجم اشتراک اقدام به تمدید کنید تا اشتراک بعدی برایتان رزرو شود.\n\n"
-            "از امتیازات نقد خود برای خرید و تمدید آزادانه‌تر اشتراک خود استفاده کنید.\n\n"
-            f"💰 مبلغ پس از کسر امتیازات نقد: {self.format_price(due, plan.currency)}"
+            "از امتیازات نقد خود برای خرید و تمدید آزادانه‌تر اشتراک خود استفاده کنید."
         )
         keyboard = self.create_keyboard([
-            [{"text": "🛒 مشاهده سایر اشتراک‌ها", "callback_data": "purchase_subscription", "style": "success"}],
+            [{"text": "🛒 مشاهده سایر اشتراک‌ها", "callback_data": f"browse_renewal_plans_{subscription.pk}", "style": "success"}],
             [{"text": f"🔄 تمدید همین اشتراک ({label})", "callback_data": f"repurchase_subscription_{subscription.pk}"}],
             [{"text": "🔙 بازگشت", "callback_data": f"subscription_details_{subscription.pk}"}],
         ])

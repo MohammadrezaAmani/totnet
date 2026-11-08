@@ -16,6 +16,7 @@ from apps.orders.services import WalletOperationError, credit_wallet, debit_wall
 
 from .models import (
     ChallengeProgram,
+    ReferralProgram,
     ChallengeReferralEvent,
     ChallengeTier,
     Referral,
@@ -73,7 +74,7 @@ def _update_reward_account(*, user_id: int, brand_id: int, earned_points: Decima
 
 @transaction.atomic
 def cash_out_completed_pills(*, user_id: int, brand_id: int) -> Decimal:
-    """Convert each complete group of three normal referral points to wallet cash."""
+    """Settle full three-pill boxes, preserving each pill's recorded cash value."""
     # Serialize cash-out for all reward sources of the same customer.
     _update_reward_account(user_id=user_id, brand_id=brand_id)
     rewards = list(
@@ -85,7 +86,9 @@ def cash_out_completed_pills(*, user_id: int, brand_id: int) -> Decimal:
             status=ReferralReward.RewardStatus.PROCESSED,
             is_cashed_out=False,
         )
-        .order_by("created_at", "pk")
+        # A challenge pill joins the ordinary box only when it is released.
+        # Before release it has a creation time but no processed_at value.
+        .order_by(Coalesce("processed_at", "created_at"), "pk")
     )
     complete_count = (len(rewards) // POINTS_PER_PILL) * POINTS_PER_PILL
     if complete_count == 0:
@@ -137,6 +140,10 @@ def choose_challenge_tier(*, user_id: int, brand_id: int, tier_id: int) -> UserC
         raise ChallengeError("این چالش هنوز برای شما فعال نشده است.") from exc
     if challenge.status not in {UserChallenge.Status.OFFERED, UserChallenge.Status.AWAITING_FUNDS}:
         raise ChallengeError("این فرصت چالش دیگر قابل انتخاب نیست.")
+    if challenge.entry_payment_id and Payment.objects.filter(
+        pk=challenge.entry_payment_id, status__in=["pending", "awaiting_confirmation", "confirmed"]
+    ).exists():
+        raise ChallengeError("رسید ورودی چالش ثبت شده و در انتظار بررسی است.")
     challenge.tier = tier
     challenge.entry_amount = tier.entry_fee
     challenge.target_referrals = tier.target_referrals
@@ -174,50 +181,113 @@ def decline_challenge(*, user_id: int, brand_id: int) -> UserChallenge:
 
 
 @transaction.atomic
-def activate_challenge_from_wallet(*, user_id: int, brand_id: int) -> UserChallenge:
-    try:
-        challenge = (
-            UserChallenge.objects.select_for_update(of=("self",))
-            .select_related("program", "tier")
-            .get(
-                user_id=user_id,
-                brand_id=brand_id,
-                status=UserChallenge.Status.AWAITING_FUNDS,
-            )
-        )
-    except UserChallenge.DoesNotExist as exc:
-        raise ChallengeError("چالشی در انتظار پرداخت پیدا نشد.") from exc
-    if not challenge.program.is_active or not challenge.tier_id or not challenge.tier.is_active:
-        raise ChallengeError("تنظیمات این چالش دیگر فعال نیست.")
-    if challenge.target_referrals <= 0 or challenge.reward_percent <= 0:
-        raise ChallengeError("تنظیمات ثبت‌شده این چالش معتبر نیست.")
-    wallet = _wallet_for(user_id=user_id, brand_id=brand_id)
-    amount = _money(challenge.entry_amount, wallet.currency)
-    if amount <= 0:
-        raise ChallengeError("مبلغ ورودی چالش معتبر نیست.")
-    try:
-        debit_wallet(
-            wallet_id=wallet.pk,
-            amount=amount,
-            transaction_type=WalletTransaction.TransactionType.PAYMENT,
-            reference_id=f"challenge:{challenge.pk}",
-            idempotency_key=f"challenge-entry:{challenge.pk}",
-            description=f"وجه ورودی چالش {challenge.program.name}",
-            metadata={"challenge_id": challenge.pk, "action": "freeze_entry"},
-        )
-    except WalletOperationError as exc:
-        raise ChallengeError("موجودی نقد کیف پول برای ورود به چالش کافی نیست.") from exc
-    Wallet.objects.filter(pk=wallet.pk).update(
-        challenge_frozen_balance=F("challenge_frozen_balance") + amount
+def create_challenge_entry_payment(*, user_id: int, brand_id: int, challenge_id: int,
+                                   card_id: int, receipt_file: str) -> Payment:
+    """A separate, cash-only receipt; no wallet or order balance is involved."""
+    from apps.orders.models import PaymentCard
+
+    challenge = (
+        UserChallenge.objects.select_for_update(of=("self",))
+        .select_related("program", "tier")
+        .filter(pk=challenge_id, user_id=user_id, brand_id=brand_id,
+                status=UserChallenge.Status.AWAITING_FUNDS)
+        .first()
     )
-    now = timezone.now()
-    challenge.require_referral_join_during_challenge = challenge.program.require_referral_join_during_challenge
+    if not challenge or not challenge.program.is_active or not challenge.tier_id:
+        raise ChallengeError("چالش در وضعیت قابل پرداخت نیست.")
+    card = PaymentCard.objects.filter(pk=card_id, brand_id=brand_id, is_active=True).first()
+    if not card:
+        raise ChallengeError("کارت پرداخت انتخاب‌شده فعال نیست.")
+    amount = _money(challenge.entry_amount, challenge.program.brand.currency)
+    if amount <= 0 or not receipt_file:
+        raise ChallengeError("اطلاعات واریز معتبر نیست.")
+    if challenge.entry_payment_id:
+        previous = Payment.objects.select_for_update().get(pk=challenge.entry_payment_id)
+        if previous.status in {Payment.PaymentStatus.PENDING, Payment.PaymentStatus.AWAITING_CONFIRMATION}:
+            raise ChallengeError("رسید قبلی در انتظار بررسی است.")
+        if previous.status == Payment.PaymentStatus.CONFIRMED:
+            raise ChallengeError("این ورودی قبلاً تأیید شده است.")
+    payment = Payment.objects.create(
+        order=None, wallet=None, brand_id=brand_id, user_id=user_id,
+        payment_method=Payment.PaymentMethod.CARD_TRANSFER,
+        status=Payment.PaymentStatus.AWAITING_CONFIRMATION,
+        amount=amount, currency=challenge.program.brand.currency,
+        receipt_file=receipt_file,
+        card_number=card.card_number, cardholder_name=card.cardholder_name,
+        notes=f"واریز ورودی {challenge.program.name}",
+    )
+    challenge.entry_payment = payment
+    challenge.save(update_fields=["entry_payment", "updated_at"])
+    return payment
+
+
+@transaction.atomic
+def activate_challenge_from_payment(*, payment_id: int) -> UserChallenge:
+    """Activate once, on verified external cash. Never spend wallet credit."""
+    challenge = (
+        UserChallenge.objects.select_for_update(of=("self",))
+        .select_related("program", "tier", "entry_payment")
+        .filter(entry_payment_id=payment_id)
+        .first()
+    )
+    if not challenge:
+        raise ChallengeError("ورودی چالش پیدا نشد.")
+    if challenge.status == UserChallenge.Status.ACTIVE:
+        return challenge
+    if challenge.status != UserChallenge.Status.AWAITING_FUNDS or not challenge.tier_id:
+        raise ChallengeError("وضعیت چالش برای فعال‌سازی معتبر نیست.")
+    payment = Payment.objects.select_for_update().get(pk=payment_id)
+    if (payment.status != Payment.PaymentStatus.CONFIRMED
+            or payment.wallet_id is not None or payment.order_id is not None
+            or payment.user_id != challenge.user_id or payment.brand_id != challenge.brand_id
+            or payment.payment_method != Payment.PaymentMethod.CARD_TRANSFER
+            or not payment.receipt_file
+            or payment.currency != challenge.program.brand.currency
+            or payment.amount != challenge.entry_amount):
+        raise ChallengeError("تراکنش ورودی چالش معتبر نیست.")
+    wallet = _wallet_for(user_id=challenge.user_id, brand_id=challenge.brand_id)
+    Wallet.objects.filter(pk=wallet.pk).update(
+        challenge_frozen_balance=F("challenge_frozen_balance") + payment.amount
+    )
+    now = payment.verified_at or timezone.now()
     challenge.status = UserChallenge.Status.ACTIVE
     challenge.starts_at = now
     challenge.ends_at = now + timedelta(days=challenge.program.duration_days)
-    challenge.save(update_fields=["status", "starts_at", "ends_at", "require_referral_join_during_challenge", "updated_at"])
+    challenge.require_referral_join_during_challenge = True
+    challenge.save(update_fields=["status", "starts_at", "ends_at",
+                                  "require_referral_join_during_challenge", "updated_at"])
     from apps.bot.analytics import record_event
-    record_event(user_id=user_id, brand_id=brand_id, event="challenge_activated", value=challenge.target_referrals, metadata={"challenge_id": challenge.pk, "entry_amount": str(amount)}, dedupe_key=f"challenge-active:{challenge.pk}")
+    record_event(user_id=challenge.user_id, brand_id=challenge.brand_id,
+                 event="challenge_activated", value=challenge.target_referrals,
+                 metadata={"challenge_id": challenge.pk, "payment_id": payment.pk},
+                 dedupe_key=f"challenge-active:{challenge.pk}")
+    def notify():
+        from .tasks import _queue_once
+        from utils.jalali import jalali_date
+        from zoneinfo import ZoneInfo
+        from django.utils import timezone as tz
+        end = tz.localtime(challenge.ends_at, ZoneInfo(challenge.program.brand.timezone))
+        end_label = jalali_date(end, time=True)
+        _queue_once(
+            user=challenge.user, brand_id=challenge.brand_id,
+            notification_type="custom", dedupe_key=f"challenge-start:{challenge.pk}",
+            text=(
+                f"✅ چالش {challenge.program.name} شروع شد!\n"
+                f"زمان چالش {challenge.program.duration_days} روز کامل از الان شروع شد!\n"
+                f"زمان پایان: {end_label}\n\n"
+                "👨🏾‍⚕️<b>نکته اخلاقی بسیار مهم:</b>\n"
+                "🦠این سیستم برای رایگان شدن دائمی خدمات ساخته شده است. "
+                "این چالش فقط برای سرعت بخشیدن به این مسیر طراحی شده.\n"
+                "<b>لینک معرف خودتان را فقط در اختیار اطرافیان مطمئن قرار دهید.</b>\n\n"
+                "👇🏾همین الان شروع کن:"
+            ),
+            buttons_data=[
+                [{"text": "👥 معرفی دوستان", "callback_data": "referral_system"}],
+                [{"text": "📑 توضیحات کامل چالش", "callback_data": f"challenge_terms_{challenge.pk}"}],
+            ],
+            metadata={"challenge_id": challenge.pk, "event": "challenge_started"},
+        )
+    transaction.on_commit(notify)
     return challenge
 
 
@@ -280,18 +350,19 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
     )
     if not challenge or (challenge_id and challenge.pk != challenge_id) or challenge.successful_referrals >= challenge.target_referrals:
         return None
+    # The referred customer must have bought the service personally. A gift
+    # purchased by the inviter is not that customer's first paid purchase.
+    if order.user_id != referral.referee_id:
+        return None
     if ChallengeReferralEvent.objects.filter(order=order).exists():
         event = ChallengeReferralEvent.objects.select_related("reward").get(order=order)
         return event.reward
 
-    # A challenge target represents distinct newly-converted people, not repeated
-    # purchases by the same referred user. Existing customers and repeat purchases
-    # continue through the normal 8%/three-point rule instead.
+    # Only the first paid purchase of a newly joined unique referral is reserved.
     if ChallengeReferralEvent.objects.filter(challenge=challenge, referral=referral).exists():
         return None
     if (
-        challenge.require_referral_join_during_challenge
-        and challenge.starts_at
+        challenge.starts_at
         and referral.created_at < challenge.starts_at
     ):
         return None
@@ -317,7 +388,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
             )
             .filter(
                 confirmed_total__gte=F("final_price"),
-                paid_at__lt=challenge.starts_at,
+                paid_at__lte=now,
             )
             .exists()
         )
@@ -325,9 +396,15 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
             return None
 
     from apps.subscriptions.policy import effective_reward_percent
-    applied_percent = effective_reward_percent(order, challenge.reward_percent)
-    reward_value = _money(
-        order.final_price * applied_percent / Decimal("100"), order.currency
+    program = ReferralProgram.objects.filter(brand_id=order.brand_id, is_active=True).first()
+    if program is None:
+        raise ChallengeError("برنامه معرفی فعال پیدا نشد.")
+    base_percent = effective_reward_percent(order, program.purchase_reward_percent)
+    applied_percent = min(Decimal("100"), base_percent * challenge.program.success_multiplier)
+    reward_value = _money(order.final_price * applied_percent / Decimal("100"), order.currency)
+    fallback_reward_value = _money(
+        order.final_price * base_percent * challenge.program.failure_multiplier / Decimal("100"),
+        order.currency,
     )
     reward = ReferralReward.objects.create(
         referral=referral,
@@ -348,6 +425,7 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
         order=order,
         reward=reward,
         reward_value=reward_value,
+        fallback_reward_value=fallback_reward_value,
     )
     challenge.successful_referrals = F("successful_referrals") + 1
     challenge.save(update_fields=["successful_referrals", "updated_at"])
@@ -378,59 +456,67 @@ def settle_challenge(*, challenge_id: int, force_success: bool = False) -> UserC
 
     wallet = _wallet_for(user_id=challenge.user_id, brand_id=challenge.brand_id)
     _release_frozen_entry(challenge=challenge, wallet=wallet)
-    rewards = ReferralReward.objects.select_for_update().filter(
-        challenge_event__challenge=challenge
+    events = list(
+        ChallengeReferralEvent.objects.select_related("reward", "referral", "order")
+        .filter(challenge=challenge).order_by("created_at", "pk")
     )
-    reward_count = rewards.count()
-    reward_amount = _money(rewards.aggregate(total=Sum("cash_value"))["total"] or Decimal("0"), wallet.currency)
-    if success:
-        if reward_amount > 0:
-            credit_wallet(
-                wallet_id=wallet.pk,
-                amount=reward_amount,
-                transaction_type=WalletTransaction.TransactionType.REFERRAL_REWARD,
-                reference_id=f"challenge:{challenge.pk}",
-                idempotency_key=f"challenge-reward:{challenge.pk}",
-                description=f"پاداش نقدی چالش {challenge.program.name}",
-                metadata={"challenge_id": challenge.pk, "target": challenge.target_referrals},
-            )
-        rewards.update(
-            status=ReferralReward.RewardStatus.PROCESSED,
-            processed_at=now,
-            is_cashed_out=True,
-            cashed_out_at=now,
+    total_value = Decimal("0")
+    from apps.subscriptions.policy import effective_reward_percent
+    program = ReferralProgram.objects.filter(brand_id=challenge.brand_id, is_active=True).first()
+    if not success and any(event.fallback_reward_value is None for event in events) and program is None:
+        raise ChallengeError("تنظیمات پاداش معرفی عادی یافت نشد.")
+    for event in events:
+        reward = ReferralReward.objects.select_for_update().get(pk=event.reward_id)
+        if success:
+            # Saved at purchase time. Subsequent rate changes cannot reprice it.
+            value = event.reward_value
+        elif event.fallback_reward_value is not None:
+            value = event.fallback_reward_value
+        else:
+            # Previously recorded events have no fallback snapshot.
+            percent = effective_reward_percent(event.order, program.purchase_reward_percent)
+            value = _money(event.order.final_price * percent * challenge.program.failure_multiplier
+                           / Decimal("100"), event.order.currency)
+        reward.reward_type = "normal_point"
+        reward.cash_value = value
+        reward.status = ReferralReward.RewardStatus.PROCESSED
+        reward.processed_at = now
+        reward.notes = "Challenge reward settled"
+        reward.save(update_fields=["reward_type", "cash_value", "status", "processed_at", "notes"])
+        _mark_challenge_rewarded(referral=event.referral, points=Decimal("1"), rewarded_at=now)
+        total_value += value
+    if events:
+        _update_reward_account(
+            user_id=challenge.user_id, brand_id=challenge.brand_id,
+            earned_points=Decimal(len(events)),
         )
-        if reward_count:
-            _update_reward_account(
-                user_id=challenge.user_id,
-                brand_id=challenge.brand_id,
-                earned_points=Decimal(reward_count),
-            )
-            for event in ChallengeReferralEvent.objects.select_related("referral").filter(
-                challenge=challenge
-            ):
-                _mark_challenge_rewarded(
-                    referral=event.referral,
-                    points=Decimal("1"),
-                    rewarded_at=now,
-                )
-        challenge.status = UserChallenge.Status.SUCCEEDED
-        challenge.reward_amount = reward_amount
-    else:
-        # Failed challenge points never become usable points. They were kept
-        # provisional during the challenge, so there is no account/referral
-        # reward counter to undo here.
-        rewards.update(
-            status=ReferralReward.RewardStatus.CANCELLED,
-            processed_at=None,
-            is_cashed_out=False,
-            cashed_out_at=None,
-        )
-        challenge.status = UserChallenge.Status.FAILED
-        challenge.reward_amount = Decimal("0")
+        cash_out_completed_pills(user_id=challenge.user_id, brand_id=challenge.brand_id)
+    challenge.status = UserChallenge.Status.SUCCEEDED if success else UserChallenge.Status.FAILED
+    challenge.reward_amount = _money(total_value, wallet.currency)
     challenge.settled_at = now
     challenge.save(update_fields=["status", "reward_amount", "settled_at", "updated_at"])
     from apps.bot.analytics import record_event
     record_event(user_id=challenge.user_id, brand_id=challenge.brand_id, event="challenge_settled", value=challenge.status, metadata={"challenge_id": challenge.pk, "target": challenge.target_referrals, "progress": challenge.successful_referrals, "entry_returned": str(challenge.entry_amount), "reward": str(challenge.reward_amount)}, dedupe_key=f"challenge-settled:{challenge.pk}")
+    def notify_end():
+        from .tasks import _queue_once
+        if success:
+            result = (f"شما چالش را با موفقیت به اتمام رساندید و "
+                      f"{len(events)} قرص پراپزینو دریافت کردید.")
+        else:
+            result = ("شما موفق به اتمام کامل چالش نشدید و امتیاز عادی "
+                      "از معرفی‌های موفق خود دریافت کردید.\n"
+                      "شما همچنان می‌توانید با کمی معرفی بیشتر به مرحله "
+                      "رایگان شدن دائمی خدمات برسید.")
+        _queue_once(
+            user=challenge.user, brand_id=challenge.brand_id,
+            notification_type="custom", dedupe_key=f"challenge-ended:{challenge.pk}",
+            text=(f"چالش {challenge.program.name} شما به اتمام رسید.\n"
+                  f"{result}\n"
+                  f"مبلغ ورودی فیریز شده چالش {challenge.program.name} "
+                  "به امتیازات نقد شما واریز شد."),
+            buttons_data=[[{"text": "💊 امتیازات من", "callback_data": "rewards"}]],
+            metadata={"challenge_id": challenge.pk, "event": "challenge_settled"},
+        )
+    transaction.on_commit(notify_end)
     _update_reward_account(user_id=challenge.user_id, brand_id=challenge.brand_id)
     return challenge

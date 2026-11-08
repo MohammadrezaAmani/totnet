@@ -107,8 +107,15 @@ class PaymentAdmin(ForceDeleteAdminMixin, admin.ModelAdmin):
             obj.verified_by = request.user
         super().save_model(request, obj, form, change)
 
+    @admin.display(description="نوع واریز")
+    def payment_purpose(self, obj):
+        if hasattr(obj, "entry_challenge"):
+            return f"ورودی {obj.entry_challenge.program.name}"
+        return "خرید اشتراک" if obj.order_id else "شارژ کیف پول" if obj.wallet_id else "سایر"
+
     list_display = (
         "payment_id",
+        "payment_purpose",
         "order",
         "brand",
         "user",

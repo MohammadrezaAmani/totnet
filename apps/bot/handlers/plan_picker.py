@@ -271,7 +271,10 @@ class PlanPickerMixin:
             rows.insert(0, [{"text": "🎁 اکانت تست ۱ کاربر — " +
                             self.format_price(trial.discounted_price, trial.currency),
                             "callback_data": f"select_plan_{trial.pk}", "style": "success"}])
+        old_state = await self.get_user_state(user)
+        source_subscription_id = (old_state.state_data or {}).get("renewal_browse_source")
         await self.update_user_state(user, BotState.StateType.PURCHASE_FLOW, {
+            "renewal_browse_source": source_subscription_id,
             "step": "plan_selection" if stage in {"results", "volume_list", "time_list", "unlimited_users", "unlimited_results"} else "plan_filters",
             "service_category": picker["category"], "special_offers": False,
             "plan_picker": picker,

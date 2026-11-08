@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.bot.handlers.subscriptions import SubscriptionHandler
+from apps.bot.handlers.purchase import PurchaseHandler
 from apps.brands.models import Brand
 from apps.orders.gift_delivery import queue_ready_gift_details
 from apps.orders.models import GiftVoucher, Order
@@ -103,11 +104,33 @@ class RenewalGiftFlowTests(TestCase):
         self.assertEqual(Order.objects.count(), before)
         args = handler.edit_message_with_keyboard.await_args.args
         self.assertIn("همیشه قبل از اتمام تایم", args[2])
-        self.assertIn("۸۷", args[2].translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))
+        self.assertNotIn("مبلغ پس از کسر", args[2])
         buttons = [btn for row in args[3].inline_keyboard for btn in row]
-        self.assertEqual(buttons[0].callback_data, "purchase_subscription")
+        self.assertEqual(buttons[0].callback_data, f"browse_renewal_plans_{self.subscription.pk}")
         self.assertEqual(buttons[0].style, "success")
         self.assertEqual(buttons[1].callback_data, f"repurchase_subscription_{self.subscription.pk}")
+
+    def test_renewal_quote_shows_credit_choice_without_creating_an_order(self):
+        self.transfer()
+        handler = PurchaseHandler(MagicMock(), self.brand)
+        handler.get_or_create_user = AsyncMock(return_value=(self.recipient, False))
+        handler.purchase_credit = AsyncMock(return_value=Decimal("13"))
+        handler.edit_message_with_keyboard = AsyncMock()
+        callback = MagicMock()
+        callback.message.chat.id = self.recipient.telegram_id
+        callback.message.message_id = 18
+        callback.answer = AsyncMock()
+        before = Order.objects.count()
+        with patch("apps.bot.handlers.purchase.is_plan_visible_in_bot", new_callable=AsyncMock, return_value=True):
+            async_to_sync(handler.repurchase_subscription)(callback, self.subscription.pk)
+        self.assertEqual(Order.objects.count(), before)
+        args = handler.edit_message_with_keyboard.await_args.args
+        self.assertIn("مبلغ پس از کسر امتیازات نقد", args[2])
+        self.assertIn("87", args[2])
+        callbacks = [btn.callback_data for row in args[3].inline_keyboard for btn in row]
+        self.assertIn(f"renewal_checkout_{self.subscription.pk}_credit", callbacks)
+        self.assertIn(f"renewal_checkout_{self.subscription.pk}_nocredit", callbacks)
+        self.assertIn(f"renewal_details_{self.subscription.pk}", callbacks)
 
     def test_gift_buyer_receives_account_credentials_and_recipient_link(self):
         with patch("apps.referrals.tasks._queue_once", return_value=True) as send:

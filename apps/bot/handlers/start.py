@@ -50,6 +50,7 @@ class StartHandler(BaseHandler):
             return
 
         gift_feedback = None
+        gift_inviter_id = None
         if referral_code and referral_code.startswith('gift_'):
             from apps.orders.checkout_links import claim_gift, GiftClaimError
             try:
@@ -57,8 +58,8 @@ class StartHandler(BaseHandler):
                     token=referral_code[5:], brand_id=self.brand.pk,
                     user_id=user.pk, newly_registered=created,
                 )
-                # An incomplete profile only reserves the gift. Account
-                # credentials are issued after completing the device step.
+                # An incomplete profile reserves the link until onboarding is done.
+                gift_inviter_id = gift_order.user_id
                 gift_feedback = None
             except GiftClaimError as exc:
                 gift_feedback = f'❌ {escape(str(exc))}'
@@ -80,6 +81,16 @@ class StartHandler(BaseHandler):
                 pass
             elif referral_result == "failed":
                 await message.answer("⚠️ ثبت معرفی با خطا مواجه شد. پیش از خرید با پشتیبانی تماس بگیرید.")
+
+        if created:
+            from apps.bot.operational import queue_joined_event
+            try:
+                await sync_to_async(queue_joined_event, thread_sensitive=True)(
+                    brand_id=self.brand.pk, user_id=user.pk,
+                    referral_origin_user_id=gift_inviter_id,
+                )
+            except Exception:
+                logger.exception("Failed to queue join event for user %s", user.pk)
 
         from apps.accounts.models import UserProfile
         profile = await UserProfile.objects.filter(user=user).afirst()
@@ -756,7 +767,31 @@ class StartHandler(BaseHandler):
         profile.devices = selected
         profile.device_type = selected[0] if selected else None
         await profile.asave(update_fields=["device_type", "devices", "updated_at"])
-        await self.show_device_setup(chat_id, user)
+        state = await self.get_user_state(user)
+        if state.last_message_id:
+            choices = [
+                (UserProfile.DeviceType.IPHONE, "آیفون"),
+                (UserProfile.DeviceType.ANDROID_SAMSUNG, "اندروید _ سامسونگ"),
+                (UserProfile.DeviceType.ANDROID_OTHER, "اندروید _ شیائومی و سایر"),
+                (UserProfile.DeviceType.WINDOWS, "ویندوز"),
+                (UserProfile.DeviceType.MACOS, "مکینتاش"),
+                (UserProfile.DeviceType.LINUX, "لینوکس"),
+            ]
+            rows = [[{"text": ("✅ " if value in selected else "") + label,
+                     "callback_data": f"setup_device_{value}"}]
+                    for value, label in choices]
+            rows.append([{"text": "✅ ثبت دستگاه‌ها و ادامه", "callback_data": "finish_devices"}])
+            from aiogram.exceptions import TelegramBadRequest
+            try:
+                await self.bot.edit_message_reply_markup(
+                    chat_id=chat_id, message_id=state.last_message_id,
+                    reply_markup=self.create_keyboard(rows),
+                )
+            except TelegramBadRequest as exc:
+                if "not modified" not in str(exc).lower():
+                    logger.warning("Device keyboard edit failed: %s", exc)
+        else:
+            await self.show_device_setup(chat_id, user)
 
     async def finish_initial_devices(self, chat_id: int, user: User):
         profile = await UserProfile.objects.filter(user=user).afirst()
