@@ -670,7 +670,7 @@ def set_active_reference_service(*, brand_id: int, service_id: int) -> None:
     program, _ = ReferralProgram.objects.select_for_update().get_or_create(
         brand_id=brand_id,
         defaults={
-            "is_active": True,
+            "is_active": False,
             "name": "Referral Rewards",
             "require_purchase": True,
             "minimum_purchase_amount": Decimal("0"),
@@ -688,7 +688,9 @@ def set_active_reference_service(*, brand_id: int, service_id: int) -> None:
             reason_key=f"reference-service-change:{account.pk}:{service.pk}:{account.next_box_cycle}",
         )
     program.reference_service = service
-    program.is_active = True
+    # Choosing a redemption service must not enable payouts with no admin rate.
+    if program.purchase_reward_percent is None:
+        program.is_active = False
     program.save(update_fields=["reference_service", "is_active", "updated_at"])
 
 
@@ -1131,20 +1133,11 @@ def grant_profile_completion_reward(*, user_id: int, brand_id: int) -> bool:
 
 
 def active_purchase_reward_percent(*, user_id: int, brand_id: int, at=None):
-    """Use the current campaign rate for every qualifying purchase, including repeats."""
-    from .models import ChallengeProgram, UserChallenge
-    at = at or timezone.now()
-    challenge = UserChallenge.objects.filter(
-        user_id=user_id, brand_id=brand_id, status=UserChallenge.Status.ACTIVE,
-        starts_at__lte=at, ends_at__gte=at,
-    ).order_by("-starts_at", "-pk").first()
-    if challenge:
-        return Decimal(challenge.reward_percent), challenge
-    campaign = ChallengeProgram.objects.filter(brand_id=brand_id, is_active=True).order_by("-pk").first()
-    if campaign:
-        return Decimal(campaign.reward_percent), None
+    """Gift purchases use the configured referral base, never a challenge rate."""
     program = ReferralProgram.objects.filter(brand_id=brand_id, is_active=True).first()
-    return (Decimal(program.purchase_reward_percent) if program else Decimal(0)), None
+    if not program:
+        return Decimal("0"), None
+    return program.purchase_reward_percent, None
 
 
 @transaction.atomic
@@ -1159,7 +1152,9 @@ def snapshot_gift_reward(*, order_id: int):
     last = payments.annotate(confirmed_at=Coalesce("verified_at", "created_at")).order_by("-confirmed_at", "-pk").first()
     from apps.subscriptions.policy import effective_reward_percent
     configured_percent, challenge = active_purchase_reward_percent(user_id=order.user_id, brand_id=order.brand_id, at=last.confirmed_at)
-    percent = effective_reward_percent(order, configured_percent)
+    percent = (effective_reward_percent(order, configured_percent)
+               if configured_percent is not None and configured_percent > 0
+               else Decimal("0"))
     Order.objects.filter(pk=order.pk).update(gift_reward_percent=percent, gift_reward_challenge=challenge)
 
 
@@ -1183,12 +1178,14 @@ def award_claimed_gift(*, order_id: int) -> Decimal:
         return Decimal(0)
     snapshot_gift_reward(order_id=order.pk)
     order.refresh_from_db(fields=["gift_reward_percent", "gift_reward_challenge"])
-    from apps.subscriptions.policy import effective_reward_percent
-    percent = effective_reward_percent(order, order.gift_reward_percent or 0)
+    # The percentage is a paid-time snapshot; later admin edits must not reprice it.
+    percent = Decimal(order.gift_reward_percent or 0)
     if not 0 < percent <= 100:
         return Decimal(0)
     program = ReferralProgram.objects.filter(brand_id=order.brand_id, is_active=True).first()
-    if program and order.final_price < program.minimum_purchase_amount:
+    if not program:
+        return Decimal("0")
+    if order.final_price < program.minimum_purchase_amount:
         return Decimal(0)
     # Preserve any earlier immutable attribution. Gift rewards belong to the buyer
     # even when the recipient was originally introduced by another customer.

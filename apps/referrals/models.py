@@ -22,11 +22,7 @@ class NotificationTrigger(models.TextChoices):
 
 
 class ServiceRewardRate(models.Model):
-    """Optional per-service purchase-reward override, isolated per brand.
-
-    Royal unlimited always uses the mandatory 4% policy and cannot be
-    overridden here. All other plans fall back to program/challenge rates.
-    """
+    """Optional brand-scoped rate override for a service category and plan type."""
     brand = models.ForeignKey("brands.Brand", on_delete=models.CASCADE, related_name="service_reward_rates")
     service_category = models.CharField(
         max_length=20, choices=[("normal", "Normal"), ("royal", "Royal"), ("iran_ip", "Iran IP")]
@@ -111,8 +107,9 @@ class ReferralProgram(models.Model):
     purchase_reward_percent = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        default=8,
-        help_text="درصد ارزش نقدی هر امتیاز معرفی از مبلغ خرید مستقیم کاربر سطح یک.",
+        null=True,
+        blank=True,
+        help_text="درصد پایه پاداش معرفی؛ باید از مدیریت برند تنظیم شود.",
     )
 
     enable_level_rewards = models.BooleanField(default=False)
@@ -171,7 +168,11 @@ class ReferralProgram(models.Model):
             raise ValidationError(
                 {"lifetime_point_value": "Point value must be positive"}
             )
-        if self.purchase_reward_percent <= 0 or self.purchase_reward_percent > 100:
+        if self.is_active and (
+            self.purchase_reward_percent is None or
+            not self.purchase_reward_percent.is_finite() or
+            not 0 < self.purchase_reward_percent <= 100
+        ):
             raise ValidationError(
                 {
                     "purchase_reward_percent": "Referral purchase reward percent must be greater than 0 and at most 100."
@@ -824,20 +825,18 @@ class ChallengeProgram(models.Model):
         "brands.Brand", on_delete=models.CASCADE, related_name="challenge_program"
     )
     name = models.CharField(max_length=100, default="پراپزینو")
-    is_active = models.BooleanField(default=True)
-    offer_delay_days = models.PositiveSmallIntegerField(default=5)
+    is_active = models.BooleanField(default=False)
     offer_trigger = models.CharField(
         max_length=32,
         choices=NotificationTrigger.choices,
         default=NotificationTrigger.FIRST_PURCHASE,
     )
     offer_delay_minutes = models.PositiveIntegerField(
-        default=7200, help_text="مثلاً ۶۰ = یک ساعت، ۳۰۰ = پنج ساعت؛ از مبدأ انتخاب‌شده."
+        null=True, blank=True, help_text="مثلاً ۶۰ = یک ساعت، ۳۰۰ = پنج ساعت؛ از مبدأ انتخاب‌شده."
     )
-    duration_days = models.PositiveSmallIntegerField(default=7)
-    reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=13)
-    success_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=2)
-    failure_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=0.5)
+    duration_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    success_multiplier = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    failure_multiplier = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     require_referral_join_during_challenge = models.BooleanField(
         default=True,
         help_text=(
@@ -860,14 +859,20 @@ class ChallengeProgram(models.Model):
         from django.core.exceptions import ValidationError
 
         errors = {}
-        if self.duration_days < 1:
-            errors["duration_days"] = "Challenge duration must be at least one day."
-        if self.reward_percent <= 0 or self.reward_percent > 100:
-            errors["reward_percent"] = (
-                "Challenge reward percent must be greater than 0 and at most 100."
-            )
-        if self.success_multiplier <= 0 or self.failure_multiplier < 0:
-            errors["success_multiplier"] = "Challenge multipliers must be valid."
+        if self.is_active and (self.duration_days is None or self.duration_days < 1):
+            errors["duration_days"] = "مدت چالش را تنظیم کنید."
+        if self.is_active and self.offer_delay_minutes is None:
+            errors["offer_delay_minutes"] = "تأخیر پیشنهاد چالش را تنظیم کنید."
+        if self.is_active and (self.success_multiplier is None or self.failure_multiplier is None):
+            errors["success_multiplier"] = "ضرایب موفقیت و شکست را تنظیم کنید."
+        if self.success_multiplier is not None and (
+            not self.success_multiplier.is_finite() or self.success_multiplier <= 0
+        ):
+            errors["success_multiplier"] = "ضریب موفقیت باید مثبت باشد."
+        if self.failure_multiplier is not None and (
+            not self.failure_multiplier.is_finite() or self.failure_multiplier < 0
+        ):
+            errors["failure_multiplier"] = "ضریب شکست نباید منفی باشد."
         if errors:
             raise ValidationError(errors)
 
@@ -953,7 +958,13 @@ class UserChallenge(models.Model):
     )
     entry_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
     target_referrals = models.PositiveSmallIntegerField(default=0)
-    reward_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    rate_snapshot = models.JSONField(default=dict, blank=True)
+    success_multiplier_snapshot = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
+    failure_multiplier_snapshot = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
     require_referral_join_during_challenge = models.BooleanField(default=True)
     successful_referrals = models.PositiveSmallIntegerField(default=0)
     reward_amount = models.DecimalField(max_digits=20, decimal_places=2, default=0)
@@ -972,6 +983,45 @@ class UserChallenge(models.Model):
             models.Index(fields=["brand", "status", "ends_at"]),
             models.Index(fields=["user", "status"]),
         ]
+
+
+class ChallengeBroadcast(models.Model):
+    """Durable, resumable, brand-scoped launch of one challenge offer campaign."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    program = models.ForeignKey(
+        ChallengeProgram, on_delete=models.PROTECT, related_name="broadcasts"
+    )
+    started_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True,
+        related_name="challenge_broadcasts_started",
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
+    eligible_count = models.PositiveIntegerField(default=0)
+    scanned_count = models.PositiveIntegerField(default=0)
+    queued_count = models.PositiveIntegerField(default=0)
+    last_user_id = models.BigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "challenge_broadcasts"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["program"],
+                condition=models.Q(status__in=["queued", "running"]),
+                name="uniq_active_challenge_broadcast",
+            ),
+        ]
+        indexes = [models.Index(
+            fields=["status", "updated_at"], name="challenge_b_status_931bdd_idx"
+        )]
 
 
 class ChallengeReferralEvent(models.Model):

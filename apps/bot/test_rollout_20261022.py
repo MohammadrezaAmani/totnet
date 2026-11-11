@@ -40,24 +40,27 @@ class CheckoutAndProfileRegressionTests(TestCase):
             original_price=self.plan.price, final_price=self.plan.price
         )
 
-    def test_service_rates_default_eight_percent_and_allow_per_service_overrides(self):
+    def test_service_rates_fallback_to_configured_base_and_exact_override(self):
         order = self._order()
-        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("8"))
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("13"))
         royal = ServiceRewardRate.objects.create(
-            brand=self.brand, service_category="royal", plan_type="all", percent=Decimal("8")
+            brand=self.brand, service_category="royal", plan_type="all", percent=Decimal("9")
         )
-        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("8"))
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("9"))
         royal.percent = Decimal("7")
         royal.save(update_fields=["percent"])
         self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("7"))
         self.plan.service_category = "normal"
         self.plan.save(update_fields=["service_category"])
         order.plan = self.plan
-        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("8"))
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("13"))
         ServiceRewardRate.objects.create(
-            brand=self.brand, service_category="normal", plan_type="unlimited", percent=Decimal("6")
+            brand=self.brand, service_category="normal", plan_type="all", percent=Decimal("6")
         )
-        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("6"))
+        ServiceRewardRate.objects.create(
+            brand=self.brand, service_category="normal", plan_type="unlimited", percent=Decimal("4")
+        )
+        self.assertEqual(effective_reward_percent(order, Decimal("13")), Decimal("4"))
 
     def _complete_profile(self):
         self.user.full_name = "Tester"

@@ -155,7 +155,6 @@ class Command(BaseCommand):
                         "is_active": False,
                         "require_purchase": True,
                         "minimum_purchase_amount": Decimal("0"),
-                        "purchase_reward_percent": Decimal("8"),
                         "conversion_window_days": 30,
                         "max_referrals_per_day": 10,
                         "max_referrals_per_month": 100,
@@ -204,34 +203,11 @@ class Command(BaseCommand):
                         defaults={**defaults, "is_active": True},
                     )
 
-                uses_toman_amounts = brand.currency in {"T", "IRT", "IRR"}
-                challenge, _ = ChallengeProgram.objects.get_or_create(
-                    brand=brand,
-                    defaults={
-                        "name": "پراپزینو",
-                        "is_active": uses_toman_amounts,
-                        "offer_delay_days": 5,
-                        "duration_days": 7,
-                        "reward_percent": Decimal("13"),
-                        "require_referral_join_during_challenge": True,
-                    },
+                # New brands configure terms, rates and tiers explicitly in admin.
+                # Do not mint a challenge or default entry fees on setup.
+                ChallengeProgram.objects.get_or_create(
+                    brand=brand, defaults={"name": "پراپزینو", "is_active": False},
                 )
-                if uses_toman_amounts:
-                    for target, fee, display_order in (
-                        (1, Decimal("50000"), 1),
-                        (3, Decimal("130000"), 2),
-                        (5, Decimal("200000"), 3),
-                        (8, Decimal("300000"), 4),
-                    ):
-                        ChallengeTier.objects.get_or_create(
-                            program=challenge,
-                            target_referrals=target,
-                            defaults={
-                                "entry_fee": fee,
-                                "display_order": display_order,
-                                "is_active": True,
-                            },
-                        )
             configured += 1
             self.stdout.write(
                 self.style.SUCCESS(

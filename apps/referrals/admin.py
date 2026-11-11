@@ -14,6 +14,7 @@ from .models import (
     ChallengeProgram,
     ChallengeReferralEvent,
     ChallengeTier,
+    ChallengeBroadcast,
     GamificationNotification,
     LoyaltyProgram,
     MarketingMaterial,
@@ -607,7 +608,6 @@ class ChallengeTierInline(admin.TabularInline):
 
 @admin.register(ChallengeProgram)
 class ChallengeProgramAdmin(ScopedReferralAdmin):
-    exclude = ("offer_delay_days", "reward_percent")
     inlines = (ChallengeTierInline,)
     list_display = (
         "brand",
@@ -633,6 +633,25 @@ class ChallengeProgramAdmin(ScopedReferralAdmin):
         if not request.user.is_superuser:
             return qs.filter(brand__in=request.user.admin_brands.all())
         return qs
+
+
+@admin.register(ChallengeBroadcast)
+class ChallengeBroadcastAdmin(ScopedReferralAdmin):
+    list_display = ("program", "status", "eligible_count", "scanned_count",
+                    "queued_count", "created_at", "finished_at")
+    list_filter = ("status", "program__brand")
+    readonly_fields = ("program", "started_by", "status", "eligible_count",
+                       "scanned_count", "queued_count", "last_user_id",
+                       "created_at", "updated_at", "finished_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs if request.user.is_superuser else qs.filter(
+            program__brand__in=request.user.admin_brands.all()
+        )
 
 
 @admin.register(ChallengeTier)
@@ -671,7 +690,6 @@ class UserChallengeAdmin(LedgerAdmin):
         "status",
         "successful_referrals",
         "target_referrals",
-        "reward_percent",
         "entry_amount",
         "reward_amount",
         "ends_at",
@@ -691,7 +709,9 @@ class UserChallengeAdmin(LedgerAdmin):
         "ends_at",
         "successful_referrals",
         "target_referrals",
-        "reward_percent",
+        "rate_snapshot",
+        "success_multiplier_snapshot",
+        "failure_multiplier_snapshot",
         "entry_amount",
         "reward_amount",
         "settled_at",

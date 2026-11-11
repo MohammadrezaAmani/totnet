@@ -62,24 +62,23 @@ def blocked_duration_key(key, category=None):
 
 
 def effective_reward_percent(order, configured_percent):
-    """Apply the brand and service-specific purchase-referral commission.
-
-    Use the persisted order plan and never derive rates from display labels.
-    """
-    plan = order.plan
+    """Resolve persisted exact-type, category-wide, then referral-program rate."""
     from apps.referrals.models import ServiceRewardRate
-    override = (ServiceRewardRate.objects.filter(
-        brand_id=order.brand_id,
-        service_category=plan.service_category,
-        plan_type__in=[plan.plan_type, "all"],
-        is_active=True,
-    ).order_by("-plan_type").first())
-    # Prefer an exact type override over a category-wide default.
-    if override:
-        return Decimal(override.percent)
-    if plan.service_category in {
-        SubscriptionPlan.ServiceCategory.NORMAL,
-        SubscriptionPlan.ServiceCategory.ROYAL,
-    }:
-        return Decimal("8")
-    return Decimal(configured_percent)
+    from apps.referrals.rate_policy import checked_percent
+
+    plan = order.plan
+    candidates = ServiceRewardRate.objects.filter(
+        brand_id=order.brand_id, service_category=plan.service_category,
+        plan_type__in=(plan.plan_type, "all"), is_active=True,
+    )
+    exact = candidates.filter(plan_type=plan.plan_type).first()
+    category = candidates.filter(plan_type="all").first()
+    if exact or category:
+        return checked_percent((exact or category).percent)
+    if configured_percent is None:
+        raise ValueError("درصد پایه معرفی برای برند تنظیم نشده است.")
+    rate = Decimal(str(configured_percent))
+    if rate == 0:
+        # An absent/disabled referral program must never create a payout.
+        return rate
+    return checked_percent(rate)

@@ -25,6 +25,9 @@ from apps.orders.services import (
 from apps.referrals.models import (
     ChallengeProgram,
     ChallengeTier,
+    ChallengeBroadcast,
+    ReferralProgram,
+    ServiceRewardRate,
     NotificationRule,
     NotificationTrigger,
     ReferralLink,
@@ -230,13 +233,91 @@ class AdminControlMixin:
             elif section == "chtoggle":
                 program = await ChallengeProgram.objects.aget(brand=self.brand)
                 if parts[1] not in {
-                    "is_active",
-                    "require_referral_join_during_challenge",
+                    "is_active", "require_referral_join_during_challenge",
                 }:
                     raise ValidationError("گزینه نامعتبر است.")
+                if parts[1] == "is_active" and not program.is_active:
+                    from apps.referrals.rate_policy import validate_challenge_configuration
+                    await sync_to_async(validate_challenge_configuration)(program)
                 setattr(program, parts[1], not getattr(program, parts[1]))
-                await program.asave()
+                await sync_to_async(program.full_clean)()
+                await program.asave(update_fields=[parts[1], "updated_at"])
                 await self.control_challenge(callback)
+            elif section == "chsend":
+                await self.control_challenge_broadcast(callback)
+            elif section == "chsendconfirm":
+                from apps.referrals.broadcast import start_challenge_broadcast
+                broadcast, _ = await sync_to_async(start_challenge_broadcast)(
+                    brand_id=self.brand.pk, admin_id=user.pk,
+                )
+                await self.control_challenge_broadcast(callback, broadcast.pk)
+            elif section == "chsendcancel":
+                from apps.referrals.broadcast import cancel_challenge_broadcast
+                broadcast = await sync_to_async(cancel_challenge_broadcast)(
+                    brand_id=self.brand.pk, broadcast_id=int(parts[1]),
+                )
+                await self.control_challenge_broadcast(callback, broadcast.pk)
+            elif section == "chreftoggle":
+                program = await ReferralProgram.objects.filter(brand=self.brand).afirst()
+                if not program:
+                    raise ValidationError("ابتدا درصد پایه معرفی را تنظیم کنید.")
+                program.is_active = not program.is_active
+                await sync_to_async(program.full_clean)()
+                await program.asave(update_fields=["is_active", "updated_at"])
+                await self.control_challenge(callback)
+            elif section == "chbaseedit":
+                await self.control_prompt(
+                    callback, user, "chbaseedit", "درصد پایه معرفی را وارد کنید:",
+                    back="ac:challenge",
+                )
+            elif section == "chrate":
+                await self.control_challenge_rates(callback)
+            elif section == "chrateitem":
+                await self.control_challenge_rate(callback, int(parts[1]))
+            elif section == "chratetoggle":
+                rate = await ServiceRewardRate.objects.aget(pk=int(parts[1]), brand=self.brand)
+                rate.is_active = not rate.is_active
+                await sync_to_async(rate.full_clean)()
+                await rate.asave(update_fields=["is_active"])
+                await self.control_challenge_rate(callback, rate.pk)
+            elif section == "chrateedit":
+                await ServiceRewardRate.objects.aget(pk=int(parts[1]), brand=self.brand)
+                await self.control_prompt(
+                    callback, user, "chrateedit", "درصد جدید را وارد کنید:",
+                    object_id=int(parts[1]), back=f"ac:chrateitem:{parts[1]}",
+                )
+            elif section == "chrateadd":
+                if len(parts) == 1:
+                    categories = ServiceRewardRate._meta.get_field("service_category").choices
+                    await self.control_screen(
+                        callback, "سرویس موردنظر:",
+                        [[button(label, f"chrateadd:{key}")] for key, label in categories],
+                        "ac:chrate",
+                    )
+                elif len(parts) == 2:
+                    category = parts[1]
+                    categories = dict(ServiceRewardRate._meta.get_field("service_category").choices)
+                    if category not in categories:
+                        raise ValidationError("سرویس نامعتبر است.")
+                    plan_types = ServiceRewardRate._meta.get_field("plan_type").choices
+                    await self.control_screen(
+                        callback, "نوع پلن:",
+                        [[button(label, f"chrateadd:{category}:{key}")] for key, label in plan_types],
+                        "ac:chrate",
+                    )
+                else:
+                    category, plan_type = parts[1:3]
+                    if (category not in dict(ServiceRewardRate._meta.get_field("service_category").choices)
+                            or plan_type not in dict(ServiceRewardRate._meta.get_field("plan_type").choices)):
+                        raise ValidationError("نوع سرویس یا پلن نامعتبر است.")
+                    if await ServiceRewardRate.objects.filter(
+                        brand=self.brand, service_category=category, plan_type=plan_type,
+                    ).aexists():
+                        raise ValidationError("این نرخ وجود دارد؛ همان مورد را ویرایش کنید.")
+                    await self.control_prompt(
+                        callback, user, "chratecreate", "درصد را وارد کنید:",
+                        category=category, plan_type=plan_type, back="ac:chrate",
+                    )
             elif section == "chtrigger":
                 if len(parts) == 1:
                     await self.control_screen(
@@ -260,7 +341,8 @@ class AdminControlMixin:
                     "name",
                     "offer_delay_minutes",
                     "duration_days",
-                    "reward_percent",
+                    "success_multiplier",
+                    "failure_multiplier",
                     "intro_text",
                 }:
                     raise ValidationError("گزینه نامعتبر است.")
@@ -454,6 +536,9 @@ class AdminControlMixin:
             NotificationRule.DoesNotExist,
             ChallengeProgram.DoesNotExist,
             ChallengeTier.DoesNotExist,
+            ServiceRewardRate.DoesNotExist,
+            ChallengeBroadcast.DoesNotExist,
+            ReferralProgram.DoesNotExist,
             User.DoesNotExist,
         ):
             await callback.answer("مورد انتخاب‌شده پیدا نشد.", show_alert=True)
@@ -602,41 +687,101 @@ class AdminControlMixin:
         p, _ = await ChallengeProgram.objects.aget_or_create(
             brand=self.brand, defaults={"is_active": False}
         )
-        text = f"🏆 {escape(p.name)}\nفعال: {p.is_active}\nمبدأ پیشنهاد: {p.get_offer_trigger_display()}\nتأخیر پیشنهاد: {p.offer_delay_minutes} دقیقه\nمدت اجرای چالش: {p.duration_days} روز\nدرصد: {p.reward_percent:g}٪\nورود معرفی در بازه چالش: {p.require_referral_join_during_challenge}\n\nتنظیمات جدید روی چالش‌های شروع‌شده اثر نمی‌گذارد. اصل وجه ورودی در پایان آزاد می‌شود."
+        referral = await ReferralProgram.objects.filter(brand=self.brand).afirst()
+        base_rate = (f"{referral.purchase_reward_percent:g}٪"
+                     if referral and referral.purchase_reward_percent is not None
+                     else "تنظیم نشده")
+        text = (
+            f"🏆 {escape(p.name)}\n"
+            f"فعال: {'بله' if p.is_active else 'خیر'}\n"
+            f"نرخ پایه معرفی: {base_rate}\n"
+            f"برنامه معرفی: {'فعال' if referral and referral.is_active else 'غیرفعال'}\n"
+            f"ضریب موفقیت: {p.success_multiplier if p.success_multiplier is not None else 'تنظیم نشده'}\n"
+            f"ضریب شکست: {p.failure_multiplier if p.failure_multiplier is not None else 'تنظیم نشده'}\n"
+            f"مبدأ پیشنهاد: {p.get_offer_trigger_display()}\n"
+            f"تأخیر پیشنهاد: {p.offer_delay_minutes if p.offer_delay_minutes is not None else 'تنظیم نشده'} دقیقه\n"
+            f"مدت چالش: {p.duration_days if p.duration_days is not None else 'تنظیم نشده'} روز\n"
+            f"عضویت در بازه چالش: {'الزامی' if p.require_referral_join_during_challenge else 'غیراجباری'}\n"
+        )
         rows = [
             [button(label, f"chedit:{field}")]
             for field, label in [
                 ("name", "نام"),
-                ("offer_delay_minutes", "تأخیر ارسال (دقیقه)"),
-                ("duration_days", "مدت چالش (روز)"),
-                ("reward_percent", "درصد پاداش"),
+                ("offer_delay_minutes", "تأخیر پیشنهاد"),
+                ("duration_days", "مدت چالش"),
+                ("success_multiplier", "ضریب موفقیت"),
+                ("failure_multiplier", "ضریب شکست"),
                 ("intro_text", "متن شرایط"),
             ]
         ]
         rows += [
-            [button("مبدأ ارسال", "chtrigger")],
+            [button("درصد پایه معرفی", "chbaseedit")],
+            [button("فعال / غیرفعال برنامه معرفی", "chreftoggle")],
+            [button("نرخ سرویس‌ها و انواع پلن", "chrate")],
+            [button("مبدأ پیشنهاد", "chtrigger")],
             [button("فعال / غیرفعال", "chtoggle:is_active")],
-            [
-                button(
-                    "شرط زمان عضویت معرف‌شده",
-                    "chtoggle:require_referral_join_during_challenge",
-                )
-            ],
+            [button("شرط زمان عضویت", "chtoggle:require_referral_join_during_challenge")],
         ]
         rows += [
-            [
-                button(
-                    f"🎯 {tier.target_referrals} نفر — {tier.entry_fee:g}",
-                    f"tier:{tier.pk}",
-                )
-            ]
+            [button(f"🎯 {tier.target_referrals} نفر — {tier.entry_fee:g}"
+                    f" {'🟢' if tier.is_active else '🔴'}", f"tier:{tier.pk}")]
             async for tier in ChallengeTier.objects.filter(program=p)
         ]
         rows += [
             [button("➕ تارگت جدید", "tiernew")],
+            [button("📣 اجرای چالش برای همه", "chsend")],
             [button("📊 آمار چالش و رفتار", "report")],
         ]
         await self.control_screen(callback, text, rows)
+
+    async def control_challenge_rates(self, callback):
+        program = await ReferralProgram.objects.filter(brand=self.brand).afirst()
+        base = (f"{program.purchase_reward_percent:g}٪" if program and
+                program.purchase_reward_percent is not None else "تنظیم نشده")
+        text = f"نرخ پایه: {base}\nنرخ‌های اختصاصی سرویس و نوع پلن:"
+        rows = [[button(f"{'🟢' if rate.is_active else '🔴'} "
+                        f"{rate.get_service_category_display()} / "
+                        f"{rate.get_plan_type_display()}: {rate.percent:g}٪",
+                        f"chrateitem:{rate.pk}")]
+                async for rate in ServiceRewardRate.objects.filter(
+                    brand=self.brand
+                ).order_by("service_category", "plan_type")]
+        rows += [[button("درصد پایه معرفی", "chbaseedit")],
+                 [button("➕ نرخ اختصاصی جدید", "chrateadd")]]
+        await self.control_screen(callback, text, rows, "ac:challenge")
+
+    async def control_challenge_rate(self, callback, pk):
+        rate = await ServiceRewardRate.objects.aget(pk=pk, brand=self.brand)
+        text = (f"{rate.get_service_category_display()} / {rate.get_plan_type_display()}\n"
+                f"درصد: {rate.percent:g}٪\nفعال: {'بله' if rate.is_active else 'خیر'}")
+        await self.control_screen(callback, text, [
+            [button("ویرایش درصد", f"chrateedit:{pk}")],
+            [button("فعال / غیرفعال", f"chratetoggle:{pk}")],
+        ], "ac:chrate")
+
+    async def control_challenge_broadcast(self, callback, broadcast_id=None):
+        program = await ChallengeProgram.objects.aget(brand=self.brand)
+        from apps.referrals.broadcast import eligible_challenge_users
+        eligible = await sync_to_async(lambda: eligible_challenge_users(program).count())()
+        job = (await ChallengeBroadcast.objects.filter(
+            program=program, **({"pk": broadcast_id} if broadcast_id else {})
+        ).order_by("-pk").afirst())
+        text = (f"📣 ارسال پیشنهاد {escape(program.name)}\n"
+                f"چالش فعال: {'بله' if program.is_active else 'خیر'}\n"
+                f"کاربران واجد شرایط دریافت اعلان: {eligible}\n"
+                "کاربران دارای چالش پایان‌یافته یا ردشده دوباره وارد چالش نمی‌شوند.")
+        if job:
+            text += (f"\n\nآخرین اجرا: #{job.pk} / {job.get_status_display()}\n"
+                     f"بررسی‌شده: {job.scanned_count}/{job.eligible_count}\n"
+                     f"قرارگرفته در صف ارسال: {job.queued_count}")
+        rows = []
+        if program.is_active:
+            rows.append([button("✅ تأیید ارسال برای همه واجدان شرایط", "chsendconfirm")])
+        if job and job.status in (ChallengeBroadcast.Status.QUEUED,
+                                  ChallengeBroadcast.Status.RUNNING):
+            rows.append([button("⛔ توقف ادامه صف‌بندی", f"chsendcancel:{job.pk}")])
+        rows.append([button("🔄 بروزرسانی", "chsend")])
+        await self.control_screen(callback, text, rows, "ac:challenge")
 
     async def control_rules(self, callback, page=1):
         qs = NotificationRule.objects.filter(brand=self.brand).order_by("pk")
@@ -746,7 +891,6 @@ class AdminControlMixin:
                     "target",
                     "progress",
                     "entry",
-                    "reward_percent",
                     "reward",
                     "started",
                     "ended",
@@ -761,7 +905,6 @@ class AdminControlMixin:
                         c.target_referrals,
                         c.successful_referrals,
                         c.entry_amount,
-                        c.reward_percent,
                         c.reward_amount,
                         c.starts_at,
                         c.ends_at,
@@ -931,28 +1074,48 @@ class AdminControlMixin:
                 await sync_to_async(plan.full_clean)()
                 await plan.asave()
                 back = f"ac:plan:{plan.pk}"
+            elif action == "chbaseedit":
+                referral = await ReferralProgram.objects.filter(brand=self.brand).afirst()
+                from apps.referrals.rate_policy import checked_percent
+                if not referral:
+                    referral = ReferralProgram(brand=self.brand, is_active=False)
+                referral.purchase_reward_percent = checked_percent(value)
+                await sync_to_async(referral.full_clean)()
+                await referral.asave()
+                back = "ac:challenge"
+            elif action in {"chrateedit", "chratecreate"}:
+                from apps.referrals.rate_policy import checked_percent
+                rate = (await ServiceRewardRate.objects.aget(
+                    pk=d["object_id"], brand=self.brand
+                ) if action == "chrateedit" else ServiceRewardRate(
+                    brand=self.brand,
+                    service_category=d["category"], plan_type=d["plan_type"],
+                ))
+                rate.percent = checked_percent(value)
+                await sync_to_async(rate.full_clean)()
+                await rate.asave()
+                back = f"ac:chrateitem:{rate.pk}"
             elif action == "chedit":
                 program = await ChallengeProgram.objects.aget(brand=self.brand)
                 field = d["field"]
                 if field not in {
-                    "name",
-                    "intro_text",
-                    "offer_delay_minutes",
-                    "duration_days",
-                    "reward_percent",
+                    "name", "intro_text", "offer_delay_minutes", "duration_days",
+                    "success_multiplier", "failure_multiplier",
                 }:
                     raise ValidationError("فیلد نامعتبر است.")
-                setattr(
-                    program,
-                    field,
-                    value
-                    if field in {"name", "intro_text"}
-                    else Decimal(value)
-                    if field == "reward_percent"
-                    else int(value),
-                )
+                if field in {"name", "intro_text"}:
+                    if field == "intro_text" and len(value) > 1500:
+                        raise ValidationError("متن حداکثر ۱۵۰۰ کاراکتر باشد.")
+                    new_value = value
+                elif field in {"success_multiplier", "failure_multiplier"}:
+                    new_value = Decimal(value)
+                    if not new_value.is_finite():
+                        raise ValidationError("عدد واردشده معتبر نیست.")
+                else:
+                    new_value = int(value)
+                setattr(program, field, new_value)
                 await sync_to_async(program.full_clean)()
-                await program.asave()
+                await program.asave(update_fields=[field, "updated_at"])
                 back = "ac:challenge"
             elif action in {"tiernew", "tieredit"}:
                 target, fee, order = value.split()

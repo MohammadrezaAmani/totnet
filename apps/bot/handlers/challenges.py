@@ -25,6 +25,7 @@ class ChallengesHandler(BaseHandler):
         return (
             f"👨🏾‍⚕️<b>{escape(program.name)}، قدمی بزرگ برای رایگان شدن دائمی خدمات ما!</b>\n\n"
             "🚨این چالش فقط یک‌بار انجام می‌شود؛ پس نهایت استفاده را از آن ببرید."
+            + (f"\n\n{escape(program.intro_text)}" if program.intro_text else "")
         )
 
     def _conditions(self, program):

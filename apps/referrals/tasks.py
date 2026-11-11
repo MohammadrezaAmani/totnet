@@ -26,6 +26,7 @@ from apps.subscriptions.models import Subscription
 from .gamification import ChallengeError, settle_challenge
 from .models import (
     ChallengeProgram,
+    ChallengeBroadcast,
     GamificationNotification,
     Referral,
     ReferralProgram,
@@ -897,28 +898,26 @@ def run_gamification_notifications(limit: int = 500):
     from .scheduling import lifecycle_candidates, run_notification_rules
     counters["rules"] = run_notification_rules(limit=limit)
 
+    from .broadcast import recover_challenge_broadcasts
+    recover_challenge_broadcasts()
+
     for program in ChallengeProgram.objects.filter(is_active=True, brand__status="active").select_related("brand"):
+        from django.core.exceptions import ValidationError
+        from .rate_policy import validate_challenge_configuration
+        try:
+            validate_challenge_configuration(program)
+        except ValidationError:
+            logger.warning("Skipping unconfigured challenge program %s", program.pk)
+            continue
         queued = 0
         for user, occurrence, anchor_at in lifecycle_candidates(
             brand_id=program.brand_id, trigger=program.offer_trigger,
             delay_minutes=program.offer_delay_minutes, limit=limit,
         ):
-            challenge, _ = UserChallenge.objects.get_or_create(
-                user=user, brand_id=program.brand_id, program=program,
-                defaults={"status": UserChallenge.Status.OFFERED, "offered_at": now},
-            )
-            if challenge.status != UserChallenge.Status.OFFERED:
-                continue
-            if _queue_once(
-                user=user, brand_id=program.brand_id,
-                notification_type=GamificationNotification.NotificationType.CHALLENGE_OFFER,
-                dedupe_key=f"challenge-offer:{challenge.pk}",
-                text=(f"🏆 <b>چالش ویژه {escape(program.name)} برای شما فعال شد</b>\n\n"
-                      "امکان شرکت در این چالش فقط و فقط همین یکبار برای شما امکان‌پذیر است.\n"
-                      "مایل به دریافت شرایط شرکت در این چالش هستید؟"),
-                buttons_data=[[{"text": "✅ بله", "callback_data": f"challenge_accept_{challenge.pk}"},
-                               {"text": "❌ خیر", "callback_data": f"challenge_decline_{challenge.pk}"}]],
-                metadata={"challenge_id": challenge.pk, "trigger": program.offer_trigger, "anchor_at": anchor_at.isoformat()},
+            from .broadcast import queue_challenge_offer
+            if queue_challenge_offer(
+                program=program, user=user, trigger=program.offer_trigger,
+                anchor_at=anchor_at,
             ):
                 queued += 1
                 counters["challenge_offer"] += 1
@@ -965,3 +964,49 @@ def run_gamification_notifications(limit: int = 500):
                 break
 
     return counters
+
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=60,
+             acks_late=True, reject_on_worker_lost=True)
+def process_challenge_broadcast(self, broadcast_id):
+    """Scan a bounded page; commit cursor and queued notifications atomically."""
+    from .broadcast import eligible_challenge_users, publish_challenge_broadcast, queue_challenge_offer
+    try:
+        with transaction.atomic():
+            job = (ChallengeBroadcast.objects.select_for_update()
+                   .select_related("program").get(pk=broadcast_id))
+            if job.status not in (ChallengeBroadcast.Status.QUEUED, ChallengeBroadcast.Status.RUNNING):
+                return {"status": job.status}
+            if not job.program.is_active:
+                job.status = ChallengeBroadcast.Status.CANCELLED
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "finished_at", "updated_at"])
+                return {"status": job.status}
+            ids = list(eligible_challenge_users(job.program).filter(
+                pk__gt=job.last_user_id
+            ).values_list("pk", flat=True)[:100])
+            if not ids:
+                job.status = ChallengeBroadcast.Status.COMPLETED
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "finished_at", "updated_at"])
+                return {"status": job.status, "queued": job.queued_count}
+            from apps.accounts.models import User
+            users = User.objects.in_bulk(ids)
+            for user_id in ids:
+                if queue_challenge_offer(
+                    program=job.program, user=users[user_id], trigger="admin_broadcast",
+                ):
+                    job.queued_count += 1
+            job.last_user_id = ids[-1]
+            job.scanned_count += len(ids)
+            job.status = ChallengeBroadcast.Status.RUNNING
+            job.save(update_fields=["last_user_id", "scanned_count", "queued_count",
+                                    "status", "updated_at"])
+            transaction.on_commit(lambda: publish_challenge_broadcast(job.pk))
+            return {"status": job.status, "scanned": job.scanned_count,
+                    "queued": job.queued_count}
+    except ChallengeBroadcast.DoesNotExist:
+        return {"status": "missing"}
+    except Exception as exc:
+        logger.exception("Challenge broadcast %s failed", broadcast_id)
+        raise self.retry(exc=exc) from exc

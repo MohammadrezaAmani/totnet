@@ -74,7 +74,8 @@ class DefaultGamificationSetupTests(TestCase):
         call_command("setup_default_gamification", brand=brand.slug, verbosity=0)
         program = ReferralProgram.objects.get(brand=brand)
         service = program.reference_service
-        self.assertTrue(program.is_active)
+        self.assertFalse(program.is_active)
+        self.assertIsNone(program.purchase_reward_percent)
         self.assertTrue(program.enable_level_rewards)
         self.assertEqual(service.plan_id, plan.pk)
         self.assertEqual(service.free_points, Decimal("10"))
@@ -755,6 +756,30 @@ class PropzinoChallengeTests(TestCase):
         self.assertEqual(reward.status, ReferralReward.RewardStatus.PROCESSED)
         self.assertFalse(reward.is_cashed_out)
         self.assertEqual(account.lifetime_points, Decimal("1"))
+
+    def test_active_challenge_freezes_service_rates_and_multipliers_at_activation(self):
+        from apps.referrals.models import ServiceRewardRate
+        rate = ServiceRewardRate.objects.create(
+            brand=self.brand, service_category=self.plan.service_category,
+            plan_type="all", percent=Decimal("6"),
+        )
+        challenge = self._activate(target=3)
+        self.program.purchase_reward_percent = Decimal("20")
+        self.program.save(update_fields=["purchase_reward_percent"])
+        rate.percent = Decimal("12")
+        rate.save(update_fields=["percent"])
+        self.challenge_program.success_multiplier = Decimal("3")
+        self.challenge_program.failure_multiplier = Decimal("0.2")
+        self.challenge_program.save(update_fields=["success_multiplier", "failure_multiplier"])
+        order, payment = self._purchase()
+        award_level_one_referral_for_payment(payment_id=str(payment.payment_id))
+        reward = ReferralReward.objects.get(order=order)
+        event = challenge.referral_events.get(order=order)
+        self.assertEqual(reward.cash_value, Decimal("12.00"))
+        self.assertEqual(event.fallback_reward_value, Decimal("3.00"))
+        self._end_challenge(challenge)
+        reward.refresh_from_db()
+        self.assertEqual(reward.cash_value, Decimal("3.00"))
 
     def test_failed_challenge_returns_entry_and_preserves_discounted_pill(self):
         from apps.referrals.gamification import settle_challenge

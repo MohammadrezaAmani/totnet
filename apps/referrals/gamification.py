@@ -128,6 +128,12 @@ def choose_challenge_tier(*, user_id: int, brand_id: int, tier_id: int) -> UserC
     ).first()
     if not program:
         raise ChallengeError("چالش فعالی برای این برند تعریف نشده است.")
+    from .rate_policy import validate_challenge_configuration
+    from django.core.exceptions import ValidationError
+    try:
+        validate_challenge_configuration(program)
+    except ValidationError as exc:
+        raise ChallengeError("تنظیمات مالی چالش کامل نیست.") from exc
     try:
         tier = ChallengeTier.objects.get(pk=tier_id, program=program, is_active=True)
     except ChallengeTier.DoesNotExist as exc:
@@ -147,7 +153,6 @@ def choose_challenge_tier(*, user_id: int, brand_id: int, tier_id: int) -> UserC
     challenge.tier = tier
     challenge.entry_amount = tier.entry_fee
     challenge.target_referrals = tier.target_referrals
-    challenge.reward_percent = program.reward_percent
     challenge.accepted_at = challenge.accepted_at or timezone.now()
     challenge.status = UserChallenge.Status.AWAITING_FUNDS
     challenge.save(
@@ -155,7 +160,6 @@ def choose_challenge_tier(*, user_id: int, brand_id: int, tier_id: int) -> UserC
             "tier",
             "entry_amount",
             "target_referrals",
-            "reward_percent",
             "accepted_at",
             "status",
             "updated_at",
@@ -250,11 +254,34 @@ def activate_challenge_from_payment(*, payment_id: int) -> UserChallenge:
         challenge_frozen_balance=F("challenge_frozen_balance") + payment.amount
     )
     now = payment.verified_at or timezone.now()
+    from .rate_policy import challenge_rate_snapshot
+    from django.core.exceptions import ValidationError
+
+    try:
+        policy = challenge_rate_snapshot(challenge.brand_id)
+    except ValidationError as exc:
+        raise ChallengeError("نرخ معرفی برند تنظیم نشده است.") from exc
+    if (not challenge.program.duration_days or
+            challenge.program.success_multiplier is None or
+            challenge.program.failure_multiplier is None):
+        raise ChallengeError("تنظیمات چالش ناقص است.")
+    challenge.rate_snapshot = policy
+    challenge.success_multiplier_snapshot = challenge.program.success_multiplier
+    challenge.failure_multiplier_snapshot = challenge.program.failure_multiplier
+    rates = [Decimal(policy["base_percent"])] + [
+        Decimal(row["percent"]) for row in policy["overrides"]
+    ]
+    if (max(rates) * challenge.success_multiplier_snapshot > 100 or
+            max(rates) * challenge.failure_multiplier_snapshot > 100):
+        raise ChallengeError("نرخ‌های چالش در تنظیمات مدیریت معتبر نیستند.")
     challenge.status = UserChallenge.Status.ACTIVE
     challenge.starts_at = now
     challenge.ends_at = now + timedelta(days=challenge.program.duration_days)
-    challenge.require_referral_join_during_challenge = True
-    challenge.save(update_fields=["status", "starts_at", "ends_at",
+    challenge.require_referral_join_during_challenge = (
+        challenge.program.require_referral_join_during_challenge
+    )
+    challenge.save(update_fields=["rate_snapshot", "success_multiplier_snapshot",
+                                  "failure_multiplier_snapshot", "status", "starts_at", "ends_at",
                                   "require_referral_join_during_challenge", "updated_at"])
     from apps.bot.analytics import record_event
     record_event(user_id=challenge.user_id, brand_id=challenge.brand_id,
@@ -361,10 +388,8 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
     # Only the first paid purchase of a newly joined unique referral is reserved.
     if ChallengeReferralEvent.objects.filter(challenge=challenge, referral=referral).exists():
         return None
-    if (
-        challenge.starts_at
-        and referral.created_at < challenge.starts_at
-    ):
+    if (challenge.require_referral_join_during_challenge and challenge.starts_at
+            and referral.created_at < challenge.starts_at):
         return None
     if referral.converted_at and challenge.starts_at and referral.converted_at < challenge.starts_at:
         return None
@@ -395,16 +420,15 @@ def maybe_record_challenge_referral(*, referral: Referral, order: Order, at=None
         if had_prior_completed_purchase:
             return None
 
-    from apps.subscriptions.policy import effective_reward_percent
-    program = ReferralProgram.objects.filter(brand_id=order.brand_id, is_active=True).first()
-    if program is None:
-        raise ChallengeError("برنامه معرفی فعال پیدا نشد.")
-    base_percent = effective_reward_percent(order, program.purchase_reward_percent)
-    applied_percent = min(Decimal("100"), base_percent * challenge.program.success_multiplier)
+    from .rate_policy import snapshot_percent
+    base_percent = snapshot_percent(order.plan, challenge.rate_snapshot)
+    applied_percent = base_percent * challenge.success_multiplier_snapshot
+    failed_percent = base_percent * challenge.failure_multiplier_snapshot
+    if applied_percent > 100 or failed_percent > 100:
+        raise ChallengeError("نرخ چالش برای این پلن نامعتبر است.")
     reward_value = _money(order.final_price * applied_percent / Decimal("100"), order.currency)
     fallback_reward_value = _money(
-        order.final_price * base_percent * challenge.program.failure_multiplier / Decimal("100"),
-        order.currency,
+        order.final_price * failed_percent / Decimal("100"), order.currency,
     )
     reward = ReferralReward.objects.create(
         referral=referral,
@@ -461,10 +485,7 @@ def settle_challenge(*, challenge_id: int, force_success: bool = False) -> UserC
         .filter(challenge=challenge).order_by("created_at", "pk")
     )
     total_value = Decimal("0")
-    from apps.subscriptions.policy import effective_reward_percent
-    program = ReferralProgram.objects.filter(brand_id=challenge.brand_id, is_active=True).first()
-    if not success and any(event.fallback_reward_value is None for event in events) and program is None:
-        raise ChallengeError("تنظیمات پاداش معرفی عادی یافت نشد.")
+    from .rate_policy import snapshot_percent
     for event in events:
         reward = ReferralReward.objects.select_for_update().get(pk=event.reward_id)
         if success:
@@ -473,9 +494,9 @@ def settle_challenge(*, challenge_id: int, force_success: bool = False) -> UserC
         elif event.fallback_reward_value is not None:
             value = event.fallback_reward_value
         else:
-            # Previously recorded events have no fallback snapshot.
-            percent = effective_reward_percent(event.order, program.purchase_reward_percent)
-            value = _money(event.order.final_price * percent * challenge.program.failure_multiplier
+            # Legacy event: use the recorded challenge policy, not live admin edits.
+            percent = snapshot_percent(event.order.plan, challenge.rate_snapshot)
+            value = _money(event.order.final_price * percent * challenge.failure_multiplier_snapshot
                            / Decimal("100"), event.order.currency)
         reward.reward_type = "normal_point"
         reward.cash_value = value
